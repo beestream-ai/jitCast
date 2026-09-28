@@ -10,7 +10,9 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * device version of a {@code cpu.*} stage and is tested against it.
  *
  * <p>All weights live in one packed {@link FloatArray} addressed by element offsets
- * ({@link PackedWeights}); activations are row-major {@code [rows · patches · width]}.
+ * ({@link PackedWeights}); activations are row-major {@code [rows · patches · width]}. Every kernel
+ * is a {@link KernelContext} kernel launched with an explicit worker grid (no {@code @Parallel}
+ * loops); element-wise ones map {@code ctx.globalIdx} to one item and bounds-check it.
  */
 public final class TiRexKernels {
 
@@ -207,9 +209,10 @@ public final class TiRexKernels {
      * (row, head, t). Reads q, k, v and the i/f pre-activations from the fused projection
      * {@code p [(r·seq + t)·stride + …]} and writes {@code h [(r·seq + t)·heads·dv + head·dv + j]}.
      */
-    public static void mlstmCell(FloatArray p, FloatArray hOut, int rows, int seq, int heads, int stride,
+    public static void mlstmCell(KernelContext ctx, FloatArray p, FloatArray hOut, int rows, int seq, int heads, int stride,
             int kOff, int vOff, int iOff, int fOff, float cap, float eps) {
-        for (@uk.ac.manchester.tornado.api.annotations.Parallel int id = 0; id < rows * heads * seq; id++) {
+        int id = ctx.globalIdx;
+        if (id < rows * heads * seq) {
             int t = id % seq;
             int rh = id / seq;
             int h = rh % heads;
@@ -270,9 +273,10 @@ public final class TiRexKernels {
      * The four headwise sLSTM gate projections, one thread per output:
      * {@code out[rt·4d + g·d + h·dh + o] = Σ_j x[rt·d + h·dh + j] · W_g[h][o][j]}.
      */
-    public static void headwiseGates(FloatArray x, FloatArray w, int wOff, FloatArray out, int n, int heads, int dh) {
+    public static void headwiseGates(KernelContext ctx, FloatArray x, FloatArray w, int wOff, FloatArray out, int n, int heads, int dh) {
         int d = heads * dh;
-        for (@uk.ac.manchester.tornado.api.annotations.Parallel int id = 0; id < n * 4 * d; id++) {
+        int id = ctx.globalIdx;
+        if (id < n * 4 * d) {
             int rt = id / (4 * d);
             int rem = id - rt * 4 * d;
             int g = rem / d;
@@ -342,8 +346,9 @@ public final class TiRexKernels {
     }
 
     /** {@code out[i] = SiLU(big[r·2f + j]) · big[r·2f + f + j]} for the fused up-gate|up projection. */
-    public static void swiGlu(FloatArray big, FloatArray out, int n, int ffn) {
-        for (@uk.ac.manchester.tornado.api.annotations.Parallel int id = 0; id < n * ffn; id++) {
+    public static void swiGlu(KernelContext ctx, FloatArray big, FloatArray out, int n, int ffn) {
+        int id = ctx.globalIdx;
+        if (id < n * ffn) {
             int r = id / ffn;
             int j = id - r * ffn;
             float g = big.get(r * 2 * ffn + j);
@@ -356,10 +361,11 @@ public final class TiRexKernels {
      * {@code y [(r·patches + t)·Q·P + q·P + i]} → {@code out [r·Q·len + q·len + t·P + i]}, then
      * {@code sinh(clamp(y, ±clamp))·scale + loc} (no sinh on binary rows or without arcsinh).
      */
-    public static void unpatch(FloatArray y, FloatArray stats, FloatArray out, int rows, int patches, int nq,
+    public static void unpatch(KernelContext ctx, FloatArray y, FloatArray stats, FloatArray out, int rows, int patches, int nq,
             int patch, int arcsinh, float clamp) {
         int len = patches * patch;
-        for (@uk.ac.manchester.tornado.api.annotations.Parallel int id = 0; id < rows * nq * len; id++) {
+        int id = ctx.globalIdx;
+        if (id < rows * nq * len) {
             int r = id / (nq * len);
             int rem = id - r * nq * len;
             int q = rem / len;
@@ -380,8 +386,9 @@ public final class TiRexKernels {
      * {@code dst[(k·seq + t)·d + j] = src[(idx[k]·seq + t')·d + j]} with {@code t' = seq−1−t} when
      * {@code flip} is 1 (the reverse cell pass reads the known covariates back to front).
      */
-    public static void gatherRows(FloatArray src, FloatArray dst, IntArray idx, int count, int seq, int d, int flip) {
-        for (@uk.ac.manchester.tornado.api.annotations.Parallel int id = 0; id < count * seq * d; id++) {
+    public static void gatherRows(KernelContext ctx, FloatArray src, FloatArray dst, IntArray idx, int count, int seq, int d, int flip) {
+        int id = ctx.globalIdx;
+        if (id < count * seq * d) {
             int k = id / (seq * d);
             int rem = id - k * seq * d;
             int t = rem / d;
@@ -392,8 +399,9 @@ public final class TiRexKernels {
     }
 
     /** {@code dst[(idx[k]·seq + t)·d + j] = src[(k·seq + t)·d + j]}. */
-    public static void scatterRows(FloatArray src, FloatArray dst, IntArray idx, int count, int seq, int d) {
-        for (@uk.ac.manchester.tornado.api.annotations.Parallel int id = 0; id < count * seq * d; id++) {
+    public static void scatterRows(KernelContext ctx, FloatArray src, FloatArray dst, IntArray idx, int count, int seq, int d) {
+        int id = ctx.globalIdx;
+        if (id < count * seq * d) {
             int k = id / (seq * d);
             int rem = id - k * seq * d;
             int t = rem / d;
@@ -406,8 +414,9 @@ public final class TiRexKernels {
      * The combination input of the known covariates: {@code cat[(k·seq + t)·2d] = y[known[k], t] |
      * rev[k, seq−1−t]} (the reverse output is flipped back to forward time).
      */
-    public static void concatForward(FloatArray y, FloatArray rev, IntArray known, FloatArray cat, int count, int seq, int d) {
-        for (@uk.ac.manchester.tornado.api.annotations.Parallel int id = 0; id < count * seq * 2 * d; id++) {
+    public static void concatForward(KernelContext ctx, FloatArray y, FloatArray rev, IntArray known, FloatArray cat, int count, int seq, int d) {
+        int id = ctx.globalIdx;
+        if (id < count * seq * 2 * d) {
             int k = id / (seq * 2 * d);
             int rem = id - k * seq * 2 * d;
             int t = rem / (2 * d);
@@ -423,8 +432,9 @@ public final class TiRexKernels {
     }
 
     /** {@code acc[i] += x[i]}. */
-    public static void addInPlace(FloatArray acc, FloatArray x, int n) {
-        for (@uk.ac.manchester.tornado.api.annotations.Parallel int i = 0; i < n; i++) {
+    public static void addInPlace(KernelContext ctx, FloatArray acc, FloatArray x, int n) {
+        int i = ctx.globalIdx;
+        if (i < n) {
             acc.set(i, acc.get(i) + x.get(i));
         }
     }
@@ -433,8 +443,9 @@ public final class TiRexKernels {
      * RMS-normalises q and k of the fused {@code q | k | v} projection in place, per head, with no
      * weight ({@code F.rms_norm}); one thread per (token, q or k, head).
      */
-    public static void qkNorm(FloatArray p, int tokens, int heads, int dh, int stride, float eps) {
-        for (@uk.ac.manchester.tornado.api.annotations.Parallel int id = 0; id < tokens * 2 * heads; id++) {
+    public static void qkNorm(KernelContext ctx, FloatArray p, int tokens, int heads, int dh, int stride, float eps) {
+        int id = ctx.globalIdx;
+        if (id < tokens * 2 * heads) {
             int tok = id / (2 * heads);
             int rem = id - tok * 2 * heads;
             int o = tok * stride + rem * dh; // rem = which·heads + h, and q | k are adjacent
@@ -456,9 +467,10 @@ public final class TiRexKernels {
      * attends to the keys {@code groupStart[q] .. groupEnd[q]} of its own group, except that a
      * covariate query does not attend to target keys. Writes {@code out [(row·seq + t)·heads·dh]}.
      */
-    public static void variateAttention(FloatArray p, FloatArray out, IntArray groupStart, IntArray groupEnd,
+    public static void variateAttention(KernelContext ctx, FloatArray p, FloatArray out, IntArray groupStart, IntArray groupEnd,
             IntArray isTarget, int nk, int seq, int heads, int dh, int stride) {
-        for (@uk.ac.manchester.tornado.api.annotations.Parallel int id = 0; id < nk * seq * heads; id++) {
+        int id = ctx.globalIdx;
+        if (id < nk * seq * heads) {
             int q = id / (seq * heads);
             int rem = id - q * seq * heads;
             int t = rem / heads;
@@ -514,8 +526,9 @@ public final class TiRexKernels {
     // ---- CUDA hybrid path: epilogues around a cuBLAS GEMM -----------------------------------------
 
     /** Before a cuBLAS GEMM with β = 1: {@code C[r, c] = (accumulate ? C[r, c] : 0) + b[c]}. */
-    public static void biasFill(FloatArray c, FloatArray w, int bOff, int m, int n, int accumulate) {
-        for (@uk.ac.manchester.tornado.api.annotations.Parallel int id = 0; id < m * n; id++) {
+    public static void biasFill(KernelContext ctx, FloatArray c, FloatArray w, int bOff, int m, int n, int accumulate) {
+        int id = ctx.globalIdx;
+        if (id < m * n) {
             int col = id % n;
             float base = accumulate == 1 ? c.get(id) : 0f;
             c.set(id, base + w.get(bOff + col));
@@ -523,8 +536,9 @@ public final class TiRexKernels {
     }
 
     /** {@code x[i] = SiLU(x[i])} for the first {@code count} elements. */
-    public static void siluInPlace(FloatArray x, int count) {
-        for (@uk.ac.manchester.tornado.api.annotations.Parallel int i = 0; i < count; i++) {
+    public static void siluInPlace(KernelContext ctx, FloatArray x, int count) {
+        int i = ctx.globalIdx;
+        if (i < count) {
             float v = x.get(i);
             x.set(i, v / (1f + TornadoMath.exp(-v)));
         }

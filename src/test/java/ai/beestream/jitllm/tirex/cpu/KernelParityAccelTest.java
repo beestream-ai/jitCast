@@ -60,6 +60,11 @@ public class KernelParityAccelTest {
         }
     }
 
+    /** One thread per item, 128 per group (the engine's element-wise launch). */
+    private static WorkerGrid items(int count) {
+        return grid1((count + 127) / 128 * 128, 128);
+    }
+
     private static WorkerGrid grid1(int global, int local) {
         WorkerGrid wg = new WorkerGrid1D(global);
         wg.setLocalWork(local, 1, 1);
@@ -132,8 +137,9 @@ public class KernelParityAccelTest {
         int rows = 2, stride = 1544;
         float[] p = random(rows * SEQ * stride, 1f);
         FloatArray fp = FloatArray.fromArray(p), fh = new FloatArray(rows * SEQ * D);
-        run("t", null, g -> g.task("t", TiRexKernels::mlstmCell, fp, fh, rows, SEQ, HEADS, stride, 256, 512, 1536, 1540,
-                15f, 1e-6f), fh, fp);
+        KernelContext ctx = new KernelContext();
+        run("t", items(rows * HEADS * SEQ), g -> g.task("t", TiRexKernels::mlstmCell, ctx, fp, fh, rows, SEQ, HEADS, stride,
+                256, 512, 1536, 1540, 15f, 1e-6f), fh, fp);
         // the CPU cell from the same projections: identity projections over the fused layout
         float[] exp = Cells.mlstmCore(p, rows, SEQ, HEADS, stride);
         check("mlstmCell", fh.toHeapArray(), exp);
@@ -144,7 +150,8 @@ public class KernelParityAccelTest {
         int rows = 2, n = rows * SEQ, dh = 128;
         float[] x = random(n * D, 1f), wg = random(4 * HEADS * dh * dh, 0.05f);
         FloatArray fx = FloatArray.fromArray(x), fw = FloatArray.fromArray(wg), fo = new FloatArray(n * 4 * D);
-        run("t", null, g -> g.task("t", TiRexKernels::headwiseGates, fx, fw, 0, fo, n, HEADS, dh), fo, fx, fw);
+        KernelContext gctx = new KernelContext();
+        run("t", items(n * 4 * D), g -> g.task("t", TiRexKernels::headwiseGates, gctx, fx, fw, 0, fo, n, HEADS, dh), fo, fx, fw);
         float[][] gates = new float[4][];
         for (int s = 0; s < 4; s++) {
             gates[s] = java.util.Arrays.copyOfRange(wg, s * HEADS * dh * dh, (s + 1) * HEADS * dh * dh);
@@ -168,7 +175,8 @@ public class KernelParityAccelTest {
         int n = 30, ffn = 1408;
         float[] big = random(n * 2 * ffn, 2f);
         FloatArray fb = FloatArray.fromArray(big), fo = new FloatArray(n * ffn);
-        run("t", null, g -> g.task("t", TiRexKernels::swiGlu, fb, fo, n, ffn), fo, fb);
+        KernelContext ctx = new KernelContext();
+        run("t", items(n * ffn), g -> g.task("t", TiRexKernels::swiGlu, ctx, fb, fo, n, ffn), fo, fb);
         float[] exp = new float[n * ffn];
         for (int r = 0; r < n; r++) {
             for (int j = 0; j < ffn; j++) {
@@ -214,9 +222,12 @@ public class KernelParityAccelTest {
         FloatArray fp = FloatArray.fromArray(p), fo = new FloatArray(nk * SEQ * D);
         IntArray fs = IntArray.fromArray(start), fe = IntArray.fromArray(end), ft = IntArray.fromArray(target);
         TaskGraph g = new TaskGraph("k").transferToDevice(DataTransferMode.EVERY_EXECUTION, fp, fs, fe, ft, fo)
-                .task("t", TiRexKernels::variateAttention, fp, fo, fs, fe, ft, nk, SEQ, HEADS, dh, stride)
+                .task("t", TiRexKernels::variateAttention, new KernelContext(), fp, fo, fs, fe, ft, nk, SEQ, HEADS, dh, stride)
                 .transferToHost(DataTransferMode.EVERY_EXECUTION, fo);
         try (TornadoExecutionPlan plan = new TornadoExecutionPlan(g.snapshot())) {
+            GridScheduler grid = new GridScheduler();
+            grid.addWorkerGrid("k.t", items(nk * SEQ * HEADS));
+            plan.withGridScheduler(grid);
             String device = System.getProperty("tirex.tornado.device");
             if (device != null && !device.isBlank()) {
                 String[] dd = device.split(":");

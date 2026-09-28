@@ -33,6 +33,9 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
 
     private static final String G = "tirex";
 
+    /** Work-group size of the element-wise kernels. */
+    private static final int ITEM_GROUP = 128;
+
     /** How GEMMs run: the portable tiled kernel, or cuBLAS (FP32, or TF32 tensor cores) on CUDA. */
     public enum GemmMode {
         TILED, CUBLAS, CUBLAS_TF32;
@@ -237,19 +240,24 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 b.rms(s + "norm", h, n, blk.normLstm(), tokens, d, TiRex2Config.NORM_EPS);
                 if (nKnown > 0) {
                     // the reverse pass first, while n still holds RMSNorm(h)
-                    g.task(s + "revIn", TiRexKernels::gatherRows, n, revIn, known, nKnown, seq, d, 1);
+                    b.items(s + "revIn", nKnown * seq * d);
+                    g.task(s + "revIn", TiRexKernels::gatherRows, ctx, n, revIn, known, nKnown, seq, d, 1);
                     cell(b, s + "rev_", blk, revIn, revOut, nKnown, false);
                     cell(b, s, blk, n, yc, rows, false);
-                    g.task(s + "cat", TiRexKernels::concatForward, yc, revOut, known, big, nKnown, seq, d);
+                    b.items(s + "cat", nKnown * seq * 2 * d);
+                    g.task(s + "cat", TiRexKernels::concatForward, ctx, yc, revOut, known, big, nKnown, seq, d);
                     b.gemm(s + "comb", big, blk.combination(), cell, nKnown * seq, 0);
-                    g.task(s + "scatter", TiRexKernels::scatterRows, cell, yc, known, nKnown, seq, d);
-                    g.task(s + "resid", TiRexKernels::addInPlace, h, yc, tokens * d);
+                    b.items(s + "scatter", nKnown * seq * d);
+                    g.task(s + "scatter", TiRexKernels::scatterRows, ctx, cell, yc, known, nKnown, seq, d);
+                    b.items(s + "resid", tokens * d);
+                    g.task(s + "resid", TiRexKernels::addInPlace, ctx, h, yc, tokens * d);
                 } else {
                     cell(b, s, blk, n, h, rows, true);
                 }
                 b.rms(s + "fnorm", h, n, blk.normFfn(), tokens, d, TiRex2Config.NORM_EPS);
                 b.gemm(s + "up", n, blk.upGateUp(), big, tokens, 0);
-                g.task(s + "swiglu", TiRexKernels::swiGlu, big, proj, tokens, blk.ffnDim());
+                b.items(s + "swiglu", tokens * blk.ffnDim());
+                g.task(s + "swiglu", TiRexKernels::swiGlu, ctx, big, proj, tokens, blk.ffnDim());
                 b.gemm(s + "down", proj, blk.down(), h, tokens, TiRexKernels.ACCUMULATE);
                 if (nKept > 0) {
                     variate(b, s, blk.variate(), nKept);
@@ -260,7 +268,8 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             g = b.begin("out");
             b.rms("onorm", h, n, weights.stackOutNorm(), tokens, d, c.stackOutNormEps());
             b.residual("out", n, big, y, tokens, weights.outputEmbedding());
-            g.task("unpatch", TiRexKernels::unpatch, y, stats, out, rows, seq, nq, p, c.useArcsinh() ? 1 : 0,
+            b.items("unpatch", rows * nq * len);
+            g.task("unpatch", TiRexKernels::unpatch, ctx, y, stats, out, rows, seq, nq, p, c.useArcsinh() ? 1 : 0,
                     TiRex2Config.SINH_CLAMP);
             g.transferToHost(DataTransferMode.EVERY_EXECUTION, out);
             b.end(true);
@@ -299,14 +308,16 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                     throw new IllegalStateException("mlstmCell assumes head dims 64/128");
                 }
                 b.gemm(s + "proj", in, pr, proj, tokens, TiRexKernels.BIAS);
-                b.g.task(s + "mlstm", TiRexKernels::mlstmCell, proj, cell, count, seq, heads, pr.out(), qk, 2 * qk,
+                b.items(s + "mlstm", count * heads * seq);
+                b.g.task(s + "mlstm", TiRexKernels::mlstmCell, b.ctx, proj, cell, count, seq, heads, pr.out(), qk, 2 * qk,
                         2 * qk + 2 * d, 2 * qk + 2 * d + heads, TiRex2Config.GATE_SOFT_CAP, TiRex2Config.MLSTM_EPS);
                 b.headNorm(s + "hnorm", cell, in, blk.headNorm(), tokens, heads, d / heads, proj, pr.out(), 2 * qk + d, 1);
                 b.gemm(s + "out", in, blk.outProj(), dst, tokens, add ? TiRexKernels.ACCUMULATE : 0);
             } else {
                 int heads = c.slstmHeads();
                 int dh = d / heads;
-                b.g.task(s + "gates", TiRexKernels::headwiseGates, in, b.w, blk.slstmGates(), big, tokens, heads, dh);
+                b.items(s + "gates", tokens * 4 * d);
+                b.g.task(s + "gates", TiRexKernels::headwiseGates, b.ctx, in, b.w, blk.slstmGates(), big, tokens, heads, dh);
                 b.grid.addWorkerGrid(b.name + "." + s + "slstm", group(count * heads * dh, dh));
                 b.g.task(s + "slstm", TiRexKernels::slstmRecurrence, b.ctx, big, b.w, blk.recurrent(), blk.slstmBias(),
                         cell, seq, heads);
@@ -322,17 +333,21 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             int heads = c.variateHeads();
             int dh = d / heads;
             int tokens = nk * seq;
-            b.g.task(s + "vgather", TiRexKernels::gatherRows, h, xk, kept, nk, seq, d, 0);
+            b.items(s + "vgather", tokens * d);
+            b.g.task(s + "vgather", TiRexKernels::gatherRows, b.ctx, h, xk, kept, nk, seq, d, 0);
             b.rms(s + "vnorm", xk, n, v.normAttn(), tokens, d, TiRex2Config.NORM_EPS);
             b.gemm(s + "qkv", n, v.qkv(), proj, tokens, 0);
-            b.g.task(s + "qknorm", TiRexKernels::qkNorm, proj, tokens, heads, dh, 3 * d, Math.ulp(1.0f));
-            b.g.task(s + "attn", TiRexKernels::variateAttention, proj, cell, groupStart, groupEnd, keptTarget, nk, seq,
+            b.items(s + "qknorm", tokens * 2 * heads);
+            b.g.task(s + "qknorm", TiRexKernels::qkNorm, b.ctx, proj, tokens, heads, dh, 3 * d, Math.ulp(1.0f));
+            b.items(s + "attn", nk * seq * heads);
+            b.g.task(s + "attn", TiRexKernels::variateAttention, b.ctx, proj, cell, groupStart, groupEnd, keptTarget, nk, seq,
                     heads, dh, 3 * d);
             b.gemm(s + "wo", cell, v.wo(), xk, tokens, TiRexKernels.ACCUMULATE);
             b.rms(s + "vfnorm", xk, n, v.normFfn(), tokens, d, TiRex2Config.NORM_EPS);
             b.gemm(s + "vin", n, v.ffnIn(), big, tokens, TiRexKernels.SILU);
             b.gemm(s + "vout", big, v.ffnOut(), xk, tokens, TiRexKernels.ACCUMULATE);
-            b.g.task(s + "vscatter", TiRexKernels::scatterRows, xk, h, kept, nk, seq, d);
+            b.items(s + "vscatter", tokens * d);
+            b.g.task(s + "vscatter", TiRexKernels::scatterRows, b.ctx, xk, h, kept, nk, seq, d);
         }
 
         float[][][] run(ModelBatch batch, Structure s) {
@@ -431,6 +446,11 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             previous = name;
         }
 
+        /** The worker grid of an element-wise kernel: one thread per item, in groups of {@link #ITEM_GROUP}. */
+        void items(String task, int count) {
+            grid.addWorkerGrid(this.name + "." + task, group((count + ITEM_GROUP - 1) / ITEM_GROUP * ITEM_GROUP, ITEM_GROUP));
+        }
+
         void gemm(String name, FloatArray a, PackedWeights.Lin l, FloatArray c, int m, int flags) {
             if (gemmMode != GemmMode.TILED) {
                 cublasGemm(name, a, l, c, m, flags);
@@ -457,7 +477,8 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             boolean bias = l.b() >= 0;
             boolean acc = (flags & TiRexKernels.ACCUMULATE) != 0;
             if (bias) {
-                g.task(name + "_bias", TiRexKernels::biasFill, c, w, l.b(), m, l.out(), acc ? 1 : 0);
+                items(name + "_bias", m * l.out());
+                g.task(name + "_bias", TiRexKernels::biasFill, ctx, c, w, l.b(), m, l.out(), acc ? 1 : 0);
             }
             float beta = bias || acc ? 1f : 0f;
             int n = l.out(), k = l.in();
@@ -469,7 +490,8 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                         beta, c, n);
             }
             if ((flags & TiRexKernels.SILU) != 0) {
-                g.task(name + "_silu", TiRexKernels::siluInPlace, c, m * n);
+                items(name + "_silu", m * n);
+                g.task(name + "_silu", TiRexKernels::siluInPlace, ctx, c, m * n);
             }
         }
 
