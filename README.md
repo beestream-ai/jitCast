@@ -17,29 +17,28 @@ The TornadoVM engine (`tornado.TornadoTiRex2Engine`) runs the full model on the 
 
 On cyclone (RTX 5070 Ti, CUDA backend, cuBLAS FP32 GEMMs), all golden cases pass and compute-sanitizer is clean.
 
-**Best configuration** is `-Dtirex.tornado.gemm=cublas-auto -Dtirex.tornado.slstmR=fp16`: FP16 tensor-core GEMMs from 1,024 rows (FP32 below), and FP16 sLSTM recurrent weights. Worst error against the FP32 reference: model output 1.5e-4, forecasts 4.7e-5. For comparison, NXAI's own CUDA path is at 7.7e-3.
+**Best configuration:** `-Dtirex.tornado.gemm=cublas-auto -Dtirex.tornado.slstmR=fp16`.
+- GEMMs use FP16 tensor cores (FP16 in, FP32 out) from 1,024 rows, and FP32 below that.
+- The sLSTM recurrent weights are FP16.
+- Worst error against the FP32 reference: model output 1.4e-3, forecasts 6.3e-4 (FP16 forced on every GEMM). NXAI's own CUDA path is at 7.7e-3.
+
+**cuBLAS library.** TornadoVM's cuBLAS provider dlopens `libcublas.so.12` first. On a machine that also has CUDA 12.0 cuBLAS installed, it silently runs generic, non-tensor-core fallback kernels on Blackwell. The cyclone runs use a user-space shim that maps `lib{cublas,cublasLt,cudart}.so.12` to CUDA 13.0 (`scripts/cyclone/exp_shim.sh`). NXAI uses the cuBLAS 13 that ships with PyTorch.
 
 End-to-end `forecast()` on cyclone (RTX 5070 Ti). NXAI is the best of eager / `torch.compile` / FlexAttention.
 
 | univariate batch | NXAI | TornadoVM | speed-up |
 |---|---|---|---|
-| 1 | 9.76 ms | **3.22 ms** | 3.0× |
-| 8 | 15.4 ms | **9.75 ms** | 1.6× |
-| 32 | 28.3 ms | **17.5 ms** | 1.6× |
-| 64 | 48.8 ms | **30.5 ms** | 1.6× |
-| 512 | 367 ms | **251 ms** | 1.46× |
-| 1024 | 733 ms | **505 ms** | 1.45× (2,030 vs 1,400 series/s) |
+| 1 | 9.76 ms | **2.73 ms** | 3.6× |
+| 8 | 15.4 ms | **5.4 ms** | 2.8× |
+| 64 | 48.8 ms | **15.2 ms** | 3.2× |
+| 512 | 367 ms | **118 ms** | 3.1× (4,335 vs 1,400 series/s) |
 
-| multivariate (series × covariates) | NXAI | TornadoVM | |
+| multivariate (series × covariates) | NXAI | TornadoVM | speed-up |
 |---|---|---|---|
-| 1 × 1 | 21.4 ms | **10.7 ms** | 2.0× |
-| 1 × 7 | 26.5 ms | **22.7 ms** | 1.17× |
-| 1 × 63 | **62.9 ms** | 141 ms | 0.45× |
-| 32 × 1 | 72.2 ms | **68.8 ms** | 1.05× |
-| 32 × 15 | **488 ms** | 629 ms | 0.78× |
-| 32 × 31 | **955 ms** | 1,450 ms | 0.66× |
-
-Many covariates per series is still slower than NXAI; that path has not been optimised yet.
+| 1 × 15 | 30.8 ms | **12.0 ms** | 2.6× |
+| 1 × 63 | 62.9 ms | **34.3 ms** | 1.8× |
+| 32 × 15 | 488 ms | **257 ms** | 1.9× |
+| 32 × 63 (2,048 rows) | 1,869 ms | **1,122 ms** | 1.7× |
 
 | Phase | Scope |
 |---|---|
