@@ -17,18 +17,29 @@ The TornadoVM engine (`tornado.TornadoTiRex2Engine`) runs the full model on the 
 
 On cyclone (RTX 5070 Ti, CUDA backend, cuBLAS FP32 GEMMs), all golden cases pass and compute-sanitizer is clean.
 
-**Univariate e2e vs NXAI (eager / `torch.compile`, best of)**
+**Best configuration** is `-Dtirex.tornado.gemm=cublas-auto -Dtirex.tornado.slstmR=fp16`: FP16 tensor-core GEMMs from 1,024 rows (FP32 below), and FP16 sLSTM recurrent weights. Worst error against the FP32 reference: model output 1.5e-4, forecasts 4.7e-5. For comparison, NXAI's own CUDA path is at 7.7e-3.
 
-| batch | NXAI | TornadoVM |
-|---|---|---|
-| 1 | 9.8 ms | **4.6 ms** |
-| 8 | 15.4 ms | **9.6 ms** |
-| 16 | 19.6 ms | **15.4 ms** |
-| 32 | 28.3 ms | 28.3 ms |
-| 64 | **49.0 ms** | 59.1 ms |
-| plateau | **~1,400 series/s** | ~1,080 series/s |
+End-to-end `forecast()` on cyclone (RTX 5070 Ti). NXAI is the best of eager / `torch.compile` / FlexAttention.
 
-Batch 1 is dominated by the sLSTM recurrence (~66% of GPU time); large batches by FP32 SGEMM (~76%).
+| univariate batch | NXAI | TornadoVM | speed-up |
+|---|---|---|---|
+| 1 | 9.76 ms | **3.22 ms** | 3.0× |
+| 8 | 15.4 ms | **9.75 ms** | 1.6× |
+| 32 | 28.3 ms | **17.5 ms** | 1.6× |
+| 64 | 48.8 ms | **30.5 ms** | 1.6× |
+| 512 | 367 ms | **251 ms** | 1.46× |
+| 1024 | 733 ms | **505 ms** | 1.45× (2,030 vs 1,400 series/s) |
+
+| multivariate (series × covariates) | NXAI | TornadoVM | |
+|---|---|---|---|
+| 1 × 1 | 21.4 ms | **10.7 ms** | 2.0× |
+| 1 × 7 | 26.5 ms | **22.7 ms** | 1.17× |
+| 1 × 63 | **62.9 ms** | 141 ms | 0.45× |
+| 32 × 1 | 72.2 ms | **68.8 ms** | 1.05× |
+| 32 × 15 | **488 ms** | 629 ms | 0.78× |
+| 32 × 31 | **955 ms** | 1,450 ms | 0.66× |
+
+Many covariates per series is still slower than NXAI; that path has not been optimised yet.
 
 | Phase | Scope |
 |---|---|
