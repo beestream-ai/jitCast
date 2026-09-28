@@ -39,10 +39,12 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
     /**
      * How GEMMs run: the portable tiled kernel, or on CUDA cuBLAS in FP32, TF32, or FP16 tensor
      * cores ({@code cublasGemmExFP16FP32}: FP16 weights and activations, FP32 accumulation and
-     * output, so the residual stream stays FP32).
+     * output, so the residual stream stays FP32). {@code CUBLAS_AUTO} picks per GEMM: FP16 once the
+     * row count reaches {@code -Dtirex.tornado.fp16MinTokens} (default 1024), FP32 below it, where
+     * cuBLAS falls back to a non-tensor-core kernel for FP16 inputs with FP32 output.
      */
     public enum GemmMode {
-        TILED, CUBLAS, CUBLAS_TF32, CUBLAS_FP16;
+        TILED, CUBLAS, CUBLAS_TF32, CUBLAS_FP16, CUBLAS_AUTO;
 
         static GemmMode fromProperty() {
             String v = System.getProperty("tirex.tornado.gemm", "tiled").trim().toUpperCase().replace('-', '_');
@@ -51,6 +53,13 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
     }
 
     private final GemmMode gemmMode = GemmMode.fromProperty();
+
+    private final int fp16MinTokens = Integer.getInteger("tirex.tornado.fp16MinTokens", 1024);
+
+    /** Whether a GEMM over {@code m} rows runs in FP16 under the current mode. */
+    private boolean halfGemm(int m) {
+        return gemmMode == GemmMode.CUBLAS_FP16 || (gemmMode == GemmMode.CUBLAS_AUTO && pad(m) >= fp16MinTokens);
+    }
 
     /** {@code -Dtirex.tornado.slstmR=fp16}: read the sLSTM recurrent kernels from an FP16 copy. */
     private final boolean halfRecurrent = "fp16".equalsIgnoreCase(System.getProperty("tirex.tornado.slstmR", "fp32"));
@@ -273,7 +282,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             revIn = nKnown > 0 ? new FloatArray(pad(nKnown * seq) * d) : null;
             revOut = nKnown > 0 ? new FloatArray(pad(nKnown * seq) * d) : null;
             xk = nKept > 0 ? new FloatArray(pad(nKept * seq) * d) : null;
-            aHalf = gemmMode == GemmMode.CUBLAS_FP16
+            aHalf = halfGemm(tokens)
                     ? new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(tokensP * maxGemmInput()) : null;
             known = nKnown > 0 ? new IntArray(nKnown) : null;
             kept = nKept > 0 ? new IntArray(nKept) : null;
@@ -567,7 +576,8 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
          * k, C, n)}. The bias is written into C first (then β = 1); SiLU runs afterwards.
          */
         private void cublasGemm(String name, FloatArray a, PackedWeights.Lin l, FloatArray c, int m, int flags) {
-            FloatArray wm = gemmMode == GemmMode.CUBLAS_FP16 ? null : weights.matrix(l);
+            boolean half = halfGemm(m);
+            FloatArray wm = half ? null : weights.matrix(l);
             if (wm != null && graphWeights.add(wm)) {
                 g.transferToDevice(DataTransferMode.FIRST_EXECUTION, wm);
             }
@@ -579,7 +589,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             }
             float beta = bias || acc ? 1f : 0f;
             int n = l.out(), k = l.in();
-            if (gemmMode == GemmMode.CUBLAS_FP16) {
+            if (half) {
                 uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray wh = weights.halfMatrix(l);
                 if (graphWeights.add(wh)) {
                     g.transferToDevice(DataTransferMode.FIRST_EXECUTION, wh);
