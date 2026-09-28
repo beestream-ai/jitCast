@@ -559,23 +559,27 @@ public final class TiRexKernels {
 
     /**
      * RMS-normalises q and k of the fused {@code q | k | v} projection in place, per head, with no
-     * weight ({@code F.rms_norm}); one thread per (token, q or k, head).
+     * weight ({@code F.rms_norm}). One work-group of {@code dh = 128} threads per token: thread j
+     * holds element j of each of the {@code 2·heads} vectors (coalesced), reduced in local memory.
      */
     public static void qkNorm(KernelContext ctx, FloatArray p, int tokens, int heads, int dh, int stride, float eps) {
-        int id = ctx.globalIdx;
-        if (id < tokens * 2 * heads) {
-            int tok = id / (2 * heads);
-            int rem = id - tok * 2 * heads;
-            int o = tok * stride + rem * dh; // rem = which·heads + h, and q | k are adjacent
-            float ss = 0f;
-            for (int j = 0; j < dh; j++) {
-                float v = p.get(o + j);
-                ss += v * v;
+        int tok = ctx.groupIdx;
+        int j = ctx.localIdx;
+        float[] part = ctx.allocateFloatLocalArray(128);
+        for (int vec = 0; vec < 2 * heads; vec++) {
+            int o = tok * stride + vec * dh + j; // vec = which·heads + h, and q | k are adjacent
+            float v = p.get(o);
+            part[j] = v * v;
+            ctx.localBarrier();
+            for (int st = 64; st > 0; st >>= 1) {
+                if (j < st) {
+                    part[j] += part[j + st];
+                }
+                ctx.localBarrier();
             }
-            float inv = 1f / TornadoMath.sqrt(ss / dh + eps);
-            for (int j = 0; j < dh; j++) {
-                p.set(o + j, p.get(o + j) * inv);
-            }
+            float inv = 1f / TornadoMath.sqrt(part[0] / dh + eps);
+            ctx.localBarrier();
+            p.set(o, v * inv);
         }
     }
 

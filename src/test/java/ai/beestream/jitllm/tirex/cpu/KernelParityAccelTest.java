@@ -326,6 +326,24 @@ public class KernelParityAccelTest {
         check("variateAttention", fo.toHeapArray(), exp);
     }
 
+    @Test
+    public void qkNormPerHead() {
+        int tokens = 37, dh = 128, stride = 3 * D;
+        float[] p = random(tokens * stride, 3f);
+        FloatArray fp = FloatArray.fromArray(p);
+        KernelContext ctx = new KernelContext();
+        float eps = Math.ulp(1.0f);
+        run("t", grid1(tokens * dh, dh), g -> g.task("t", TiRexKernels::qkNorm, ctx, fp, tokens, HEADS, dh, stride, eps), fp, fp);
+        float[] exp = p.clone();
+        for (int tok = 0; tok < tokens; tok++) {
+            // q and k (the first 2·D values of the token) per head; v untouched
+            float[] qk = java.util.Arrays.copyOfRange(p, tok * stride, tok * stride + 2 * D);
+            float[] nrm = Ops.rmsNorm(qk, 2 * HEADS, dh, null, eps);
+            System.arraycopy(nrm, 0, exp, tok * stride, 2 * D);
+        }
+        check("qkNorm", fp.toHeapArray(), exp);
+    }
+
     private static ai.beestream.jitllm.tirex.model.TiRex2Config testConfig() {
         return new ai.beestream.jitllm.tirex.model.TiRex2Config(12, 512, 32, 2048, 2048, 2048, 320, new float[9], true,
                 true, 1e-7f, true, false, java.util.List.of(), 4, 4, 4);
