@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>ai.beestream</groupId>
+    <artifactId>jitllm-tirex</artifactId>
+    <version>0.1.0${jdk.version.suffix}</version>
+    <packaging>jar</packaging>
+
+    <name>jitllm-tirex</name>
+    <description>TiRex-2 time-series forecasting on TornadoVM, built on jitllm's kernels and the TornadoVM hybrid CUDA libraries</description>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- The jitllm and TornadoVM artifacts this module builds against. Install jitllm first
+             from the repository root: ./mvnw -Prelease -DskipTests -Dgpg.skip=true install -->
+        <jdk.version.suffix>-jdk22plus</jdk.version.suffix>
+        <jitllm.version>1.0.2${jdk.version.suffix}</jitllm.version>
+        <tornadovm.version>7.0.1${jdk.version.suffix}</tornadovm.version>
+        <maven.compiler.release>22</maven.compiler.release>
+        <!-- Golden-data tests skip unless both are set: the converted weights
+             (scripts/convert_ckpt.py) and a golden directory (scripts/dump_golden.py). -->
+        <tirex.weights></tirex.weights>
+        <tirex.golden></tirex.golden>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.github.beehive-lab</groupId>
+            <artifactId>jitllm</artifactId>
+            <version>${jitllm.version}</version>
+        </dependency>
+        <!-- Provided, as in jitllm: the TornadoVM SDK supplies these at runtime (jitllm issue #176). -->
+        <dependency>
+            <groupId>io.github.beehive-lab</groupId>
+            <artifactId>tornado-api</artifactId>
+            <version>${tornadovm.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.github.beehive-lab</groupId>
+            <artifactId>tornado-cublas</artifactId>
+            <version>${tornadovm.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.github.beehive-lab</groupId>
+            <artifactId>tornado-cudnn</artifactId>
+            <version>${tornadovm.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <version>4.13.2</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.11.0</version>
+                <configuration>
+                    <compilerArgs>
+                        <arg>--add-modules</arg>
+                        <arg>jdk.incubator.vector</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+            <!-- Default tests need no accelerator; *AccelTest runs under -Paccel-tests, as in jitllm. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.2</version>
+                <configuration>
+                    <excludes>
+                        <exclude>**/*AccelTest.java</exclude>
+                    </excludes>
+                    <argLine>--add-modules jdk.incubator.vector</argLine>
+                    <systemPropertyVariables>
+                        <tirex.weights>${tirex.weights}</tirex.weights>
+                        <tirex.golden>${tirex.golden}</tirex.golden>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <profile>
+            <id>accel-tests</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <excludes combine.self="override"/>
+                            <argLine>@${env.TORNADOVM_HOME}/tornado-argfile
+                                    --add-modules jdk.incubator.vector
+                                    -da:tornado.graal...
+                                    -Dtornado.recover.bailout=False
+                                    -Dtornado.device.memory=8GB
+                                    -Dtornado.cuda.priority=100
+                                    -Dtornado.opencl.priority=0</argLine>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>

@@ -4,8 +4,9 @@ A TornadoVM inference engine for [TiRex-2](https://github.com/NX-AI/tirex-2), NX
 time-series forecasting model (xLSTM backbone, 9-quantile output), built on jitllm's TornadoVM
 kernels and the TornadoVM hybrid CUDA libraries (cuBLAS/cuBLASLt/cuDNN).
 
-Status: **P0**. The reference tooling and the NXAI baseline harness are in place; the Java engine
-starts in P1.
+Status: **P0 running on cyclone; P1 started**. The reference tooling and the NXAI baseline harness
+are in place. The Java module loads the checkpoint and runs the input stage and the patch embedding
+on the CPU, matching the reference in every golden case (relative max error ≤ 4e-7).
 
 | Phase | Scope |
 |---|---|
@@ -14,6 +15,26 @@ starts in P1.
 | P2 | Covariates / multivariate: reverse cell on known covariates, variate attention |
 | P3 | Performance: CUDA graph, cuBLASLt epilogues, BF16 tensor cores, fused sLSTM step |
 | P4 | Benchmark matrix vs NXAI, accuracy parity (GIFT-Eval univariate, fev-bench mini), report |
+
+## Build and test
+
+```bash
+# once, from the repository root: install jitllm against the TornadoVM 7.0.1 release
+./mvnw -Prelease -DskipTests -Dgpg.skip=true install
+# this module; the golden tests are skipped unless both paths are given
+cd jitllm-tirex
+../mvnw test -Dtirex.weights=/path/tirex2.safetensors -Dtirex.golden=/path/golden-cpu
+```
+
+## Java layout (`ai.beestream.jitllm.tirex`)
+
+| Package | Contents |
+|---|---|
+| `api` | `TimeSeries`, `Forecast`, `TiRex2Engine` |
+| `io` | `SafeTensors` (memory-mapped reader), `Tensor` |
+| `model` | `TiRex2Config` (from the embedded model config), `TiRex2Weights` (binds every tensor by name and shape; unknown or missing tensors fail the load) |
+| `cpu` | FP32 CPU reference, the oracle for the device kernels: `Ops`, `InputStage`, `CpuReference` |
+| `tornado` | The TornadoVM engine (P1) |
 
 ## Scripts (`scripts/`)
 
