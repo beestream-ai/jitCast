@@ -36,9 +36,13 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
     /** Work-group size of the element-wise kernels. */
     private static final int ITEM_GROUP = 128;
 
-    /** How GEMMs run: the portable tiled kernel, or cuBLAS (FP32, or TF32 tensor cores) on CUDA. */
+    /**
+     * How GEMMs run: the portable tiled kernel, or on CUDA cuBLAS in FP32, TF32, or FP16 tensor
+     * cores ({@code cublasGemmExFP16FP32}: FP16 weights and activations, FP32 accumulation and
+     * output, so the residual stream stays FP32).
+     */
     public enum GemmMode {
-        TILED, CUBLAS, CUBLAS_TF32;
+        TILED, CUBLAS, CUBLAS_TF32, CUBLAS_FP16;
 
         static GemmMode fromProperty() {
             String v = System.getProperty("tirex.tornado.gemm", "tiled").trim().toUpperCase().replace('-', '_');
@@ -105,6 +109,27 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         return device;
     }
 
+    /** Work-groups the sLSTM recurrence should fill: about two per SM of a 70-SM GPU. */
+    private static final int SLSTM_TARGET_GROUPS = 140;
+
+    /**
+     * Rows per sLSTM work-group: the largest power of two up to {@link TiRexKernels#SLSTM_MAX_ROWS}
+     * that still yields {@link #SLSTM_TARGET_GROUPS} work-groups, so small batches keep their
+     * parallelism and large ones share each R read across rows. {@code -Dtirex.tornado.slstmRows}
+     * overrides it.
+     */
+    static int slstmRowsPerGroup(int rows, int heads) {
+        int forced = Integer.getInteger("tirex.tornado.slstmRows", 0);
+        if (forced > 0) {
+            return Math.min(forced, TiRexKernels.SLSTM_MAX_ROWS);
+        }
+        int rb = 1;
+        while (rb * 2 <= TiRexKernels.SLSTM_MAX_ROWS && (rows + 2 * rb - 1) / (2 * rb) * heads >= SLSTM_TARGET_GROUPS) {
+            rb *= 2;
+        }
+        return rb;
+    }
+
     @Override
     public float[][][] forward(ModelBatch batch) {
         Structure s = structure(batch);
@@ -120,6 +145,16 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             plans.put(shape, plan);
         }
         return plan.run(batch, s);
+    }
+
+    /** The widest GEMM input (K) of the model, which sizes the FP16 activation scratch. */
+    private int maxGemmInput() {
+        int k = Math.max(weights.inputEmbedding().output().in(), weights.outputEmbedding().output().in());
+        for (PackedWeights.Block blk : weights.blocks()) {
+            k = Math.max(k, Math.max(blk.down().in(), blk.combination().in()));
+            k = Math.max(k, blk.variate().ffnOut().in());
+        }
+        return k;
     }
 
     /** The shapes compiled so far, least recently used first. */
@@ -188,6 +223,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         final Shape shape;
         final FloatArray x, present, tok, stats, h, n, cell, proj, big, y, out;
         final FloatArray yc, revIn, revOut, xk;
+        final uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray aHalf;
         final IntArray known, kept, groupStart, groupEnd, keptTarget;
         final TornadoExecutionPlan exec;
         final GridScheduler grid;
@@ -225,6 +261,8 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             revIn = nKnown > 0 ? new FloatArray(nKnown * seq * d) : null;
             revOut = nKnown > 0 ? new FloatArray(nKnown * seq * d) : null;
             xk = nKept > 0 ? new FloatArray(nKept * seq * d) : null;
+            aHalf = gemmMode == GemmMode.CUBLAS_FP16
+                    ? new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(tokens * maxGemmInput()) : null;
             known = nKnown > 0 ? new IntArray(nKnown) : null;
             kept = nKept > 0 ? new IntArray(nKept) : null;
             groupStart = nKept > 0 ? new IntArray(nKept) : null;
@@ -235,7 +273,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             KernelContext ctx = new KernelContext();
             GridScheduler grid = new GridScheduler();
             List<Object> sharedList = new ArrayList<>(List.of(w, x, present, tok, stats, h, n, cell, proj, big, y, out));
-            for (Object o : new Object[] {yc, revIn, revOut, xk, known, kept, groupStart, groupEnd, keptTarget}) {
+            for (Object o : new Object[] {yc, revIn, revOut, xk, aHalf, known, kept, groupStart, groupEnd, keptTarget}) {
                 if (o != null) {
                     sharedList.add(o);
                 }
@@ -248,6 +286,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 }
             }
             Builder b = new Builder(grid, ctx, w, shared);
+            b.aHalf = aHalf;
 
             // TornadoVM caps a task graph at 256 tasks and an 8 KiB bytecode buffer, so the forward
             // pass is a chain of graphs (input, one per block, output) sharing device buffers.
@@ -352,9 +391,11 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 b.gemm(s + "gates", in, blk.slstmGates(), big, tokens, 0);
                 int gpt = slstmGatesPerThread(dh);
                 int threads = 4 * dh / gpt;
-                b.grid.addWorkerGrid(b.name + "." + s + "slstm", group(count * heads * threads, threads));
+                int rb = slstmRowsPerGroup(count, heads);
+                int groups = (count + rb - 1) / rb * heads;
+                b.grid.addWorkerGrid(b.name + "." + s + "slstm", group(groups * threads, threads));
                 b.g.task(s + "slstm", TiRexKernels::slstmRecurrence, b.ctx, big, b.w, blk.recurrent(), blk.slstmBias(),
-                        cell, seq, heads, gpt);
+                        cell, count, seq, heads, gpt, rb);
                 b.headNorm(s + "hnorm", cell, dst, blk.groupNorm(), tokens, heads, dh, proj, 0, 0, add ? 2 : 0);
             }
         }
@@ -448,6 +489,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         final KernelContext ctx;
         final FloatArray w;
         final Object[] shared;
+        uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray aHalf;
         final List<ImmutableTaskGraph> graphs = new ArrayList<>();
         TaskGraph g;
         String name;
@@ -504,8 +546,8 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
          * k, C, n)}. The bias is written into C first (then β = 1); SiLU runs afterwards.
          */
         private void cublasGemm(String name, FloatArray a, PackedWeights.Lin l, FloatArray c, int m, int flags) {
-            FloatArray wm = weights.matrix(l);
-            if (graphWeights.add(wm)) {
+            FloatArray wm = gemmMode == GemmMode.CUBLAS_FP16 ? null : weights.matrix(l);
+            if (wm != null && graphWeights.add(wm)) {
                 g.transferToDevice(DataTransferMode.FIRST_EXECUTION, wm);
             }
             boolean bias = l.b() >= 0;
@@ -516,7 +558,16 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             }
             float beta = bias || acc ? 1f : 0f;
             int n = l.out(), k = l.in();
-            if (gemmMode == GemmMode.CUBLAS_TF32) {
+            if (gemmMode == GemmMode.CUBLAS_FP16) {
+                uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray wh = weights.halfMatrix(l);
+                if (graphWeights.add(wh)) {
+                    g.transferToDevice(DataTransferMode.FIRST_EXECUTION, wh);
+                }
+                items(name + "_half", m * k);
+                g.task(name + "_half", TiRexKernels::toHalf, ctx, a, aHalf, m * k);
+                g.libraryTask(name, uk.ac.manchester.tornado.cublas.CuBlas::cublasGemmExFP16FP32, 1, 0, n, m, k, 1f, wh, k,
+                        aHalf, k, beta, c, n);
+            } else if (gemmMode == GemmMode.CUBLAS_TF32) {
                 g.libraryTask(name, uk.ac.manchester.tornado.cublas.CuBlas::cublasSgemmTF32, 1, 0, n, m, k, 1f, wm, k, a, k,
                         beta, c, n);
             } else {

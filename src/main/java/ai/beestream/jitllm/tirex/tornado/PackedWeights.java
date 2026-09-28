@@ -95,6 +95,23 @@ public final class PackedWeights {
     }
 
     private final java.util.Map<Lin, FloatArray> matrices = new java.util.HashMap<>();
+    private final java.util.Map<Lin, uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray> halfMatrices =
+            new java.util.HashMap<>();
+
+    /** The weight of {@code l} as its own FP16 {@code [out, in]} array (converted once, then cached). */
+    public synchronized uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray halfMatrix(Lin l) {
+        return halfMatrices.computeIfAbsent(l, k -> {
+            int n = k.out() * k.in();
+            uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray m = new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(n);
+            MemorySegment src = data.getSegment();
+            MemorySegment dst = m.getSegment();
+            for (int i = 0; i < n; i++) {
+                float v = src.getAtIndex(java.lang.foreign.ValueLayout.JAVA_FLOAT, (long) k.w() + i);
+                dst.setAtIndex(java.lang.foreign.ValueLayout.JAVA_SHORT, i, Float.floatToFloat16(v));
+            }
+            return m;
+        });
+    }
 
     /**
      * The weight of {@code l} as its own {@code [out, in]} array (copied once, then cached), for

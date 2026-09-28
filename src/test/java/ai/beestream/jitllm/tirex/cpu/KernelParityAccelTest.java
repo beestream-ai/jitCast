@@ -155,7 +155,7 @@ public class KernelParityAccelTest {
 
     @Test
     public void slstmGatesAndRecurrence() {
-        int rows = 2, n = rows * SEQ, dh = 128;
+        int rows = 3, n = rows * SEQ, dh = 128;
         float[] x = random(n * D, 1f), wg = random(4 * HEADS * dh * dh, 0.05f);
         float[][] gates = new float[4][];
         for (int s = 0; s < 4; s++) {
@@ -190,10 +190,13 @@ public class KernelParityAccelTest {
             if (threads > maxWorkGroup()) {
                 continue;
             }
-            FloatArray out = new FloatArray(n * D);
-            run("t", grid1(rows * HEADS * threads, threads), g -> g.task("t", TiRexKernels::slstmRecurrence, ctx, fwx, fwrb, 0,
-                    r.length, out, SEQ, HEADS, gpt), out, fwx, fwrb);
-            check("slstmRecurrence gpt=" + gpt, out.toHeapArray(), expY);
+            for (int rb : new int[] {1, 2, 8}) {
+                FloatArray o = new FloatArray(n * D);
+                int groups = (rows + rb - 1) / rb * HEADS;
+                run("t", grid1(groups * threads, threads), g -> g.task("t", TiRexKernels::slstmRecurrence, ctx, fwx, fwrb, 0,
+                        r.length, o, rows, SEQ, HEADS, gpt, rb), o, fwx, fwrb);
+                check("slstmRecurrence gpt=" + gpt + " rows/group=" + rb, o.toHeapArray(), expY);
+            }
         }
     }
 
