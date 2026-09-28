@@ -272,6 +272,10 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 String[] dd = device.split(":");
                 exec.withDevice(TornadoExecutionPlan.getDevice(Integer.parseInt(dd[0]), Integer.parseInt(dd[1])));
             }
+            if (Boolean.getBoolean("tirex.tornado.cudaGraph")) {
+                // CUDA backend only: each task graph is captured once and replayed as a CUDA graph
+                exec.withAllGraphs().withCUDAGraph();
+            }
         }
 
         /**

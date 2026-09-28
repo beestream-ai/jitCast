@@ -38,7 +38,7 @@ import ai.beestream.jitllm.tirex.tornado.TornadoForward;
  */
 public final class TiRexBench {
 
-    static final int[] BATCHES = {1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024};
+    static int[] BATCHES = {1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024};
     static final int[] COVARIATES = {1, 3, 7, 15, 31, 63};
     static final int[] MV_BATCHES = {1, 32};
 
@@ -73,6 +73,9 @@ public final class TiRexBench {
         double budget = Double.parseDouble(a.getOrDefault("budget", "3.0"));
         int maxBatch = Integer.parseInt(a.getOrDefault("max-batch", "1024"));
         List<String> which = List.of(a.getOrDefault("scenarios", "throughput,multivariate").split(","));
+        if (a.containsKey("batches")) {
+            BATCHES = Arrays.stream(a.get("batches").split(",")).mapToInt(Integer::parseInt).toArray();
+        }
 
         long t0 = System.nanoTime();
         TiRex2Weights weights = TiRex2Weights.load(weightsPath);
