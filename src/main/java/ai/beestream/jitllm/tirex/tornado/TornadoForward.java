@@ -82,12 +82,13 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         Shape shape = s.shape(batch.rows());
         Plan plan = plans.get(shape);
         if (plan == null) {
-            plan = new Plan(shape);
-            plans.put(shape, plan);
-            if (plans.size() > maxCachedPlans) {
+            // evict before building, so the old plan's device buffers are freed first
+            while (!plans.isEmpty() && plans.size() >= maxCachedPlans) {
                 Shape eldest = plans.keySet().iterator().next();
                 plans.remove(eldest).close();
             }
+            plan = new Plan(shape);
+            plans.put(shape, plan);
         }
         return plan.run(batch, s);
     }
