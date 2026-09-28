@@ -33,6 +33,18 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
 
     private static final String G = "tirex";
 
+    /** How GEMMs run: the portable tiled kernel, or cuBLAS (FP32, or TF32 tensor cores) on CUDA. */
+    public enum GemmMode {
+        TILED, CUBLAS, CUBLAS_TF32;
+
+        static GemmMode fromProperty() {
+            String v = System.getProperty("tirex.tornado.gemm", "tiled").trim().toUpperCase().replace('-', '_');
+            return GemmMode.valueOf(v);
+        }
+    }
+
+    private final GemmMode gemmMode = GemmMode.fromProperty();
+
     /** What a compiled plan depends on: the row count and the sizes of the two gathered subsets. */
     public record Shape(int rows, int known, int kept) {}
 
@@ -391,9 +403,12 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             this.shared = shared;
         }
 
+        final java.util.Set<Object> graphWeights = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+
         TaskGraph begin(String graph) {
             name = G + "_" + graph;
             g = new TaskGraph(name);
+            graphWeights.clear();
             if (previous != null) {
                 g.consumeFromDevice(previous, shared);
             }
@@ -409,12 +424,45 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         }
 
         void gemm(String name, FloatArray a, PackedWeights.Lin l, FloatArray c, int m, int flags) {
+            if (gemmMode != GemmMode.TILED) {
+                cublasGemm(name, a, l, c, m, flags);
+                return;
+            }
             int tile = TiRexKernels.TILE;
             WorkerGrid wg = new WorkerGrid2D(ceil(l.out(), tile), ceil(m, tile));
             wg.setLocalWork(tile, tile, 1);
             grid.addWorkerGrid(this.name + "." + name, wg);
             int f = flags | (l.b() >= 0 ? TiRexKernels.BIAS : 0);
             g.task(name, TiRexKernels::gemm, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, 0, m, l.out(), l.in(), f);
+        }
+
+        /**
+         * {@code C = act(A·Wᵀ + b) (+ C)} with cuBLAS. Row-major {@code C[m, n] = A[m, k]·W[n, k]ᵀ}
+         * is the column-major {@code Cᵀ = op_T(W_cm)·A_cm}, i.e. {@code sgemm(T, N, n, m, k, W, k, A,
+         * k, C, n)}. The bias is written into C first (then β = 1); SiLU runs afterwards.
+         */
+        private void cublasGemm(String name, FloatArray a, PackedWeights.Lin l, FloatArray c, int m, int flags) {
+            FloatArray wm = weights.matrix(l);
+            if (graphWeights.add(wm)) {
+                g.transferToDevice(DataTransferMode.FIRST_EXECUTION, wm);
+            }
+            boolean bias = l.b() >= 0;
+            boolean acc = (flags & TiRexKernels.ACCUMULATE) != 0;
+            if (bias) {
+                g.task(name + "_bias", TiRexKernels::biasFill, c, w, l.b(), m, l.out(), acc ? 1 : 0);
+            }
+            float beta = bias || acc ? 1f : 0f;
+            int n = l.out(), k = l.in();
+            if (gemmMode == GemmMode.CUBLAS_TF32) {
+                g.libraryTask(name, uk.ac.manchester.tornado.cublas.CuBlas::cublasSgemmTF32, 1, 0, n, m, k, 1f, wm, k, a, k,
+                        beta, c, n);
+            } else {
+                g.libraryTask(name, uk.ac.manchester.tornado.cublas.CuBlas::cublasSgemm, 1, 0, n, m, k, 1f, wm, k, a, k,
+                        beta, c, n);
+            }
+            if ((flags & TiRexKernels.SILU) != 0) {
+                g.task(name + "_silu", TiRexKernels::siluInPlace, c, m * n);
+            }
         }
 
         void rms(String name, FloatArray x, FloatArray y, int wOff, int rows, int d, float eps) {

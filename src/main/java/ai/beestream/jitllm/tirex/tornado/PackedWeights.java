@@ -94,6 +94,20 @@ public final class PackedWeights {
         return data;
     }
 
+    private final java.util.Map<Lin, FloatArray> matrices = new java.util.HashMap<>();
+
+    /**
+     * The weight of {@code l} as its own {@code [out, in]} array (copied once, then cached), for
+     * native GEMMs such as cuBLAS that take whole arrays rather than an offset into the pack.
+     */
+    public synchronized FloatArray matrix(Lin l) {
+        return matrices.computeIfAbsent(l, k -> {
+            FloatArray m = new FloatArray(k.out() * k.in());
+            MemorySegment.copy(data.getSegment(), 4L * k.w(), m.getSegment(), 0, 4L * k.out() * k.in());
+            return m;
+        });
+    }
+
     public Residual inputEmbedding() {
         return inputEmbedding;
     }

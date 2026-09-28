@@ -507,4 +507,22 @@ public final class TiRexKernels {
             }
         }
     }
+    // ---- CUDA hybrid path: epilogues around a cuBLAS GEMM -----------------------------------------
+
+    /** Before a cuBLAS GEMM with β = 1: {@code C[r, c] = (accumulate ? C[r, c] : 0) + b[c]}. */
+    public static void biasFill(FloatArray c, FloatArray w, int bOff, int m, int n, int accumulate) {
+        for (@uk.ac.manchester.tornado.api.annotations.Parallel int id = 0; id < m * n; id++) {
+            int col = id % n;
+            float base = accumulate == 1 ? c.get(id) : 0f;
+            c.set(id, base + w.get(bOff + col));
+        }
+    }
+
+    /** {@code x[i] = SiLU(x[i])} for the first {@code count} elements. */
+    public static void siluInPlace(FloatArray x, int count) {
+        for (@uk.ac.manchester.tornado.api.annotations.Parallel int i = 0; i < count; i++) {
+            float v = x.get(i);
+            x.set(i, v / (1f + TornadoMath.exp(-v)));
+        }
+    }
 }
