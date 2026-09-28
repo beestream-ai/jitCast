@@ -112,8 +112,8 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         return device;
     }
 
-    /** Work-groups the sLSTM recurrence should fill: about two per SM of a 70-SM GPU. */
-    private static final int SLSTM_TARGET_GROUPS = 140;
+    /** Work-groups the sLSTM recurrence aims for (tuned on an RTX 5070 Ti: 4 rows per group at batch 64, 8 at 512). */
+    private static final int SLSTM_TARGET_GROUPS = 64;
 
     /**
      * Rows per sLSTM work-group: the largest power of two up to {@link TiRexKernels#SLSTM_MAX_ROWS}
@@ -148,6 +148,13 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             plans.put(shape, plan);
         }
         return plan.run(batch, s);
+    }
+
+    /** Row alignment of GEMM operands: cuBLAS uses FP16 tensor cores only for multiples of 8. */
+    static final int GEMM_ROW_ALIGN = 8;
+
+    static int pad(int rows) {
+        return (rows + GEMM_ROW_ALIGN - 1) / GEMM_ROW_ALIGN * GEMM_ROW_ALIGN;
     }
 
     /** The widest GEMM input (K) of the model, which sizes the FP16 activation scratch. */
@@ -251,21 +258,23 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
 
             x = new FloatArray(rows * len);
             present = new FloatArray(rows * len);
-            tok = new FloatArray(tokens * 2 * p);
+            // GEMM operands have their row count padded to a multiple of GEMM_ROW_ALIGN (see pad())
+            int tokensP = pad(tokens);
+            tok = new FloatArray(tokensP * 2 * p);
             stats = new FloatArray(rows * 3);
-            h = new FloatArray(tokens * d);
-            n = new FloatArray(tokens * d);
-            cell = new FloatArray(tokens * d);
-            proj = new FloatArray(tokens * projWidth);
-            big = new FloatArray(tokens * bigWidth);
-            y = new FloatArray(tokens * nq * p);
+            h = new FloatArray(tokensP * d);
+            n = new FloatArray(tokensP * d);
+            cell = new FloatArray(tokensP * d);
+            proj = new FloatArray(tokensP * projWidth);
+            big = new FloatArray(tokensP * bigWidth);
+            y = new FloatArray(tokensP * nq * p);
             out = new FloatArray(rows * nq * len);
-            yc = nKnown > 0 ? new FloatArray(tokens * d) : null;
-            revIn = nKnown > 0 ? new FloatArray(nKnown * seq * d) : null;
-            revOut = nKnown > 0 ? new FloatArray(nKnown * seq * d) : null;
-            xk = nKept > 0 ? new FloatArray(nKept * seq * d) : null;
+            yc = nKnown > 0 ? new FloatArray(tokensP * d) : null;
+            revIn = nKnown > 0 ? new FloatArray(pad(nKnown * seq) * d) : null;
+            revOut = nKnown > 0 ? new FloatArray(pad(nKnown * seq) * d) : null;
+            xk = nKept > 0 ? new FloatArray(pad(nKept * seq) * d) : null;
             aHalf = gemmMode == GemmMode.CUBLAS_FP16
-                    ? new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(tokens * maxGemmInput()) : null;
+                    ? new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(tokensP * maxGemmInput()) : null;
             known = nKnown > 0 ? new IntArray(nKnown) : null;
             kept = nKept > 0 ? new IntArray(nKept) : null;
             groupStart = nKept > 0 ? new IntArray(nKept) : null;
@@ -577,8 +586,10 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 }
                 items(name + "_half", m * k);
                 g.task(name + "_half", TiRexKernels::toHalf, ctx, a, aHalf, m * k);
-                g.libraryTask(name, uk.ac.manchester.tornado.cublas.CuBlas::cublasGemmExFP16FP32, 1, 0, n, m, k, 1f, wh, k,
-                        aHalf, k, beta, c, n);
+                // cuBLAS only picks tensor-core kernels when the row count is a multiple of 8; the
+                // padding rows of aHalf hold finite stale values and their outputs are never read
+                g.libraryTask(name, uk.ac.manchester.tornado.cublas.CuBlas::cublasGemmExFP16FP32, 1, 0, n, pad(m), k, 1f, wh,
+                        k, aHalf, k, beta, c, n);
             } else if (gemmMode == GemmMode.CUBLAS_TF32) {
                 g.libraryTask(name, uk.ac.manchester.tornado.cublas.CuBlas::cublasSgemmTF32, 1, 0, n, m, k, 1f, wm, k, a, k,
                         beta, c, n);
