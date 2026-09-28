@@ -76,6 +76,35 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         this.maxCachedPlans = maxCachedPlans;
     }
 
+    /**
+     * Gates per thread in the sLSTM recurrence: 1 (512 threads per head) where the device allows
+     * it, else 2 or 4 (Apple's OpenCL, for one, caps a work-group at 256).
+     */
+    private int slstmGatesPerThread(int dh) {
+        long max = device().getDeviceMaxWorkgroupDimensions()[0];
+        for (int gpt = 1; gpt < 4; gpt *= 2) {
+            if (4L * dh / gpt <= max) {
+                return gpt;
+            }
+        }
+        return 4;
+    }
+
+    private uk.ac.manchester.tornado.api.common.TornadoDevice device;
+
+    private uk.ac.manchester.tornado.api.common.TornadoDevice device() {
+        if (device == null) {
+            String prop = System.getProperty("tirex.tornado.device");
+            if (prop != null && !prop.isBlank()) {
+                String[] dd = prop.split(":");
+                device = TornadoExecutionPlan.getDevice(Integer.parseInt(dd[0]), Integer.parseInt(dd[1]));
+            } else {
+                device = uk.ac.manchester.tornado.api.runtime.TornadoRuntimeProvider.getTornadoRuntime().getDefaultDevice();
+            }
+        }
+        return device;
+    }
+
     @Override
     public float[][][] forward(ModelBatch batch) {
         Structure s = structure(batch);
@@ -228,7 +257,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             // scale always has a worker grid, so every graph registers one: TornadoVM 7.0.x's
             // isGridRegistered() dereferences a null scheduler for a graph with none (the input
             // graph under cuBLAS).
-            grid.addWorkerGrid(b.name + ".scale", group((rows + 31) / 32 * 32, 32));
+            grid.addWorkerGrid(b.name + ".scale", group(rows * TiRexKernels.NORM_THREADS, TiRexKernels.NORM_THREADS));
             g.task("scale", TiRexKernels::scalePatch, ctx, x, present, tok, stats, rows, len, p, c.useArcsinh() ? 1 : 0,
                     c.binaryAware() ? 1 : 0, TiRex2Config.SCALER_EPS);
             b.residual("in", tok, big, h, tokens, weights.inputEmbedding());
@@ -309,7 +338,10 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                     throw new IllegalStateException("mlstmCell assumes head dims 64/128");
                 }
                 b.gemm(s + "proj", in, pr, proj, tokens, TiRexKernels.BIAS);
-                b.items(s + "mlstm", count * heads * seq);
+                if (seq > TiRexKernels.MLSTM_MAX_SEQ) {
+                    throw new IllegalStateException("mlstmCell supports up to " + TiRexKernels.MLSTM_MAX_SEQ + " patches");
+                }
+                b.grid.addWorkerGrid(b.name + "." + s + "mlstm", group(count * heads * seq * (d / heads), d / heads));
                 b.g.task(s + "mlstm", TiRexKernels::mlstmCell, b.ctx, proj, cell, count, seq, heads, pr.out(), qk, 2 * qk,
                         2 * qk + 2 * d, 2 * qk + 2 * d + heads, TiRex2Config.GATE_SOFT_CAP, TiRex2Config.MLSTM_EPS);
                 b.headNorm(s + "hnorm", cell, in, blk.headNorm(), tokens, heads, d / heads, proj, pr.out(), 2 * qk + d, 1);
@@ -317,11 +349,12 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             } else {
                 int heads = c.slstmHeads();
                 int dh = d / heads;
-                b.items(s + "gates", tokens * 4 * d);
-                b.g.task(s + "gates", TiRexKernels::headwiseGates, b.ctx, in, b.w, blk.slstmGates(), big, tokens, heads, dh);
-                b.grid.addWorkerGrid(b.name + "." + s + "slstm", group(count * heads * dh, dh));
+                b.gemm(s + "gates", in, blk.slstmGates(), big, tokens, 0);
+                int gpt = slstmGatesPerThread(dh);
+                int threads = 4 * dh / gpt;
+                b.grid.addWorkerGrid(b.name + "." + s + "slstm", group(count * heads * threads, threads));
                 b.g.task(s + "slstm", TiRexKernels::slstmRecurrence, b.ctx, big, b.w, blk.recurrent(), blk.slstmBias(),
-                        cell, seq, heads);
+                        cell, seq, heads, gpt);
                 b.headNorm(s + "hnorm", cell, dst, blk.groupNorm(), tokens, heads, dh, proj, 0, 0, add ? 2 : 0);
             }
         }

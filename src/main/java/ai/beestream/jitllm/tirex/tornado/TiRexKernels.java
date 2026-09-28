@@ -30,67 +30,84 @@ public final class TiRexKernels {
     private TiRexKernels() {}
 
     /**
-     * Scaler + patching ({@code cpu.InputStage}), one thread per row. The host uploads the values
-     * with NaN replaced by 0 in {@code x} and the is-present flags in {@code present}: device
-     * compilers may assume there are no NaNs (Metal's default fast math does), so a {@code v != v}
-     * test is not portable. Writes the embedding input
-     * {@code tok [(r·patches + t)·2P + i]} (values, then the is-present mask) and the scaler state
-     * {@code stats [r·3 + {0: loc, 1: scale, 2: binary}]}.
+     * Scaler + patching ({@code cpu.InputStage}): one work-group of {@link #NORM_THREADS} threads
+     * per row, with the sums reduced in local memory. The host uploads the values with NaN replaced
+     * by 0 in {@code x} and the is-present flags in {@code present}: device compilers may assume
+     * there are no NaNs (Metal's default fast math does), so a {@code v != v} test is not portable.
+     * Writes the embedding input {@code tok [(r·patches + t)·2P + i]} (values, then the is-present
+     * mask) and the scaler state {@code stats [r·3 + {0: loc, 1: scale, 2: binary}]}.
      */
     public static void scalePatch(KernelContext ctx, FloatArray x, FloatArray present, FloatArray tok, FloatArray stats,
             int rows, int len, int patch, int arcsinh, int binaryAware, float eps) {
-        // An explicit KernelContext kernel, not a @Parallel loop: with a worker grid attached,
-        // TornadoVM 7.0.x reads a @Parallel loop's bound from the kernel context, which can hold a
-        // stale value (seen as an out-of-bounds read past the last row).
-        int r = ctx.globalIdx;
-        if (r < rows) {
-            int base = r * len;
-            float sum = 0f;
-            int n = 0;
-            int binary = 1;
-            for (int t = 0; t < len; t++) {
-                float v = x.get(base + t);
-                if (present.get(base + t) != 0f) {
-                    sum += v;
-                    n++;
-                    if (v != 0f && v != 1f) {
-                        binary = 0;
-                    }
-                }
+        int r = ctx.groupIdx;
+        int tid = ctx.localIdx;
+        float[] sum = ctx.allocateFloatLocalArray(NORM_THREADS);
+        float[] cnt = ctx.allocateFloatLocalArray(NORM_THREADS);
+        float[] nonBinary = ctx.allocateFloatLocalArray(NORM_THREADS);
+        int base = r * len;
+        float s0 = 0f, c0 = 0f, nb = 0f;
+        for (int t = tid; t < len; t += NORM_THREADS) {
+            float v = x.get(base + t);
+            float here = present.get(base + t);
+            s0 += here * v;
+            c0 += here;
+            if (here != 0f && v != 0f && v != 1f) {
+                nb = 1f;
             }
-            float loc = n == 0 ? 0f : sum / n;
-            float ss = 0f;
-            for (int t = 0; t < len; t++) {
-                float v = x.get(base + t);
-                if (present.get(base + t) != 0f) {
-                    ss += (v - loc) * (v - loc);
-                }
+        }
+        sum[tid] = s0;
+        cnt[tid] = c0;
+        nonBinary[tid] = nb;
+        ctx.localBarrier();
+        for (int st = NORM_THREADS / 2; st > 0; st >>= 1) {
+            if (tid < st) {
+                sum[tid] += sum[tid + st];
+                cnt[tid] += cnt[tid + st];
+                nonBinary[tid] = TornadoMath.max(nonBinary[tid], nonBinary[tid + st]);
             }
-            float scale = n == 0 ? 1f : TornadoMath.sqrt(ss / n);
-            scale = TornadoMath.max(scale, eps);
-            int isBinary = binaryAware * binary;
-            if (isBinary == 1) {
-                loc = 0f;
-                scale = 1f;
+            ctx.localBarrier();
+        }
+        float n = cnt[0];
+        float loc = n == 0f ? 0f : sum[0] / n;
+        int isBinary = binaryAware * (nonBinary[0] == 0f ? 1 : 0);
+        ctx.localBarrier();
+        float ss = 0f;
+        for (int t = tid; t < len; t += NORM_THREADS) {
+            float d = x.get(base + t) - loc;
+            ss += present.get(base + t) * d * d;
+        }
+        sum[tid] = ss;
+        ctx.localBarrier();
+        for (int st = NORM_THREADS / 2; st > 0; st >>= 1) {
+            if (tid < st) {
+                sum[tid] += sum[tid + st];
             }
+            ctx.localBarrier();
+        }
+        float scale = n == 0f ? 1f : TornadoMath.sqrt(sum[0] / n);
+        scale = TornadoMath.max(scale, eps);
+        if (isBinary == 1) {
+            loc = 0f;
+            scale = 1f;
+        }
+        if (tid == 0) {
             stats.set(r * 3, loc);
             stats.set(r * 3 + 1, scale);
             stats.set(r * 3 + 2, isBinary);
-            int doAsinh = arcsinh * (1 - isBinary);
-            int patches = len / patch;
-            for (int t = 0; t < patches; t++) {
-                int o = (r * patches + t) * 2 * patch;
-                for (int i = 0; i < patch; i++) {
-                    float v = x.get(base + t * patch + i);
-                    float z = (v - loc) / scale;
-                    if (doAsinh == 1) {
-                        z = TornadoMath.asinh(z);
-                    }
-                    float here = present.get(base + t * patch + i);
-                    tok.set(o + i, here != 0f ? z : 0f);
-                    tok.set(o + patch + i, here);
-                }
+        }
+        int doAsinh = arcsinh * (1 - isBinary);
+        for (int pos = tid; pos < len; pos += NORM_THREADS) {
+            int t = pos / patch;
+            int i = pos - t * patch;
+            int o = (base / len * (len / patch) + t) * 2 * patch;
+            float v = x.get(base + pos);
+            float here = present.get(base + pos);
+            float z = (v - loc) / scale;
+            if (doAsinh == 1) {
+                z = TornadoMath.asinh(z);
             }
+            tok.set(o + i, here * z);
+            tok.set(o + patch + i, here);
         }
     }
 
@@ -204,143 +221,138 @@ public final class TiRexKernels {
         y.set(idx, out);
     }
 
-    /**
-     * The mLSTM cell (parallel stabilised form, {@code cpu.Cells.mlstm}), one thread per
-     * (row, head, t). Reads q, k, v and the i/f pre-activations from the fused projection
-     * {@code p [(r·seq + t)·stride + …]} and writes {@code h [(r·seq + t)·heads·dv + head·dv + j]}.
-     */
-    public static void mlstmCell(KernelContext ctx, FloatArray p, FloatArray hOut, int rows, int seq, int heads, int stride,
-            int kOff, int vOff, int iOff, int fOff, float cap, float eps) {
-        int id = ctx.globalIdx;
-        if (id < rows * heads * seq) {
-            int t = id % seq;
-            int rh = id / seq;
-            int h = rh % heads;
-            int r = rh / heads;
-            int dqk = 64;
-            int dv = 128;
-            float scale = 0.125f; // 1/sqrt(64)
-            // F[t] and the stabiliser m[t] = max(F[t], max_s F[t] − F[s] + i[s])
-            float ft = 0f;
-            for (int s = 0; s <= t; s++) {
-                float f = p.get((r * seq + s) * stride + fOff + h);
-                f = cap * TornadoMath.tanh(f / cap);
-                ft += TornadoMath.min(f, 0f) - TornadoMath.log(1f + TornadoMath.exp(-TornadoMath.abs(f)));
-            }
-            float m = ft;
-            float fs = 0f;
-            for (int s = 0; s <= t; s++) {
-                float f = p.get((r * seq + s) * stride + fOff + h);
-                f = cap * TornadoMath.tanh(f / cap);
-                fs += TornadoMath.min(f, 0f) - TornadoMath.log(1f + TornadoMath.exp(-TornadoMath.abs(f)));
-                float ig = p.get((r * seq + s) * stride + iOff + h);
-                ig = cap * TornadoMath.tanh(ig / cap);
-                m = TornadoMath.max(m, ft - fs + ig);
-            }
-            float[] num = new float[128];
-            for (int j = 0; j < dv; j++) {
-                num[j] = 0f;
-            }
-            float den = 0f;
-            int qo = (r * seq + t) * stride + h * dqk;
-            fs = 0f;
-            for (int s = 0; s <= t; s++) {
-                int so = (r * seq + s) * stride;
-                float f = p.get(so + fOff + h);
-                f = cap * TornadoMath.tanh(f / cap);
-                fs += TornadoMath.min(f, 0f) - TornadoMath.log(1f + TornadoMath.exp(-TornadoMath.abs(f)));
-                float ig = p.get(so + iOff + h);
-                ig = cap * TornadoMath.tanh(ig / cap);
-                float dot = 0f;
-                for (int j = 0; j < dqk; j++) {
-                    dot += p.get(qo + j) * p.get(so + kOff + h * dqk + j);
-                }
-                float cts = dot * scale * TornadoMath.exp(ft - fs + ig - m);
-                den += cts;
-                for (int j = 0; j < dv; j++) {
-                    num[j] += cts * p.get(so + vOff + h * dv + j);
-                }
-            }
-            float norm = TornadoMath.max(TornadoMath.abs(den), TornadoMath.exp(-m)) + eps;
-            int ho = (r * seq + t) * heads * dv + h * dv;
-            for (int j = 0; j < dv; j++) {
-                hOut.set(ho + j, num[j] / norm);
-            }
-        }
-    }
+    /** The mLSTM kernel keeps one step's scores in local memory: sequences up to this length. */
+    public static final int MLSTM_MAX_SEQ = 128;
 
     /**
-     * The four headwise sLSTM gate projections, one thread per output:
-     * {@code out[rt·4d + g·d + h·dh + o] = Σ_j x[rt·d + h·dh + j] · W_g[h][o][j]}.
+     * The mLSTM cell (parallel stabilised form, {@code cpu.Cells.mlstmCore}): one work-group of
+     * {@code dv = 128} threads per (row, head, t). The ≤ t+1 scores and log-decays of step t are
+     * built cooperatively in local memory, then thread j accumulates output column j. Reads q, k,
+     * v and the i/f pre-activations from the fused projection {@code p [(r·seq + t)·stride + …]}
+     * and writes {@code h [(r·seq + t)·heads·dv + head·dv + j]}.
      */
-    public static void headwiseGates(KernelContext ctx, FloatArray x, FloatArray w, int wOff, FloatArray out, int n, int heads, int dh) {
-        int d = heads * dh;
-        int id = ctx.globalIdx;
-        if (id < n * 4 * d) {
-            int rt = id / (4 * d);
-            int rem = id - rt * 4 * d;
-            int g = rem / d;
-            int hd = rem - g * d;
-            int h = hd / dh;
-            int o = hd - h * dh;
-            int wo = wOff + ((g * heads + h) * dh + o) * dh;
-            int xo = rt * d + h * dh;
+    public static void mlstmCell(KernelContext ctx, FloatArray p, FloatArray hOut, int rows, int seq, int heads,
+            int stride, int kOff, int vOff, int iOff, int fOff, float cap, float eps) {
+        int wg = ctx.groupIdx;
+        int j = ctx.localIdx;
+        int t = wg % seq;
+        int rh = wg / seq;
+        int h = rh % heads;
+        int r = rh / heads;
+        int dqk = 64;
+        int dv = 128;
+        float scale = 0.125f; // 1/sqrt(64)
+        float[] cum = ctx.allocateFloatLocalArray(MLSTM_MAX_SEQ);
+        float[] logD = ctx.allocateFloatLocalArray(MLSTM_MAX_SEQ);
+        float[] score = ctx.allocateFloatLocalArray(MLSTM_MAX_SEQ);
+        // logσ(capped f_s) and capped i_s for s ≤ t
+        if (j <= t) {
+            int so = (r * seq + j) * stride;
+            float f = p.get(so + fOff + h);
+            f = cap * TornadoMath.tanh(f / cap);
+            cum[j] = TornadoMath.min(f, 0f) - TornadoMath.log(1f + TornadoMath.exp(-TornadoMath.abs(f)));
+            float ig = p.get(so + iOff + h);
+            logD[j] = cap * TornadoMath.tanh(ig / cap);
+        }
+        ctx.localBarrier();
+        if (j == 0) {
             float acc = 0f;
-            for (int j = 0; j < dh; j++) {
-                acc += x.get(xo + j) * w.get(wo + j);
+            for (int s = 0; s <= t; s++) {
+                acc += cum[s];
+                cum[s] = acc;
             }
-            out.set(id, acc);
         }
+        ctx.localBarrier();
+        float ft = cum[t];
+        if (j <= t) {
+            // logD[t, s] = F[t] − F[s] + i[s], and the scaled score q_t·k_s
+            logD[j] = ft - cum[j] + logD[j];
+            int qo = (r * seq + t) * stride + h * dqk;
+            int ko = (r * seq + j) * stride + kOff + h * dqk;
+            float dot = 0f;
+            for (int e = 0; e < dqk; e++) {
+                dot += p.get(qo + e) * p.get(ko + e);
+            }
+            score[j] = dot * scale;
+        }
+        ctx.localBarrier();
+        // m[t] = max(F[t], max_s logD[t, s]), computed redundantly by every thread
+        float m = ft;
+        for (int s = 0; s <= t; s++) {
+            m = TornadoMath.max(m, logD[s]);
+        }
+        ctx.localBarrier();
+        if (j <= t) {
+            score[j] = score[j] * TornadoMath.exp(logD[j] - m);
+        }
+        ctx.localBarrier();
+        float den = 0f;
+        float num = 0f;
+        int vo = r * seq * stride + vOff + h * dv + j;
+        for (int s = 0; s <= t; s++) {
+            float c = score[s];
+            den += c;
+            num += c * p.get(vo + s * stride);
+        }
+        float norm = TornadoMath.max(TornadoMath.abs(den), TornadoMath.exp(-m)) + eps;
+        hOut.set((r * seq + t) * heads * dv + h * dv + j, num / norm);
     }
 
     /**
-     * The sLSTM recurrence ({@code cpu.Cells.slstm}): one work-group of {@code dh = 128} threads
-     * per (row, head) runs all {@code seq} steps; y is shared in local memory. Heads are independent
-     * because R is block-diagonal, so no work-group ever waits on another.
+     * The sLSTM recurrence ({@code cpu.Cells.slstmRecurrence}): one work-group per (row, head) runs
+     * all {@code seq} steps; heads are independent because R is block-diagonal, so no work-group
+     * waits on another. The {@code 4·dh / gatesPerThread} threads split the four gates: thread
+     * {@code (gBlock, e)} computes gates {@code gBlock·gpt …} of lane e, whose recurrent sum reads
+     * one R column per gate (coalesced over e); the raw gates go to local memory, and threads
+     * {@code e < dh} then update the stabilised state and publish y for the next step.
      */
     public static void slstmRecurrence(KernelContext ctx, FloatArray wx, FloatArray w, int rOff, int bOff, FloatArray y,
-            int seq, int heads) {
+            int seq, int heads, int gatesPerThread) {
         int rh = ctx.groupIdx;
-        int e = ctx.localIdx;
+        int tid = ctx.localIdx;
         int row = rh / heads;
         int h = rh - row * heads;
         int dh = 128;
         int d = heads * dh;
+        int e = tid % dh;
+        int g0 = (tid / dh) * gatesPerThread;
         float[] yl = ctx.allocateFloatLocalArray(128);
-        yl[e] = 0f;
+        float[] raw = ctx.allocateFloatLocalArray(512);
+        if (tid < dh) {
+            yl[tid] = 0f;
+        }
         float c = 0f;
         float nn = 0f;
         float m = 0f;
-        float bi = w.get(bOff + (h * 4) * dh + e);
-        float bf = w.get(bOff + (h * 4 + 1) * dh + e);
-        float bz = w.get(bOff + (h * 4 + 2) * dh + e);
-        float bo = w.get(bOff + (h * 4 + 3) * dh + e);
         ctx.localBarrier();
         for (int t = 0; t < seq; t++) {
             int base = (row * seq + t) * 4 * d + h * dh + e;
-            float ri = wx.get(base) + bi;
-            float rf = wx.get(base + d) + bf;
-            float rz = wx.get(base + 2 * d) + bz;
-            float ro = wx.get(base + 3 * d) + bo;
-            for (int p = 0; p < dh; p++) {
-                float yp = yl[p];
-                int ro4 = rOff + ((h * dh + p) * 4) * dh + e;
-                ri += yp * w.get(ro4);
-                rf += yp * w.get(ro4 + dh);
-                rz += yp * w.get(ro4 + 2 * dh);
-                ro += yp * w.get(ro4 + 3 * dh);
+            for (int gi = 0; gi < gatesPerThread; gi++) {
+                int g = g0 + gi;
+                float acc = wx.get(base + g * d) + w.get(bOff + (h * 4 + g) * dh + e);
+                int ro = rOff + (h * dh * 4 + g) * dh + e;
+                for (int pp = 0; pp < dh; pp++) {
+                    acc += yl[pp] * w.get(ro + pp * 4 * dh);
+                }
+                raw[g * dh + e] = acc;
             }
-            float logf = TornadoMath.min(rf, 0f) - TornadoMath.log(1f + TornadoMath.exp(-TornadoMath.abs(rf))) + m;
-            float mNew = t == 0 ? ri : TornadoMath.max(ri, logf);
-            float ig = TornadoMath.exp(ri - mNew);
-            float fg = TornadoMath.exp(logf - mNew);
-            c = fg * c + ig * TornadoMath.tanh(rz);
-            nn = TornadoMath.max(fg * nn + ig, 1f);
-            float yNew = c / nn / (1f + TornadoMath.exp(-ro));
-            m = mNew;
             ctx.localBarrier();
-            yl[e] = yNew;
-            y.set((row * seq + t) * d + h * dh + e, yNew);
+            if (tid < dh) {
+                float ri = raw[e];
+                float rf = raw[dh + e];
+                float rz = raw[2 * dh + e];
+                float ro = raw[3 * dh + e];
+                float logf = TornadoMath.min(rf, 0f) - TornadoMath.log(1f + TornadoMath.exp(-TornadoMath.abs(rf))) + m;
+                float mNew = t == 0 ? ri : TornadoMath.max(ri, logf);
+                float ig = TornadoMath.exp(ri - mNew);
+                float fg = TornadoMath.exp(logf - mNew);
+                c = fg * c + ig * TornadoMath.tanh(rz);
+                nn = TornadoMath.max(fg * nn + ig, 1f);
+                float yNew = c / nn / (1f + TornadoMath.exp(-ro));
+                m = mNew;
+                yl[e] = yNew;
+                y.set((row * seq + t) * d + h * dh + e, yNew);
+            }
             ctx.localBarrier();
         }
     }

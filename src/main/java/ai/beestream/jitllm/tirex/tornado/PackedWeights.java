@@ -18,7 +18,9 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
  *   <li>mLSTM {@code q | k | v | o | i | f} → one {@code [1544, 512]} matrix, bias zero except
  *       for i and f;
  *   <li>SwiGLU {@code up_gate | up} → one {@code [2·ffn, 512]} matrix;
- *   <li>sLSTM gate projections in slot order {@code (fgate, igate, zgate, ogate)} → contiguous;
+ *   <li>the four headwise sLSTM gate projections (slot order {@code (fgate, igate, zgate, ogate)})
+ *       → one block-diagonal {@code [4D, D]} matrix, so they run as a single GEMM whose output is
+ *       laid out {@code [token][gate][head][Dh]};
  *   <li>variate attention {@code WQ | WK | WV} → one {@code [3D, D]} matrix.
  * </ul>
  */
@@ -30,7 +32,7 @@ public final class PackedWeights {
     public record Residual(Lin hidden, Lin output, Lin residual) {}
 
     /** Offsets of one block; the unused cell's fields are -1 / null. */
-    public record Block(boolean mlstm, int normLstm, Lin mlstmProj, int headNorm, Lin outProj, int slstmGates,
+    public record Block(boolean mlstm, int normLstm, Lin mlstmProj, int headNorm, Lin outProj, Lin slstmGates,
             int recurrent, int slstmBias, int groupNorm, Lin combination, int normFfn, Lin upGateUp, Lin down,
             int ffnDim, Variate variate) {}
 
@@ -59,7 +61,8 @@ public final class PackedWeights {
             TiRex2Weights.TimeMixer t = b.time();
             int normLstm = p.put(t.normLstm());
             Lin proj = null, outProj = null;
-            int headNorm = -1, gates = -1, rec = -1, bias = -1, groupNorm = -1;
+            Lin gates = null;
+            int headNorm = -1, rec = -1, bias = -1, groupNorm = -1;
             boolean mlstm = t.cell() instanceof TiRex2Weights.Mlstm;
             if (t.cell() instanceof TiRex2Weights.Mlstm m) {
                 List<TiRex2Weights.Linear> parts = List.of(m.q(), m.k(), m.v(), m.o(), m.igate(), m.fgate());
@@ -67,10 +70,7 @@ public final class PackedWeights {
                 headNorm = p.put(m.headNorm());
                 outProj = p.linear(m.outProj());
             } else if (t.cell() instanceof TiRex2Weights.Slstm s) {
-                gates = p.put(s.gates()[0]);
-                for (int g = 1; g < 4; g++) {
-                    p.put(s.gates()[g]);
-                }
+                gates = p.denseGates(s.gates());
                 rec = p.put(s.recurrent());
                 bias = p.put(s.bias());
                 groupNorm = p.put(s.groupNorm());
@@ -159,6 +159,25 @@ public final class PackedWeights {
 
         Residual residual(TiRex2Weights.ResidualBlock r) {
             return new Residual(linear(r.hidden()), linear(r.output()), linear(r.residual()));
+        }
+
+        /**
+         * {@code W[g·D + h·Dh + o][h·Dh + j] = gates[g][h][o][j]}, zero off the head blocks: the
+         * headwise projections as one dense linear {@code [4D, D]} (4× the arithmetic, but one
+         * GEMM instead of 16 small ones).
+         */
+        Lin denseGates(Tensor[] gates) {
+            int heads = gates[0].dim(0), dh = gates[0].dim(1), d = heads * dh;
+            float[] w = new float[4 * d * d];
+            for (int g = 0; g < 4; g++) {
+                float[] src = gates[g].toFloatArray();
+                for (int h = 0; h < heads; h++) {
+                    for (int o = 0; o < dh; o++) {
+                        System.arraycopy(src, (h * dh + o) * dh, w, (g * d + h * dh + o) * d + h * dh, dh);
+                    }
+                }
+            }
+            return new Lin(put(w), -1, d, 4 * d);
         }
 
         /** Stacks linears with the same input along the output dimension; missing biases are zeros. */

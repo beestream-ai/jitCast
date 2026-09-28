@@ -71,6 +71,14 @@ public class KernelParityAccelTest {
         return wg;
     }
 
+    private static long maxWorkGroup() {
+        String device = System.getProperty("tirex.tornado.device");
+        uk.ac.manchester.tornado.api.common.TornadoDevice dev = device != null && !device.isBlank()
+                ? TornadoExecutionPlan.getDevice(Integer.parseInt(device.split(":")[0]), Integer.parseInt(device.split(":")[1]))
+                : uk.ac.manchester.tornado.api.runtime.TornadoRuntimeProvider.getTornadoRuntime().getDefaultDevice();
+        return dev.getDeviceMaxWorkgroupDimensions()[0];
+    }
+
     private static void check(String what, float[] actual, float[] expected) {
         double diff = 0, scale = 1e-6;
         int nan = 0;
@@ -138,7 +146,7 @@ public class KernelParityAccelTest {
         float[] p = random(rows * SEQ * stride, 1f);
         FloatArray fp = FloatArray.fromArray(p), fh = new FloatArray(rows * SEQ * D);
         KernelContext ctx = new KernelContext();
-        run("t", items(rows * HEADS * SEQ), g -> g.task("t", TiRexKernels::mlstmCell, ctx, fp, fh, rows, SEQ, HEADS, stride,
+        run("t", grid1(rows * HEADS * SEQ * 128, 128), g -> g.task("t", TiRexKernels::mlstmCell, ctx, fp, fh, rows, SEQ, HEADS, stride,
                 256, 512, 1536, 1540, 15f, 1e-6f), fh, fp);
         // the CPU cell from the same projections: identity projections over the fused layout
         float[] exp = Cells.mlstmCore(p, rows, SEQ, HEADS, stride);
@@ -149,15 +157,26 @@ public class KernelParityAccelTest {
     public void slstmGatesAndRecurrence() {
         int rows = 2, n = rows * SEQ, dh = 128;
         float[] x = random(n * D, 1f), wg = random(4 * HEADS * dh * dh, 0.05f);
-        FloatArray fx = FloatArray.fromArray(x), fw = FloatArray.fromArray(wg), fo = new FloatArray(n * 4 * D);
-        KernelContext gctx = new KernelContext();
-        run("t", items(n * 4 * D), g -> g.task("t", TiRexKernels::headwiseGates, gctx, fx, fw, 0, fo, n, HEADS, dh), fo, fx, fw);
         float[][] gates = new float[4][];
         for (int s = 0; s < 4; s++) {
             gates[s] = java.util.Arrays.copyOfRange(wg, s * HEADS * dh * dh, (s + 1) * HEADS * dh * dh);
         }
         float[] expGates = Cells.headwiseGates(x, n, D, HEADS, gates);
-        check("headwiseGates", fo.toHeapArray(), expGates);
+        // the engine runs the four headwise projections as one block-diagonal [4D, D] GEMM
+        float[] dense = new float[4 * D * D];
+        for (int g = 0; g < 4; g++) {
+            for (int h = 0; h < HEADS; h++) {
+                for (int o = 0; o < dh; o++) {
+                    System.arraycopy(gates[g], (h * dh + o) * dh, dense, (g * D + h * dh + o) * D + h * dh, dh);
+                }
+            }
+        }
+        FloatArray fx = FloatArray.fromArray(x), fw = FloatArray.fromArray(dense), fo = new FloatArray(n * 4 * D);
+        WorkerGrid wgrid = new WorkerGrid2D(4 * D, (n + 15) / 16 * 16);
+        wgrid.setLocalWork(16, 16, 1);
+        KernelContext gctx = new KernelContext();
+        run("t", wgrid, g -> g.task("t", TiRexKernels::gemm, gctx, fx, 0, fw, 0, 0, fo, 0, n, 4 * D, D, 0), fo, fx, fw);
+        check("denseGates", fo.toHeapArray(), expGates);
 
         float[] r = random(HEADS * dh * 4 * dh, 0.05f), b = random(HEADS * 4 * dh, 0.5f);
         float[] wrb = new float[r.length + b.length];
@@ -165,9 +184,17 @@ public class KernelParityAccelTest {
         System.arraycopy(b, 0, wrb, r.length, b.length);
         FloatArray fwx = FloatArray.fromArray(expGates), fwrb = FloatArray.fromArray(wrb), fy = new FloatArray(n * D);
         KernelContext ctx = new KernelContext();
-        run("t", grid1(rows * HEADS * dh, dh), g -> g.task("t", TiRexKernels::slstmRecurrence, ctx, fwx, fwrb, 0, r.length,
-                fy, SEQ, HEADS), fy, fwx, fwrb);
-        check("slstmRecurrence", fy.toHeapArray(), Cells.slstmRecurrence(expGates, rows, SEQ, D, HEADS, r, b));
+        float[] expY = Cells.slstmRecurrence(expGates, rows, SEQ, D, HEADS, r, b);
+        for (int gpt : new int[] {1, 2, 4}) {
+            int threads = 4 * dh / gpt;
+            if (threads > maxWorkGroup()) {
+                continue;
+            }
+            FloatArray out = new FloatArray(n * D);
+            run("t", grid1(rows * HEADS * threads, threads), g -> g.task("t", TiRexKernels::slstmRecurrence, ctx, fwx, fwrb, 0,
+                    r.length, out, SEQ, HEADS, gpt), out, fwx, fwrb);
+            check("slstmRecurrence gpt=" + gpt, out.toHeapArray(), expY);
+        }
     }
 
     @Test
@@ -204,7 +231,7 @@ public class KernelParityAccelTest {
         FloatArray fx = FloatArray.fromArray(clean), fp = FloatArray.fromArray(here);
         FloatArray ft = new FloatArray(rows * 74 * 64), fs = new FloatArray(rows * 3);
         KernelContext ctx = new KernelContext();
-        run("t", grid1(32, 32), g -> g.task("t", TiRexKernels::scalePatch, ctx, fx, fp, ft, fs, rows, len, p, 1, 1, 1e-8f), ft,
+        run("t", grid1(rows * 256, 256), g -> g.task("t", TiRexKernels::scalePatch, ctx, fx, fp, ft, fs, rows, len, p, 1, 1, 1e-8f), ft,
                 fx, fp, fs);
         float[][] rowsX = new float[rows][];
         for (int r = 0; r < rows; r++) {
