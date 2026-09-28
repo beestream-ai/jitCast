@@ -781,11 +781,12 @@ public final class TiRexKernels {
      */
     public static void biasSilu(KernelContext ctx, FloatArray c, FloatArray w, int bOff, int m, int n, HalfFloatArray th,
             int twin) {
-        // 2D launch (columns × rows): the bias column comes from the x index, with no modulo
-        int col = ctx.globalIdx;
-        int row = ctx.globalIdy;
-        if (col < n && row < m) {
-            int i = row * n + col;
+        // a 1D launch: a 2D one (columns × rows) would exceed CUDA's 65,535 limit on gridDim.y
+        // at large row counts
+        int i = ctx.globalIdx;
+        if (i < m * n) {
+            int row = i / n;
+            int col = i - row * n;
             float v = c.get(i);
             if (bOff >= 0) {
                 v += w.get(bOff + col);

@@ -729,9 +729,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                         beta, c, n);
             }
             if (siluEpilogue) {
-                WorkerGrid wg2 = new WorkerGrid2D((n + 127) / 128 * 128, m);
-                wg2.setLocalWork(128, 1, 1);
-                grid.addWorkerGrid(this.name + "." + name + "_silu", wg2);
+                items(name + "_silu", m * n);
                 g.task(name + "_silu", TiRexKernels::biasSilu, ctx, c, w, bias ? l.b() : -1, m, n, twin(c), hasTwin(c));
             } else if ((flags & TiRexKernels.SILU) != 0) {
                 items(name + "_silu", m * n);
