@@ -52,6 +52,9 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
 
     private final GemmMode gemmMode = GemmMode.fromProperty();
 
+    /** {@code -Dtirex.tornado.slstmR=fp16}: read the sLSTM recurrent kernels from an FP16 copy. */
+    private final boolean halfRecurrent = "fp16".equalsIgnoreCase(System.getProperty("tirex.tornado.slstmR", "fp32"));
+
     /** What a compiled plan depends on: the row count and the sizes of the two gathered subsets. */
     public record Shape(int rows, int known, int kept) {}
 
@@ -394,8 +397,17 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 int rb = slstmRowsPerGroup(count, heads);
                 int groups = (count + rb - 1) / rb * heads;
                 b.grid.addWorkerGrid(b.name + "." + s + "slstm", group(groups * threads, threads));
-                b.g.task(s + "slstm", TiRexKernels::slstmRecurrence, b.ctx, big, b.w, blk.recurrent(), blk.slstmBias(),
-                        cell, count, seq, heads, gpt, rb);
+                if (halfRecurrent) {
+                    uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray rh = weights.recurrentHalf();
+                    if (b.graphWeights.add(rh)) {
+                        b.g.transferToDevice(DataTransferMode.FIRST_EXECUTION, rh);
+                    }
+                    b.g.task(s + "slstm", TiRexKernels::slstmRecurrenceHalfR, b.ctx, big, b.w, rh,
+                            weights.recurrentHalfOffset(blk), blk.slstmBias(), cell, count, seq, heads, gpt, rb);
+                } else {
+                    b.g.task(s + "slstm", TiRexKernels::slstmRecurrence, b.ctx, big, b.w, blk.recurrent(), blk.slstmBias(),
+                            cell, count, seq, heads, gpt, rb);
+                }
                 b.headNorm(s + "hnorm", cell, dst, blk.groupNorm(), tokens, heads, dh, proj, 0, 0, add ? 2 : 0);
             }
         }

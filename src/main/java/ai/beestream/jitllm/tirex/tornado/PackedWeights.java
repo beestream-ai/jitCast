@@ -34,7 +34,7 @@ public final class PackedWeights {
     /** Offsets of one block; the unused cell's fields are -1 / null. */
     public record Block(boolean mlstm, int normLstm, Lin mlstmProj, int headNorm, Lin outProj, Lin slstmGates,
             int recurrent, int slstmBias, int groupNorm, Lin combination, int normFfn, Lin upGateUp, Lin down,
-            int ffnDim, Variate variate) {}
+            int ffnDim, Variate variate, int recurrentSize) {}
 
     /** The variate mixer: {@code WQ | WK | WV} fused into {@code qkv [3D, D]}, then WO and the MLP. */
     public record Variate(int normAttn, Lin qkv, Lin wo, int normFfn, Lin ffnIn, Lin ffnOut) {}
@@ -82,8 +82,9 @@ public final class PackedWeights {
             TiRex2Weights.VariateMixer v = b.variate();
             Variate variate = new Variate(p.put(v.normAttn()), p.fused(List.of(v.wq(), v.wk(), v.wv())),
                     p.linear(v.wo()), p.put(v.normFfn()), p.linear(v.ffnIn()), p.linear(v.ffnOut()));
+            int recSize = t.cell() instanceof TiRex2Weights.Slstm sl ? Math.toIntExact(sl.recurrent().elements()) : 0;
             blocks.add(new Block(mlstm, normLstm, proj, headNorm, outProj, gates, rec, bias, groupNorm, combination,
-                    normFfn, upGateUp, down, t.ffnUp().out(), variate));
+                    normFfn, upGateUp, down, t.ffnUp().out(), variate, recSize));
         }
         int outNorm = p.put(w.stackOutNorm());
         Residual out = p.residual(w.outputEmbedding());
@@ -97,6 +98,46 @@ public final class PackedWeights {
     private final java.util.Map<Lin, FloatArray> matrices = new java.util.HashMap<>();
     private final java.util.Map<Lin, uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray> halfMatrices =
             new java.util.HashMap<>();
+
+    private uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray recurrentHalf;
+    private final java.util.Map<Block, Integer> recurrentHalfOffsets = new java.util.IdentityHashMap<>();
+
+    /**
+     * The sLSTM recurrent kernels R of every block, converted to FP16 and packed back to back
+     * ({@link #recurrentHalfOffset} gives each block's start); built on first use.
+     */
+    public synchronized uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray recurrentHalf() {
+        if (recurrentHalf == null) {
+            int each = 0, count = 0;
+            for (Block b : blocks) {
+                if (!b.mlstm()) {
+                    each = b.recurrentSize();
+                    count++;
+                }
+            }
+            recurrentHalf = new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(Math.max(1, each * count));
+            MemorySegment src = data.getSegment(), dst = recurrentHalf.getSegment();
+            int at = 0;
+            for (Block b : blocks) {
+                if (b.mlstm()) {
+                    continue;
+                }
+                recurrentHalfOffsets.put(b, at);
+                for (int i = 0; i < b.recurrentSize(); i++) {
+                    float v = src.getAtIndex(java.lang.foreign.ValueLayout.JAVA_FLOAT, (long) b.recurrent() + i);
+                    dst.setAtIndex(java.lang.foreign.ValueLayout.JAVA_SHORT, at + i, Float.floatToFloat16(v));
+                }
+                at += b.recurrentSize();
+            }
+        }
+        return recurrentHalf;
+    }
+
+    /** Where block {@code b}'s R starts in {@link #recurrentHalf()}. */
+    public int recurrentHalfOffset(Block b) {
+        recurrentHalf();
+        return recurrentHalfOffsets.get(b);
+    }
 
     /** The weight of {@code l} as its own FP16 {@code [out, in]} array (converted once, then cached). */
     public synchronized uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray halfMatrix(Lin l) {

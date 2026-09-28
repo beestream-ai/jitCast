@@ -197,6 +197,20 @@ public class KernelParityAccelTest {
                         r.length, o, rows, SEQ, HEADS, gpt, rb), o, fwx, fwrb);
                 check("slstmRecurrence gpt=" + gpt + " rows/group=" + rb, o.toHeapArray(), expY);
             }
+            // FP16 R: exact against the CPU recurrence on R rounded to FP16
+            float[] rRounded = r.clone();
+            uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray rh = new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(r.length);
+            for (int i = 0; i < r.length; i++) {
+                short bits = Float.floatToFloat16(r[i]);
+                rRounded[i] = Float.float16ToFloat(bits);
+                rh.getSegment().setAtIndex(java.lang.foreign.ValueLayout.JAVA_SHORT, i, bits);
+            }
+            float[] expHalf = Cells.slstmRecurrence(expGates, rows, SEQ, D, HEADS, rRounded, b);
+            FloatArray oh = new FloatArray(n * D);
+            FloatArray bOnly = FloatArray.fromArray(b);
+            run("t", grid1((rows + 1) / 2 * HEADS * threads, threads), g -> g.task("t", TiRexKernels::slstmRecurrenceHalfR, ctx, fwx,
+                    bOnly, rh, 0, 0, oh, rows, SEQ, HEADS, gpt, 2), oh, fwx, bOnly);
+            check("slstmRecurrence FP16 R gpt=" + gpt, oh.toHeapArray(), expHalf);
         }
     }
 

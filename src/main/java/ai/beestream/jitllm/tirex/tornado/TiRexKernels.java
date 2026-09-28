@@ -385,6 +385,84 @@ public final class TiRexKernels {
         }
     }
 
+    /**
+     * {@link #slstmRecurrence} with R read from an FP16 copy {@code rh} (offset {@code rOff}),
+     * halving the bytes each step streams; the state and accumulation stay FP32.
+     */
+    public static void slstmRecurrenceHalfR(KernelContext ctx, FloatArray wx, FloatArray w, HalfFloatArray rh, int rOff,
+            int bOff, FloatArray y,
+            int rows, int seq, int heads, int gatesPerThread, int rowsPerGroup) {
+        int wg = ctx.groupIdx;
+        int tid = ctx.localIdx;
+        int h = wg % heads;
+        int row0 = (wg / heads) * rowsPerGroup;
+        int dh = 128;
+        int d = heads * dh;
+        int e = tid % dh;
+        int g0 = (tid / dh) * gatesPerThread;
+        float[] yl = ctx.allocateFloatLocalArray(SLSTM_MAX_ROWS * 128);
+        float[] raw = ctx.allocateFloatLocalArray(SLSTM_MAX_ROWS * 512);
+        float[] c = new float[SLSTM_MAX_ROWS];
+        float[] nn = new float[SLSTM_MAX_ROWS];
+        float[] m = new float[SLSTM_MAX_ROWS];
+        float[] acc = new float[SLSTM_MAX_ROWS];
+        for (int rb = 0; rb < SLSTM_MAX_ROWS; rb++) {
+            c[rb] = 0f;
+            nn[rb] = 0f;
+            m[rb] = 0f;
+        }
+        if (tid < dh) {
+            for (int rb = 0; rb < rowsPerGroup; rb++) {
+                yl[rb * dh + tid] = 0f;
+            }
+        }
+        ctx.localBarrier();
+        for (int t = 0; t < seq; t++) {
+            for (int gi = 0; gi < gatesPerThread; gi++) {
+                int g = g0 + gi;
+                float bias = w.get(bOff + (h * 4 + g) * dh + e);
+                for (int rb = 0; rb < rowsPerGroup; rb++) {
+                    int row = TornadoMath.min(row0 + rb, rows - 1);
+                    acc[rb] = wx.get((row * seq + t) * 4 * d + g * d + h * dh + e) + bias;
+                }
+                int ro = rOff + (h * dh * 4 + g) * dh + e;
+                for (int pp = 0; pp < dh; pp++) {
+                    float r = rh.get(ro + pp * 4 * dh).getFloat32();
+                    for (int rb = 0; rb < rowsPerGroup; rb++) {
+                        acc[rb] += yl[rb * dh + pp] * r;
+                    }
+                }
+                for (int rb = 0; rb < rowsPerGroup; rb++) {
+                    raw[rb * 512 + g * dh + e] = acc[rb];
+                }
+            }
+            ctx.localBarrier();
+            if (tid < dh) {
+                for (int rb = 0; rb < rowsPerGroup; rb++) {
+                    int o = rb * 512;
+                    float ri = raw[o + e];
+                    float rf = raw[o + dh + e];
+                    float rz = raw[o + 2 * dh + e];
+                    float rog = raw[o + 3 * dh + e];
+                    float logf = TornadoMath.min(rf, 0f) - TornadoMath.log(1f + TornadoMath.exp(-TornadoMath.abs(rf))) + m[rb];
+                    float mNew = t == 0 ? ri : TornadoMath.max(ri, logf);
+                    float ig = TornadoMath.exp(ri - mNew);
+                    float fg = TornadoMath.exp(logf - mNew);
+                    c[rb] = fg * c[rb] + ig * TornadoMath.tanh(rz);
+                    nn[rb] = TornadoMath.max(fg * nn[rb] + ig, 1f);
+                    float yNew = c[rb] / nn[rb] / (1f + TornadoMath.exp(-rog));
+                    m[rb] = mNew;
+                    yl[rb * dh + e] = yNew;
+                    int row = row0 + rb;
+                    if (row < rows) {
+                        y.set((row * seq + t) * d + h * dh + e, yNew);
+                    }
+                }
+            }
+            ctx.localBarrier();
+        }
+    }
+
     /** {@code out[i] = SiLU(big[r·2f + j]) · big[r·2f + f + j]} for the fused up-gate|up projection. */
     public static void swiGlu(KernelContext ctx, FloatArray big, FloatArray out, int n, int ffn) {
         int id = ctx.globalIdx;
