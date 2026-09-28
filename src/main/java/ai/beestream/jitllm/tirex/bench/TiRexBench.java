@@ -80,7 +80,7 @@ public final class TiRexBench {
         long t0 = System.nanoTime();
         TiRex2Weights weights = TiRex2Weights.load(weightsPath);
         ForwardPass fp = switch (engine) {
-            case "tornado" -> new TornadoForward(weights.config(), PackedWeights.pack(weights), 3);
+            case "tornado" -> new TornadoForward(weights.config(), PackedWeights.pack(weights), 1);
             case "cpu" -> new CpuReference(weights);
             default -> throw new IllegalArgumentException("--engine tornado|cpu");
         };

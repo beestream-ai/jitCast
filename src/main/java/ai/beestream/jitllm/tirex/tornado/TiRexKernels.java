@@ -35,9 +35,13 @@ public final class TiRexKernels {
      * {@code tok [(r·patches + t)·2P + i]} (values, then the is-present mask) and the scaler state
      * {@code stats [r·3 + {0: loc, 1: scale, 2: binary}]}.
      */
-    public static void scalePatch(FloatArray x, FloatArray present, FloatArray tok, FloatArray stats, int rows, int len,
-            int patch, int arcsinh, int binaryAware, float eps) {
-        for (@uk.ac.manchester.tornado.api.annotations.Parallel int r = 0; r < rows; r++) {
+    public static void scalePatch(KernelContext ctx, FloatArray x, FloatArray present, FloatArray tok, FloatArray stats,
+            int rows, int len, int patch, int arcsinh, int binaryAware, float eps) {
+        // An explicit KernelContext kernel, not a @Parallel loop: with a worker grid attached,
+        // TornadoVM 7.0.x reads a @Parallel loop's bound from the kernel context, which can hold a
+        // stale value (seen as an out-of-bounds read past the last row).
+        int r = ctx.globalIdx;
+        if (r < rows) {
             int base = r * len;
             float sum = 0f;
             int n = 0;

@@ -195,7 +195,9 @@ public class KernelParityAccelTest {
         }
         FloatArray fx = FloatArray.fromArray(clean), fp = FloatArray.fromArray(here);
         FloatArray ft = new FloatArray(rows * 74 * 64), fs = new FloatArray(rows * 3);
-        run("t", null, g -> g.task("t", TiRexKernels::scalePatch, fx, fp, ft, fs, rows, len, p, 1, 1, 1e-8f), ft, fx, fp, fs);
+        KernelContext ctx = new KernelContext();
+        run("t", grid1(32, 32), g -> g.task("t", TiRexKernels::scalePatch, ctx, fx, fp, ft, fs, rows, len, p, 1, 1, 1e-8f), ft,
+                fx, fp, fs);
         float[][] rowsX = new float[rows][];
         for (int r = 0; r < rows; r++) {
             rowsX[r] = java.util.Arrays.copyOfRange(x, r * len, (r + 1) * len);
