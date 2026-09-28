@@ -39,8 +39,8 @@ import ai.beestream.jitllm.tirex.tornado.TornadoForward;
 public final class TiRexBench {
 
     static int[] BATCHES = {1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024};
-    static final int[] COVARIATES = {1, 3, 7, 15, 31, 63};
-    static final int[] MV_BATCHES = {1, 32};
+    static int[] COVARIATES = {1, 3, 7, 15, 31, 63};
+    static int[] MV_BATCHES = {1, 32};
 
     /** Records every batch passed to the wrapped forward pass, so it can be replayed alone. */
     static final class Capturing implements ForwardPass {
@@ -73,6 +73,12 @@ public final class TiRexBench {
         double budget = Double.parseDouble(a.getOrDefault("budget", "3.0"));
         int maxBatch = Integer.parseInt(a.getOrDefault("max-batch", "1024"));
         List<String> which = List.of(a.getOrDefault("scenarios", "throughput,multivariate").split(","));
+        if (a.containsKey("mv-batches")) {
+            MV_BATCHES = Arrays.stream(a.get("mv-batches").split(",")).mapToInt(Integer::parseInt).toArray();
+        }
+        if (a.containsKey("covariates")) {
+            COVARIATES = Arrays.stream(a.get("covariates").split(",")).mapToInt(Integer::parseInt).toArray();
+        }
         if (a.containsKey("batches")) {
             BATCHES = Arrays.stream(a.get("batches").split(",")).mapToInt(Integer::parseInt).toArray();
         }
@@ -162,7 +168,9 @@ public final class TiRexBench {
             float[][] target = rows(w.get("mv.target"));
             float[][] fut = rows(w.get("mv.future_cov"));
             float[][] past = rows(w.get("mv.past_cov"));
-            int kMax = Arrays.stream(COVARIATES).max().orElseThrow();
+            // the workload file's own layout (bench_nxai.py's max(COVARIATES)), so a --covariates
+            // subset slices exactly the rows NXAI used
+            int kMax = Integer.parseInt(w.metadata().getOrDefault("max_covariates", "63"));
             int futPer = (kMax + 1) / 2, pastPer = kMax / 2;
             for (int bs : MV_BATCHES) {
                 if (bs > maxBatch) {
