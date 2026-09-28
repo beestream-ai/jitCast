@@ -11,7 +11,11 @@ batch assembly, forward pass and postprocessor. It matches the reference in ever
 - each forward stage: relative error ≤ 5.5e-6;
 - final forecasts: relative error ≤ 2.3e-6.
 
-Next: the TornadoVM kernels, tested against this reference.
+The TornadoVM engine (`tornado.TornadoTiRex2Engine`) runs univariate batches end to end on the device, with portable kernels that are not yet optimised. It matches the reference on OpenCL and on Metal (Apple M4 Pro):
+- model output: relative error ≤ 1.3e-5;
+- forecasts: relative error ≤ 8e-6.
+
+Next: covariates and multivariate (P2), and the CUDA hybrid path on cyclone (cuBLASLt, CUDA graph).
 
 | Phase | Scope |
 |---|---|
@@ -29,7 +33,12 @@ Next: the TornadoVM kernels, tested against this reference.
 # this module; the golden tests are skipped unless both paths are given
 cd jitllm-tirex
 ../mvnw test -Dtirex.weights=/path/tirex2.safetensors -Dtirex.golden=/path/golden-cpu
+# device tests: kernel parity and the TornadoVM engine against the goldens (device <driver>:<device>)
+TORNADOVM_HOME=/path/sdk ../mvnw test -Paccel-tests -Dtest='*AccelTest' -Dtirex.tornado.device=1:0 \
+    -Dtirex.weights=/path/tirex2.safetensors -Dtirex.golden=/path/golden-cpu
 ```
+
+The host uploads values with NaN replaced by 0, plus an is-present mask, so no kernel ever tests for NaN. Device compilers may assume NaNs don't occur (Metal's default fast math does, and so does CUDA's `--use_fast_math`), which makes `v != v` checks unreliable.
 
 ## Java layout (`ai.beestream.jitllm.tirex`)
 
@@ -41,7 +50,7 @@ cd jitllm-tirex
 | `cpu` | FP32 CPU reference, the oracle for the device kernels: `Ops`, `InputStage`, `Cells` (mLSTM, sLSTM), `CpuReference` (the full forward pass) |
 | `host` | `ForecastPipeline` (`ForecastModel.forecast`: 512-series windows, batch assembly and padding, horizon slicing, sign-flip TTA) and `PostProcessor` (trend detection, differencing, band calibration) — shared by every engine |
 | `cpu` … | `CpuTiRex2Engine` wraps `CpuReference` in the pipeline |
-| `tornado` | The TornadoVM engine (P1) |
+| `tornado` | `TiRexKernels` (scale+patch, tiled GEMM with bias/SiLU/accumulate epilogues, RMSNorm, per-head LayerNorm, mLSTM cell, sLSTM gates + recurrence, SwiGLU, un-patch), `PackedWeights` (one device buffer; fused q\|k\|v\|o\|i\|f and up_gate\|up), `TornadoForward` (one cached plan per row count), `TornadoTiRex2Engine` |
 
 ## Scripts (`scripts/`)
 

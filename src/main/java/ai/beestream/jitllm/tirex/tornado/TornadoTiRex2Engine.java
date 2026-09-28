@@ -1,37 +1,46 @@
 package ai.beestream.jitllm.tirex.tornado;
 
+import java.io.IOException;
+import java.nio.file.Path;
 import java.util.List;
 
 import ai.beestream.jitllm.tirex.api.Forecast;
 import ai.beestream.jitllm.tirex.api.TiRex2Engine;
 import ai.beestream.jitllm.tirex.api.TimeSeries;
+import ai.beestream.jitllm.tirex.host.ForecastPipeline;
 import ai.beestream.jitllm.tirex.model.TiRex2Weights;
 
 /**
- * The TornadoVM engine (P1). One execution plan per shape bucket (rows × 74 tokens), with the
- * weights resident on the device:
- *
- * <ol>
- *   <li>input stage and patch embedding;
- *   <li>per block: RMSNorm → fused projections (cuBLAS) → mLSTM parallel kernel or sLSTM recurrence
- *       → per-head LayerNorm → combination over known covariates → SwiGLU FFN; then the variate
- *       attention when a group has more than one row;
- *   <li>output norm and embedding, un-patch and rescale.
- * </ol>
- *
- * The host keeps batch assembly and the postprocessor, as the reference does.
+ * The TornadoVM engine: the shared host pipeline ({@link ForecastPipeline}) around
+ * {@link TornadoForward}. P1 scope is univariate series; see {@link TornadoForward}.
  */
 public final class TornadoTiRex2Engine implements TiRex2Engine {
 
     private final TiRex2Weights weights;
+    private final TornadoForward forward;
+    private final ForecastPipeline pipeline;
 
     public TornadoTiRex2Engine(TiRex2Weights weights) {
         this.weights = weights;
+        this.forward = new TornadoForward(weights.config(), PackedWeights.pack(weights));
+        this.pipeline = new ForecastPipeline(weights.config(), forward);
+    }
+
+    public static TornadoTiRex2Engine load(Path safetensors) throws IOException {
+        return new TornadoTiRex2Engine(TiRex2Weights.load(safetensors));
+    }
+
+    public TornadoForward forwardPass() {
+        return forward;
+    }
+
+    public ForecastPipeline pipeline() {
+        return pipeline;
     }
 
     @Override
     public List<Forecast> forecast(List<TimeSeries> series, int horizon) {
-        throw new UnsupportedOperationException("the TornadoVM forward pass is not implemented yet (P1)");
+        return pipeline.forecast(series, horizon);
     }
 
     @Override
@@ -41,6 +50,7 @@ public final class TornadoTiRex2Engine implements TiRex2Engine {
 
     @Override
     public void close() {
+        forward.close();
         weights.close();
     }
 }
