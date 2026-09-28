@@ -444,7 +444,11 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             b.gemm(s + "qkv", n, v.qkv(), proj, tokens, 0);
             b.items(s + "qknorm", tokens * 2 * heads);
             b.g.task(s + "qknorm", TiRexKernels::qkNorm, b.ctx, proj, tokens, heads, dh, 3 * d, Math.ulp(1.0f));
-            b.items(s + "attn", nk * seq * heads);
+            if (dh != 128) {
+                throw new IllegalStateException("variateAttention assumes a head dim of 128");
+            }
+            int queryBlocks = (nk + TiRexKernels.ATTN_QUERIES - 1) / TiRexKernels.ATTN_QUERIES;
+            b.grid.addWorkerGrid(b.name + "." + s + "attn", group(queryBlocks * seq * heads * 128, 128));
             b.g.task(s + "attn", TiRexKernels::variateAttention, b.ctx, proj, cell, groupStart, groupEnd, keptTarget, nk, seq,
                     heads, dh, 3 * d);
             b.gemm(s + "wo", cell, v.wo(), xk, tokens, TiRexKernels.ACCUMULATE);

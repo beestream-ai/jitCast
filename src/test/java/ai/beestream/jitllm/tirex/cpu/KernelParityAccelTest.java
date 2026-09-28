@@ -260,8 +260,15 @@ public class KernelParityAccelTest {
     @Test
     public void variateAttentionWithGroupsAndMask() {
         // two groups: rows 0..2 (target, cov, cov) and rows 3..6 (target, target, cov, cov)
-        int nk = 7, dh = 128, stride = 3 * D;
-        int[] start = {0, 0, 0, 3, 3, 3, 3}, end = {3, 3, 3, 7, 7, 7, 7}, target = {1, 0, 0, 1, 1, 0, 0};
+        // groups: rows 0..2 (target, cov, cov), 3..6 (target, target, cov, cov), 7..26 (target + 19 covs),
+        // so query blocks of 16 straddle groups and the last block is partial
+        int nk = 27, dh = 128, stride = 3 * D;
+        int[] start = new int[nk], end = new int[nk], target = new int[nk];
+        for (int i = 0; i < nk; i++) {
+            start[i] = i < 3 ? 0 : i < 7 ? 3 : 7;
+            end[i] = i < 3 ? 3 : i < 7 ? 7 : 27;
+            target[i] = (i == 0 || i == 3 || i == 4 || i == 7) ? 1 : 0;
+        }
         float[] p = random(nk * SEQ * stride, 1f);
         FloatArray fp = FloatArray.fromArray(p), fo = new FloatArray(nk * SEQ * D);
         IntArray fs = IntArray.fromArray(start), fe = IntArray.fromArray(end), ft = IntArray.fromArray(target);
@@ -270,7 +277,7 @@ public class KernelParityAccelTest {
                 .transferToHost(DataTransferMode.EVERY_EXECUTION, fo);
         try (TornadoExecutionPlan plan = new TornadoExecutionPlan(g.snapshot())) {
             GridScheduler grid = new GridScheduler();
-            grid.addWorkerGrid("k.t", items(nk * SEQ * HEADS));
+            grid.addWorkerGrid("k.t", grid1((nk + TiRexKernels.ATTN_QUERIES - 1) / TiRexKernels.ATTN_QUERIES * SEQ * HEADS * 128, 128));
             plan.withGridScheduler(grid);
             String device = System.getProperty("tirex.tornado.device");
             if (device != null && !device.isBlank()) {

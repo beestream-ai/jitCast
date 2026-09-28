@@ -579,68 +579,104 @@ public final class TiRexKernels {
         }
     }
 
+    /** Queries per work-group of {@link #variateAttention}. */
+    public static final int ATTN_QUERIES = 16;
+
     /**
-     * Attention across the rows of a group, per patch and head; one thread per (query row, t, head).
-     * Rows are the kept rows {@code 0..nk}, token-major {@code [(row·seq + t)·stride]}; a query
-     * attends to the keys {@code groupStart[q] .. groupEnd[q]} of its own group, except that a
-     * covariate query does not attend to target keys. Writes {@code out [(row·seq + t)·heads·dh]}.
+     * Attention across the rows of a group, per patch and head (flash style). One work-group of
+     * 128 threads handles {@link #ATTN_QUERIES} consecutive kept rows (queries) for one (t, head):
+     * each key's k and v vectors are loaded once into local memory and serve every query of the
+     * block; thread {@code (q, lane)} forms 1/8 of query q's dot product, lane 0 applies the mask
+     * and the online softmax, and thread j accumulates output dimension j for all queries. Keys
+     * run over the union of the queries' group ranges only, so the cost is Σ group², not rows².
+     *
+     * <p>Rows are the kept rows {@code 0..nk}, token-major {@code [(row·seq + t)·stride]} holding
+     * {@code q | k | v}; query q attends to keys {@code groupStart[q] .. groupEnd[q]} of its group,
+     * except that a covariate query does not attend to target keys. Writes
+     * {@code out [(row·seq + t)·heads·dh]}. Requires {@code dh == 128}.
      */
     public static void variateAttention(KernelContext ctx, FloatArray p, FloatArray out, IntArray groupStart, IntArray groupEnd,
             IntArray isTarget, int nk, int seq, int heads, int dh, int stride) {
-        int id = ctx.globalIdx;
-        if (id < nk * seq * heads) {
-            int q = id / (seq * heads);
-            int rem = id - q * seq * heads;
-            int t = rem / heads;
-            int h = rem - t * heads;
-            int d = heads * dh;
-            float scale = 1f / TornadoMath.sqrt(dh);
-            int qo = (q * seq + t) * stride + h * dh;
-            int qTarget = isTarget.get(q);
-            int s0 = groupStart.get(q);
-            int s1 = groupEnd.get(q);
-            float max = -3.4e38f;
-            // The mask is an int, not `qTarget == 1 || isTarget[k] == 0`: TornadoVM 7.0.1 emits that
-            // short-circuit inside a loop without a `continue`, so a masked key falls through into the
-            // loop body with the next k.
-            for (int k = s0; k < s1; k++) {
-                int allowed = qTarget | (1 - isTarget.get(k));
+        int wg = ctx.groupIdx;
+        int tid = ctx.localIdx;
+        int h = wg % heads;
+        int t = (wg / heads) % seq;
+        int q0 = (wg / (heads * seq)) * ATTN_QUERIES;
+        int qn = TornadoMath.min(ATTN_QUERIES, nk - q0);
+        int d = heads * dh;
+        float scale = 1f / TornadoMath.sqrt(dh);
+        float[] qs = ctx.allocateFloatLocalArray(ATTN_QUERIES * 128);
+        float[] kv = ctx.allocateFloatLocalArray(256);
+        float[] part = ctx.allocateFloatLocalArray(128);
+        float[] mRun = ctx.allocateFloatLocalArray(ATTN_QUERIES);
+        float[] lRun = ctx.allocateFloatLocalArray(ATTN_QUERIES);
+        float[] corr = ctx.allocateFloatLocalArray(ATTN_QUERIES);
+        float[] pw = ctx.allocateFloatLocalArray(ATTN_QUERIES);
+        float[] acc = new float[ATTN_QUERIES];
+        for (int qq = 0; qq < ATTN_QUERIES; qq++) {
+            acc[qq] = 0f;
+            if (qq < qn) {
+                qs[qq * 128 + tid] = p.get(((q0 + qq) * seq + t) * stride + h * dh + tid);
+            }
+        }
+        if (tid < ATTN_QUERIES) {
+            mRun[tid] = -3.4e38f;
+            lRun[tid] = 0f;
+        }
+        int kStart = groupStart.get(q0);
+        int kEnd = groupEnd.get(q0 + qn - 1);
+        int q = tid / 8;
+        int lane = tid - q * 8;
+        ctx.localBarrier();
+        for (int k = kStart; k < kEnd; k++) {
+            int ko = (k * seq + t) * stride + h * dh + tid;
+            kv[tid] = p.get(ko + d);
+            kv[128 + tid] = p.get(ko + 2 * d);
+            ctx.localBarrier();
+            float partial = 0f;
+            for (int e = lane * 16; e < lane * 16 + 16; e++) {
+                partial += qs[q * 128 + e] * kv[e];
+            }
+            part[tid] = partial;
+            ctx.localBarrier();
+            if (lane == 0 && q < qn) {
+                float dot = 0f;
+                for (int l = 0; l < 8; l++) {
+                    dot += part[q * 8 + l];
+                }
+                int qi = q0 + q;
+                // an int mask, not a short-circuit condition (TornadoVM codegen bug T1)
+                int inGroup = (k >= groupStart.get(qi) ? 1 : 0) * (k < groupEnd.get(qi) ? 1 : 0);
+                int allowed = inGroup * (isTarget.get(qi) | (1 - isTarget.get(k)));
                 if (allowed != 0) {
-                    int ko = (k * seq + t) * stride + d + h * dh;
-                    float dot = 0f;
-                    for (int j = 0; j < dh; j++) {
-                        dot += p.get(qo + j) * p.get(ko + j);
-                    }
-                    max = TornadoMath.max(max, dot * scale);
+                    float sc = dot * scale;
+                    float mn = TornadoMath.max(mRun[q], sc);
+                    float c = TornadoMath.exp(mRun[q] - mn);
+                    float e = TornadoMath.exp(sc - mn);
+                    lRun[q] = lRun[q] * c + e;
+                    mRun[q] = mn;
+                    corr[q] = c;
+                    pw[q] = e;
+                } else {
+                    corr[q] = 1f;
+                    pw[q] = 0f;
                 }
             }
-            float[] acc = new float[128];
-            for (int j = 0; j < dh; j++) {
-                acc[j] = 0f;
-            }
-            float sum = 0f;
-            for (int k = s0; k < s1; k++) {
-                int allowed = qTarget | (1 - isTarget.get(k));
-                if (allowed != 0) {
-                    int ko = (k * seq + t) * stride + d + h * dh;
-                    float dot = 0f;
-                    for (int j = 0; j < dh; j++) {
-                        dot += p.get(qo + j) * p.get(ko + j);
-                    }
-                    float e = TornadoMath.exp(dot * scale - max);
-                    sum += e;
-                    int vo = (k * seq + t) * stride + 2 * d + h * dh;
-                    for (int j = 0; j < dh; j++) {
-                        acc[j] += e * p.get(vo + j);
-                    }
+            ctx.localBarrier();
+            float vj = kv[128 + tid];
+            for (int qq = 0; qq < ATTN_QUERIES; qq++) {
+                if (qq < qn) {
+                    acc[qq] = acc[qq] * corr[qq] + pw[qq] * vj;
                 }
             }
-            int oo = (q * seq + t) * d + h * dh;
-            for (int j = 0; j < dh; j++) {
-                out.set(oo + j, acc[j] / sum);
+        }
+        for (int qq = 0; qq < ATTN_QUERIES; qq++) {
+            if (qq < qn) {
+                out.set(((q0 + qq) * seq + t) * d + h * dh + tid, acc[qq] / lRun[qq]);
             }
         }
     }
+
     // ---- CUDA hybrid path: epilogues around a cuBLAS GEMM -----------------------------------------
 
     /** Before a cuBLAS GEMM with β = 1: {@code C[r, c] = (accumulate ? C[r, c] : 0) + b[c]}. */
