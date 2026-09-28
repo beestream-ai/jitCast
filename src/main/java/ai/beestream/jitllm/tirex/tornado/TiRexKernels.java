@@ -781,11 +781,14 @@ public final class TiRexKernels {
      */
     public static void biasSilu(KernelContext ctx, FloatArray c, FloatArray w, int bOff, int m, int n, HalfFloatArray th,
             int twin) {
-        int i = ctx.globalIdx;
-        if (i < m * n) {
+        // 2D launch (columns × rows): the bias column comes from the x index, with no modulo
+        int col = ctx.globalIdx;
+        int row = ctx.globalIdy;
+        if (col < n && row < m) {
+            int i = row * n + col;
             float v = c.get(i);
             if (bOff >= 0) {
-                v += w.get(bOff + i % n);
+                v += w.get(bOff + col);
             }
             v = v / (1f + TornadoMath.exp(-v));
             c.set(i, v);

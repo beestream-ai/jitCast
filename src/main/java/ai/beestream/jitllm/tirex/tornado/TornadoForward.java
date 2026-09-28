@@ -54,6 +54,9 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
 
     private final GemmMode gemmMode = GemmMode.fromProperty();
 
+    /** {@code -Dtirex.tornado.fuse=false} turns the fused SiLU epilogue and residual+RMSNorm kernels off (A/B). */
+    private final boolean fuse = !"false".equalsIgnoreCase(System.getProperty("tirex.tornado.fuse", "true"));
+
     private final int fp16MinTokens = Integer.getInteger("tirex.tornado.fp16MinTokens", 1024);
 
     /**
@@ -400,10 +403,16 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                     b.gemm(s + "comb", big, blk.combination(), cell, nKnown * seq, 0);
                     b.items(s + "scatter", nKnown * seq * d);
                     g.task(s + "scatter", TiRexKernels::scatterRows, ctx, cell, yc, known, nKnown, seq, d);
-                    // h += yc and the FFN's RMSNorm in one pass
-                    grid.addWorkerGrid(b.name + "." + s + "resid", group(tokens * TiRexKernels.NORM_THREADS, TiRexKernels.NORM_THREADS));
-                    g.task(s + "resid", TiRexKernels::addRmsNorm, ctx, h, yc, n, w, blk.normFfn(), d, TiRex2Config.NORM_EPS,
-                            b.twin(n), b.hasTwin(n));
+                    if (fuse) {
+                        // h += yc and the FFN's RMSNorm in one pass
+                        grid.addWorkerGrid(b.name + "." + s + "resid", group(tokens * TiRexKernels.NORM_THREADS, TiRexKernels.NORM_THREADS));
+                        g.task(s + "resid", TiRexKernels::addRmsNorm, ctx, h, yc, n, w, blk.normFfn(), d, TiRex2Config.NORM_EPS,
+                                b.twin(n), b.hasTwin(n));
+                    } else {
+                        b.items(s + "resid", tokens * d);
+                        g.task(s + "resid", TiRexKernels::addInPlace, ctx, h, yc, tokens * d);
+                        b.rms(s + "fnorm", h, n, blk.normFfn(), tokens, d, TiRex2Config.NORM_EPS);
+                    }
                 } else if (!cell(b, s, blk, n, h, rows, true, blk.normFfn())) {
                     b.rms(s + "fnorm", h, n, blk.normFfn(), tokens, d, TiRex2Config.NORM_EPS);
                 }
@@ -498,7 +507,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                     b.g.task(s + "slstm", TiRexKernels::slstmRecurrence, b.ctx, big, b.w, blk.recurrent(), blk.slstmBias(),
                             cell, count, seq, heads, gpt, rb);
                 }
-                if (add && ffnNorm >= 0 && fusedNorm(heads, dh)) {
+                if (fuse && add && ffnNorm >= 0 && fusedNorm(heads, dh)) {
                     b.grid.addWorkerGrid(b.name + "." + s + "hnorm", group(tokens * heads * dh, heads * dh));
                     b.g.task(s + "hnorm", TiRexKernels::headNormAddRmsNorm, b.ctx, cell, dst, n, b.w, blk.groupNorm(), ffnNorm,
                             heads, dh, TiRex2Config.NORM_EPS, TiRex2Config.NORM_EPS, b.twin(n), b.hasTwin(n));
@@ -699,7 +708,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             }
             // SiLU without accumulation: the GEMM writes C (β = 0) and one epilogue adds the bias,
             // applies SiLU and writes the FP16 twin
-            boolean siluEpilogue = (flags & TiRexKernels.SILU) != 0 && !acc;
+            boolean siluEpilogue = fuse && (flags & TiRexKernels.SILU) != 0 && !acc;
             if (bias && !siluEpilogue) {
                 items(name + "_bias", m * l.out());
                 g.task(name + "_bias", TiRexKernels::biasFill, ctx, c, w, l.b(), m, l.out(), acc ? 1 : 0);
@@ -720,7 +729,9 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                         beta, c, n);
             }
             if (siluEpilogue) {
-                items(name + "_silu", m * n);
+                WorkerGrid wg2 = new WorkerGrid2D((n + 127) / 128 * 128, m);
+                wg2.setLocalWork(128, 1, 1);
+                grid.addWorkerGrid(this.name + "." + name + "_silu", wg2);
                 g.task(name + "_silu", TiRexKernels::biasSilu, ctx, c, w, bias ? l.b() : -1, m, n, twin(c), hasTwin(c));
             } else if ((flags & TiRexKernels.SILU) != 0) {
                 items(name + "_silu", m * n);

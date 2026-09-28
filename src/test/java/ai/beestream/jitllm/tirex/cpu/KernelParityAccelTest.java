@@ -413,7 +413,9 @@ public class KernelParityAccelTest {
             uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray th = new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(m * n);
             KernelContext ctx = new KernelContext();
             int bOff = withBias == 1 ? 0 : -1;
-            run("t", items(m * n), g -> g.task("t", TiRexKernels::biasSilu, ctx, fc, fw, bOff, m, n, th, 1), fc, fw);
+            WorkerGrid wg2 = new WorkerGrid2D((n + 127) / 128 * 128, m);
+            wg2.setLocalWork(128, 1, 1);
+            run("t", wg2, g -> g.task("t", TiRexKernels::biasSilu, ctx, fc, fw, bOff, m, n, th, 1), fc, fw);
             float[] exp = c0.clone();
             for (int i = 0; i < exp.length; i++) {
                 exp[i] = Ops.silu(exp[i] + (withBias == 1 ? wb[i % n] : 0f));
