@@ -28,17 +28,19 @@ End-to-end `forecast()` on cyclone (RTX 5070 Ti). NXAI is the best of eager / `t
 
 | univariate batch | NXAI | TornadoVM | speed-up |
 |---|---|---|---|
-| 1 | 9.76 ms | **2.73 ms** | 3.6× |
-| 8 | 15.4 ms | **5.4 ms** | 2.8× |
-| 64 | 48.8 ms | **15.2 ms** | 3.2× |
-| 512 | 367 ms | **118 ms** | 3.1× (4,335 vs 1,400 series/s) |
+| 1 | 9.76 ms | **2.75 ms** | 3.5× |
+| 8 | 15.4 ms | **5.45 ms** | 2.8× |
+| 64 | 48.8 ms | **14.3 ms** | 3.4× |
+| 512 | 367 ms | **106 ms** | 3.5× (4,811 vs 1,400 series/s) |
 
 | multivariate (series × covariates) | NXAI | TornadoVM | speed-up |
 |---|---|---|---|
-| 1 × 15 | 30.8 ms | **12.0 ms** | 2.6× |
-| 1 × 63 | 62.9 ms | **34.3 ms** | 1.8× |
-| 32 × 15 | 488 ms | **257 ms** | 1.9× |
-| 32 × 63 (2,048 rows) | 1,869 ms | **1,122 ms** | 1.7× |
+| 1 × 15 | 30.8 ms | **11.0 ms** | 2.8× |
+| 1 × 63 | 62.9 ms | **31.1 ms** | 2.0× |
+| 32 × 15 | 488 ms | **210 ms** | 2.3× |
+| 32 × 63 (2,048 rows) | 1,869 ms | **949 ms** | 2.0× |
+
+Each kernel that produces a GEMM input also writes that input's FP16 twin, so there is no separate conversion pass before the FP16 GEMMs.
 
 | Phase | Scope |
 |---|---|
