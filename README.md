@@ -4,9 +4,11 @@ A TornadoVM inference engine for [TiRex-2](https://github.com/NX-AI/tirex-2), NX
 time-series forecasting model (xLSTM backbone, 9-quantile output), built on jitllm's TornadoVM
 kernels and the TornadoVM hybrid CUDA libraries (cuBLAS/cuBLASLt/cuDNN).
 
-Status: **P0 running on cyclone; P1 started**. The reference tooling and the NXAI baseline harness
-are in place. The Java module loads the checkpoint and runs the input stage and the patch embedding
-on the CPU, matching the reference in every golden case (relative max error ≤ 4e-7).
+Status: **P0 running on cyclone; P1 in progress**. The reference tooling and the NXAI baseline harness
+are in place. The Java module loads the checkpoint and runs the whole `TiRex2.forward()` on the CPU
+in FP32. It matches the reference at every stage of every golden case: relative max error ≤ 5.5e-6
+per stage and ≤ 2.4e-6 on the model output. Next: host-side batch assembly and the postprocessor
+(so `forecast()` is end to end), then the TornadoVM kernels.
 
 | Phase | Scope |
 |---|---|
@@ -33,7 +35,7 @@ cd jitllm-tirex
 | `api` | `TimeSeries`, `Forecast`, `TiRex2Engine` |
 | `io` | `SafeTensors` (memory-mapped reader), `Tensor` |
 | `model` | `TiRex2Config` (from the embedded model config), `TiRex2Weights` (binds every tensor by name and shape; unknown or missing tensors fail the load) |
-| `cpu` | FP32 CPU reference, the oracle for the device kernels: `Ops`, `InputStage`, `CpuReference` |
+| `cpu` | FP32 CPU reference, the oracle for the device kernels: `Ops`, `InputStage`, `Cells` (mLSTM, sLSTM), `CpuReference` (the full forward pass) |
 | `tornado` | The TornadoVM engine (P1) |
 
 ## Scripts (`scripts/`)
@@ -41,6 +43,7 @@ cd jitllm-tirex
 | Script | What it does |
 |---|---|
 | `convert_ckpt.py` | `model.ckpt` + `model-config.yaml` → one `tirex2.safetensors` (FP32, aliases removed, config in the metadata) |
+| `spec_forward.py` | An explicit PyTorch spec of `forward()` (basic ops only, no xlstm/flashrnn) checked stage by stage against the goldens; the Java reference is a port of it |
 | `dump_golden.py` | Runs the NXAI model on 13 cases and saves the inputs, the batch passed to `forward()`, the activations of every stage, the raw model output and the final forecasts |
 | `bench_nxai.py` | NXAI baseline: `workloads` (shared inputs), `run` (latency/throughput, e2e + forward-only), `coldstart` |
 | `cyclone_p0.sh` | Runs all of P0 on a CUDA box: venv, CUDA-kernel check, conversion, CPU + CUDA goldens, baseline, cold start |
@@ -86,25 +89,33 @@ Shapes: `R` = rows = Σ over series of (targets + covariates), `L = 74`, `D = 51
 5. **mLSTM cell** (4 heads; qk head dim 64, v head dim 128):
    - Projections: `q, k: 512→256`, `v, o: 512→512`, `i, f: 512→4` with bias.
    - `i, f` go through `soft_cap(z) = 15·tanh(z/15)`.
-   - Stabilised chunkwise mLSTM (chunk 64, padded to 128). Causal, so it is equal to the parallel form over 74 steps; `qk_scale = 64^-0.5`, eps 1e-6.
+   - xlstm runs a chunkwise kernel (chunk 64, padded to 128). Because it is causal, it equals this stabilised parallel form over the 74 steps, with `F[t] = Σ_{u≤t} logσ(f_u)`:
+     ```
+     logD[t,s] = F[t] − F[s] + i[s]            (s ≤ t)
+     m[t]      = max(F[t], max_s logD[t,s])
+     C[t,s]    = (q_t·k_s)/8 · exp(logD[t,s] − m[t])
+     h_t       = Σ_s C[t,s]·v_s / (max(|Σ_s C[t,s]|, exp(−m[t])) + 1e-6)
+     ```
+     The `F[t]` term in `m` is the zero initial state's stabiliser. Leaving it out changes the `exp(−m)` floor of the normaliser.
    - Then a per-head LayerNorm (centred, eps 1e-6, weight only), `h · sigmoid(o)`, and `out_proj` 512→512.
 6. **sLSTM cell** (FlashRNN; 4 heads × 128):
-   - Gates `i, f, z, o`: each is a block-diagonal headwise 128×128 projection with no bias.
+   - Gates: four block-diagonal headwise 128×128 projections with no bias.
+   - FlashRNN reads the gate slots as `(i, f, z, o)`, but TiRex stacks its projections as `(fgate, igate, zgate, ogate)`. So the checkpoint's `fgate` feeds the **input** gate.
    - Recurrence `R: [4, 128, 4, 128]`, bias `[4, 4, 128]`. States `y, c, n, m` start at zero.
    - Per step:
      ```
      raw = Wx + R·y + b
      logf = logsigmoid(f) + m
-     m' = all(n==0) ? i : max(i, logf)
+     m' = t==0 ? i : max(i, logf)
      c' = e^(logf-m')·c + e^(i-m')·tanh(z)
      n' = max(e^(logf-m')·n + e^(i-m'), 1)
      y' = sigmoid(o)·c'/n'
      ```
-   - `all(n==0)` is taken over the whole tensor, so it is true only on the first step.
+   - FlashRNN's test is `all(n == 0)` over the whole tensor. Because `n' ≥ 1`, that is exactly `t == 0`.
    - Output: per-head LayerNorm (eps 1e-6, weight only).
-7. **Variate mixer (AttentionBlock)** runs per token across rows. It is skipped when every group has one row, which is the univariate case.
+7. **Variate mixer (AttentionBlock)** runs per token across rows (4 heads × **128**). Rows alone in their group pass through unchanged, so the whole block is skipped when every group has one row (the univariate case).
    - Masks: groups attend only within themselves, and covariate rows cannot attend to target rows.
-   - `x += WO·SDPA(rms(WQ·n), rms(WK·n), WV·n)` with `n = RMSNorm(x)` (eps 1e-6). The qk-norm has no weight; the scale is `64^-0.5`.
+   - `x += WO·SDPA(rms(WQ·n), rms(WK·n), WV·n)` with `n = RMSNorm(x)` (eps 1e-6). The qk-norm is `F.rms_norm` with no weight and eps = float32 machine epsilon (1.19e-7). The scale is `128^-0.5`.
    - Then `x += wo·SiLU(wi·RMSNorm(x))`, with 512→2048→512.
 8. **Output**:
    - `stack_out_norm` is a T5-style LayerNorm: RMS, eps 1e-7, weight only.

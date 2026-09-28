@@ -9,7 +9,9 @@ import java.util.List;
 import java.util.Map;
 
 import org.beehive.jitllm.server.Json;
+import ai.beestream.jitllm.tirex.cpu.CpuReference;
 import ai.beestream.jitllm.tirex.io.SafeTensors;
+import ai.beestream.jitllm.tirex.io.Tensor;
 
 /**
  * Locates the converted weights ({@code -Dtirex.weights}) and a golden directory
@@ -37,6 +39,43 @@ public final class GoldenData {
 
     public static SafeTensors open(String testCase) throws IOException {
         return SafeTensors.open(goldenDir().resolve(testCase + ".safetensors"));
+    }
+
+    /** Number of forward passes recorded for a case (2 with sign-flip TTA). */
+    @SuppressWarnings("unchecked")
+    public static int passes(String testCase) throws IOException {
+        Map<String, Object> manifest = Json.parseObject(Files.readString(goldenDir().resolve("manifest.json")));
+        Map<String, Object> info = (Map<String, Object>) ((Map<String, Object>) manifest.get("cases")).get(testCase);
+        return ((Number) info.get("passes")).intValue();
+    }
+
+    /** The batch {@code TiRex2.forward()} received in pass {@code pass}. */
+    public static CpuReference.Batch batch(SafeTensors g, int pass) {
+        Tensor x = g.get("pass" + pass + ".batch.x");
+        float[] flat = x.toFloatArray();
+        int rows = x.dim(0), len = x.dim(1);
+        float[][] rowsX = new float[rows][];
+        for (int r = 0; r < rows; r++) {
+            rowsX[r] = java.util.Arrays.copyOfRange(flat, r * len, (r + 1) * len);
+        }
+        float[] group = g.get("pass" + pass + ".batch.group_vector").toFloatArray();
+        float[] targetF = g.get("pass" + pass + ".batch.target_mask").toFloatArray();
+        boolean[] target = new boolean[rows];
+        for (int r = 0; r < rows; r++) {
+            target[r] = targetF[r] != 0f;
+        }
+        return new CpuReference.Batch(rowsX, group, target);
+    }
+
+    /** {@code [a][b][c]} → {@code [b][a][c]}, flattened (the variate mixer's golden layout is [L, R, D]). */
+    public static float[] swap01(float[] x, int a, int b, int c) {
+        float[] y = new float[x.length];
+        for (int i = 0; i < a; i++) {
+            for (int j = 0; j < b; j++) {
+                System.arraycopy(x, (i * b + j) * c, y, (j * a + i) * c, c);
+            }
+        }
+        return y;
     }
 
     private static Path required(String property) {
