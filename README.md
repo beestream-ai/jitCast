@@ -4,11 +4,14 @@ A TornadoVM inference engine for [TiRex-2](https://github.com/NX-AI/tirex-2), NX
 time-series forecasting model (xLSTM backbone, 9-quantile output), built on jitllm's TornadoVM
 kernels and the TornadoVM hybrid CUDA libraries (cuBLAS/cuBLASLt/cuDNN).
 
-Status: **P0 running on cyclone; P1 in progress**. The reference tooling and the NXAI baseline harness
-are in place. The Java module loads the checkpoint and runs the whole `TiRex2.forward()` on the CPU
-in FP32. It matches the reference at every stage of every golden case: relative max error ≤ 5.5e-6
-per stage and ≤ 2.4e-6 on the model output. Next: host-side batch assembly and the postprocessor
-(so `forecast()` is end to end), then the TornadoVM kernels.
+Status: **P0 running on cyclone; P1 in progress**. The reference tooling and the NXAI baseline
+harness are in place. `CpuTiRex2Engine.forecast()` runs end to end in Java on the CPU (FP32):
+batch assembly, forward pass and postprocessor. It matches the reference in every golden case:
+- assembled batch: bit-identical;
+- each forward stage: relative error ≤ 5.5e-6;
+- final forecasts: relative error ≤ 2.3e-6.
+
+Next: the TornadoVM kernels, tested against this reference.
 
 | Phase | Scope |
 |---|---|
@@ -36,6 +39,8 @@ cd jitllm-tirex
 | `io` | `SafeTensors` (memory-mapped reader), `Tensor` |
 | `model` | `TiRex2Config` (from the embedded model config), `TiRex2Weights` (binds every tensor by name and shape; unknown or missing tensors fail the load) |
 | `cpu` | FP32 CPU reference, the oracle for the device kernels: `Ops`, `InputStage`, `Cells` (mLSTM, sLSTM), `CpuReference` (the full forward pass) |
+| `host` | `ForecastPipeline` (`ForecastModel.forecast`: 512-series windows, batch assembly and padding, horizon slicing, sign-flip TTA) and `PostProcessor` (trend detection, differencing, band calibration) — shared by every engine |
+| `cpu` … | `CpuTiRex2Engine` wraps `CpuReference` in the pipeline |
 | `tornado` | The TornadoVM engine (P1) |
 
 ## Scripts (`scripts/`)

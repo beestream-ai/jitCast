@@ -11,6 +11,7 @@ import java.util.Map;
 import ai.beestream.jitllm.tirex.GoldenData;
 import ai.beestream.jitllm.tirex.io.SafeTensors;
 import ai.beestream.jitllm.tirex.model.TiRex2Weights;
+import ai.beestream.jitllm.tirex.model.ModelBatch;
 import org.junit.Test;
 
 /**
@@ -30,7 +31,7 @@ public class ForwardGoldenTest {
             for (String testCase : GoldenData.cases()) {
                 try (SafeTensors g = GoldenData.open(testCase)) {
                     for (int pass = 0; pass < GoldenData.passes(testCase); pass++) {
-                        CpuReference.Batch batch = GoldenData.batch(g, pass);
+                        ModelBatch batch = GoldenData.batch(g, pass);
                         int rows = batch.x().length;
                         Map<String, float[]> stages = new LinkedHashMap<>();
                         long t0 = System.nanoTime();

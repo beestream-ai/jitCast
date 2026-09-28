@@ -9,9 +9,10 @@ import java.util.List;
 import java.util.Map;
 
 import org.beehive.jitllm.server.Json;
-import ai.beestream.jitllm.tirex.cpu.CpuReference;
+import ai.beestream.jitllm.tirex.api.TimeSeries;
 import ai.beestream.jitllm.tirex.io.SafeTensors;
 import ai.beestream.jitllm.tirex.io.Tensor;
+import ai.beestream.jitllm.tirex.model.ModelBatch;
 
 /**
  * Locates the converted weights ({@code -Dtirex.weights}) and a golden directory
@@ -49,8 +50,40 @@ public final class GoldenData {
         return ((Number) info.get("passes")).intValue();
     }
 
+    /** The {@code forecast()} inputs of a case: {@code in.<i>.target / past_covariates / future_covariates}. */
+    public static List<TimeSeries> inputs(SafeTensors g) {
+        List<TimeSeries> out = new java.util.ArrayList<>();
+        for (int i = 0; g.contains("in." + i + ".target"); i++) {
+            out.add(new TimeSeries(matrix(g, "in." + i + ".target"), matrix(g, "in." + i + ".past_covariates"),
+                    matrix(g, "in." + i + ".future_covariates")));
+        }
+        return out;
+    }
+
+    /** A 2-D F32 tensor as rows, or null if absent. */
+    public static float[][] matrix(SafeTensors g, String name) {
+        if (!g.contains(name)) {
+            return null;
+        }
+        Tensor t = g.get(name);
+        float[] flat = t.toFloatArray();
+        int cols = t.dim(-1), rows = (int) (t.elements() / cols);
+        float[][] m = new float[rows][];
+        for (int r = 0; r < rows; r++) {
+            m[r] = java.util.Arrays.copyOfRange(flat, r * cols, (r + 1) * cols);
+        }
+        return m;
+    }
+
+    /** A case's forecast() horizon and sign-flip flag from manifest.json. */
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> caseInfo(String testCase) throws IOException {
+        Map<String, Object> manifest = Json.parseObject(Files.readString(goldenDir().resolve("manifest.json")));
+        return (Map<String, Object>) ((Map<String, Object>) manifest.get("cases")).get(testCase);
+    }
+
     /** The batch {@code TiRex2.forward()} received in pass {@code pass}. */
-    public static CpuReference.Batch batch(SafeTensors g, int pass) {
+    public static ModelBatch batch(SafeTensors g, int pass) {
         Tensor x = g.get("pass" + pass + ".batch.x");
         float[] flat = x.toFloatArray();
         int rows = x.dim(0), len = x.dim(1);
@@ -64,7 +97,7 @@ public final class GoldenData {
         for (int r = 0; r < rows; r++) {
             target[r] = targetF[r] != 0f;
         }
-        return new CpuReference.Batch(rowsX, group, target);
+        return new ModelBatch(rowsX, group, target);
     }
 
     /** {@code [a][b][c]} → {@code [b][a][c]}, flattened (the variate mixer's golden layout is [L, R, D]). */

@@ -3,6 +3,8 @@ package ai.beestream.jitllm.tirex.cpu;
 import java.util.Arrays;
 import java.util.stream.IntStream;
 
+import ai.beestream.jitllm.tirex.model.ForwardPass;
+import ai.beestream.jitllm.tirex.model.ModelBatch;
 import ai.beestream.jitllm.tirex.model.TiRex2Config;
 import ai.beestream.jitllm.tirex.model.TiRex2Weights;
 
@@ -12,7 +14,7 @@ import ai.beestream.jitllm.tirex.model.TiRex2Weights;
  *
  * <p>Activations between stages are {@code [rows · patches · D]}, row-major.
  */
-public final class CpuReference {
+public final class CpuReference implements ForwardPass {
 
     /** Receives each stage's output; names match {@code scripts/dump_golden.py}. */
     @FunctionalInterface
@@ -21,15 +23,6 @@ public final class CpuReference {
 
         void accept(String stage, float[] values);
     }
-
-    /**
-     * The batch {@code TiRex2.forward()} receives.
-     *
-     * @param x {@code [rows][paddedLength]}, NaN where there is no observation
-     * @param group group id of each row; rows attend across variates only within their group
-     * @param target whether each row is a target (covariate rows cannot attend to targets)
-     */
-    public record Batch(float[][] x, float[] group, boolean[] target) {}
 
     private final TiRex2Config config;
     private final CpuWeights weights;
@@ -48,8 +41,13 @@ public final class CpuReference {
         return Ops.residualBlock(input.tokens(), input.rows() * input.patches(), weights.inputEmbedding);
     }
 
+    @Override
+    public float[][][] forward(ModelBatch batch) {
+        return forward(batch, StageSink.NONE);
+    }
+
     /** The whole forward pass: {@code [rows][quantiles][patches · patch]}, rescaled to data units. */
-    public float[][][] forward(Batch batch, StageSink sink) {
+    public float[][][] forward(ModelBatch batch, StageSink sink) {
         int rows = batch.x().length;
         int seq = config.numPatches();
         int d = config.embeddingDim();
@@ -73,7 +71,7 @@ public final class CpuReference {
     }
 
     /** Covariate rows with at least one observation in the last {@code futureLen} steps. */
-    int[] knownCovariates(Batch batch) {
+    int[] knownCovariates(ModelBatch batch) {
         int len = config.paddedLength();
         return IntStream.range(0, batch.x().length).filter(r -> {
             if (batch.target()[r]) {
