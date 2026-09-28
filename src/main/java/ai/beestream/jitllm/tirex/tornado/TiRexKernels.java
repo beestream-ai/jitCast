@@ -773,4 +773,117 @@ public final class TiRexKernels {
             }
         }
     }
+    // ---- fused epilogues ------------------------------------------------------------------------
+
+    /**
+     * After a GEMM with β = 0: {@code C[i] = SiLU(C[i] + b[col])} (the bias when {@code bOff >= 0}),
+     * and its FP16 twin — the bias fill, the SiLU and the conversion in one pass.
+     */
+    public static void biasSilu(KernelContext ctx, FloatArray c, FloatArray w, int bOff, int m, int n, HalfFloatArray th,
+            int twin) {
+        int i = ctx.globalIdx;
+        if (i < m * n) {
+            float v = c.get(i);
+            if (bOff >= 0) {
+                v += w.get(bOff + i % n);
+            }
+            v = v / (1f + TornadoMath.exp(-v));
+            c.set(i, v);
+            if (twin == 1) {
+                th.set(i, new HalfFloat(v));
+            }
+        }
+    }
+
+    /**
+     * {@code h[r] += y[r]}, then {@code n[r] = RMSNorm(h[r])·w} (and its FP16 twin), one
+     * work-group of {@link #NORM_THREADS} per row: the residual add and the following RMSNorm in
+     * one pass over h.
+     */
+    public static void addRmsNorm(KernelContext ctx, FloatArray h, FloatArray y, FloatArray n, FloatArray w, int wOff, int d,
+            float eps, HalfFloatArray th, int twin) {
+        int row = ctx.groupIdx;
+        int tid = ctx.localIdx;
+        float[] part = ctx.allocateFloatLocalArray(NORM_THREADS);
+        int base = row * d;
+        float ss = 0f;
+        for (int i = tid; i < d; i += NORM_THREADS) {
+            float v = h.get(base + i) + y.get(base + i);
+            h.set(base + i, v);
+            ss += v * v;
+        }
+        part[tid] = ss;
+        ctx.localBarrier();
+        for (int st = NORM_THREADS / 2; st > 0; st >>= 1) {
+            if (tid < st) {
+                part[tid] += part[tid + st];
+            }
+            ctx.localBarrier();
+        }
+        float inv = 1f / TornadoMath.sqrt(part[0] / d + eps);
+        for (int i = tid; i < d; i += NORM_THREADS) {
+            float v = h.get(base + i) * inv * w.get(wOff + i);
+            n.set(base + i, v);
+            if (twin == 1) {
+                th.set(base + i, new HalfFloat(v));
+            }
+        }
+    }
+
+    /** Threads of {@link #headNormAddRmsNorm}: one per element of a D = 512 row. */
+    public static final int FUSED_NORM_THREADS = 512;
+
+    /**
+     * The end of an sLSTM time mixer and the start of its FFN, fused: per-head LayerNorm of the
+     * cell output {@code x} (weight at {@code gOff}), added into the residual stream {@code h},
+     * then RMSNorm of the new h (weight at {@code rOff}) into {@code n} and its FP16 twin. One
+     * work-group of {@code heads·dh} threads per token, one element each; the per-head sums reduce
+     * within each 128-thread segment and the RMS sum across the whole group.
+     */
+    public static void headNormAddRmsNorm(KernelContext ctx, FloatArray x, FloatArray h, FloatArray n, FloatArray w, int gOff,
+            int rOff, int heads, int dh, float eps, float rmsEps, HalfFloatArray th, int twin) {
+        int tok = ctx.groupIdx;
+        int tid = ctx.localIdx;
+        int d = heads * dh;
+        int seg = tid / dh;
+        int j = tid - seg * dh;
+        float[] part = ctx.allocateFloatLocalArray(FUSED_NORM_THREADS);
+        int idx = tok * d + tid;
+        float v = x.get(idx);
+        part[tid] = v;
+        ctx.localBarrier();
+        for (int st = 64; st > 0; st >>= 1) {
+            if (j < st) {
+                part[tid] += part[tid + st];
+            }
+            ctx.localBarrier();
+        }
+        float mean = part[seg * dh] / dh;
+        ctx.localBarrier();
+        part[tid] = (v - mean) * (v - mean);
+        ctx.localBarrier();
+        for (int st = 64; st > 0; st >>= 1) {
+            if (j < st) {
+                part[tid] += part[tid + st];
+            }
+            ctx.localBarrier();
+        }
+        float ln = (v - mean) / TornadoMath.sqrt(part[seg * dh] / dh + eps) * w.get(gOff + tid);
+        float hv = h.get(idx) + ln;
+        h.set(idx, hv);
+        ctx.localBarrier();
+        part[tid] = hv * hv;
+        ctx.localBarrier();
+        for (int st = FUSED_NORM_THREADS / 2; st > 0; st >>= 1) {
+            if (tid < st) {
+                part[tid] += part[tid + st];
+            }
+            ctx.localBarrier();
+        }
+        float out = hv / TornadoMath.sqrt(part[0] / d + rmsEps) * w.get(rOff + tid);
+        n.set(idx, out);
+        if (twin == 1) {
+            th.set(idx, new HalfFloat(out));
+        }
+    }
 }

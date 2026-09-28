@@ -387,6 +387,94 @@ public class KernelParityAccelTest {
     private static final uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray NO_TWIN =
             new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(1);
 
+    private static float[] fromTwin(uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray h, int n) {
+        float[] v = new float[n];
+        for (int i = 0; i < n; i++) {
+            v[i] = Float.float16ToFloat(h.getSegment().getAtIndex(java.lang.foreign.ValueLayout.JAVA_SHORT, i));
+        }
+        return v;
+    }
+
+    private static float[] roundHalf(float[] v) {
+        float[] r = new float[v.length];
+        for (int i = 0; i < v.length; i++) {
+            r[i] = Float.float16ToFloat(Float.floatToFloat16(v[i]));
+        }
+        return r;
+    }
+
+    @Test
+    public void fusedEpiloguesAndNorms() {
+        // biasSilu, with and without a bias
+        int m = 29, n = 70;
+        float[] c0 = random(m * n, 2f), wb = random(n, 1f);
+        for (int withBias : new int[] {1, 0}) {
+            FloatArray fc = FloatArray.fromArray(c0), fw = FloatArray.fromArray(wb);
+            uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray th = new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(m * n);
+            KernelContext ctx = new KernelContext();
+            int bOff = withBias == 1 ? 0 : -1;
+            run("t", items(m * n), g -> g.task("t", TiRexKernels::biasSilu, ctx, fc, fw, bOff, m, n, th, 1), fc, fw);
+            float[] exp = c0.clone();
+            for (int i = 0; i < exp.length; i++) {
+                exp[i] = Ops.silu(exp[i] + (withBias == 1 ? wb[i % n] : 0f));
+            }
+            check("biasSilu bias=" + withBias, fc.toHeapArray(), exp);
+        }
+
+        // addRmsNorm: h += y, n = RMSNorm(h)·w
+        int rows = 7;
+        float[] h0 = random(rows * D, 1f), y0 = random(rows * D, 1f), w = random(D, 1f);
+        FloatArray fh = FloatArray.fromArray(h0), fy = FloatArray.fromArray(y0), fn = new FloatArray(rows * D), fw = FloatArray.fromArray(w);
+        uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray tn = new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(rows * D);
+        KernelContext ctx = new KernelContext();
+        TaskGraph g = new TaskGraph("k").transferToDevice(DataTransferMode.EVERY_EXECUTION, fh, fy, fn, fw, tn)
+                .task("t", TiRexKernels::addRmsNorm, ctx, fh, fy, fn, fw, 0, D, 1e-6f, tn, 1)
+                .transferToHost(DataTransferMode.EVERY_EXECUTION, fh, fn, tn);
+        execute(g, grid1(rows * 256, 256));
+        float[] hExp = h0.clone();
+        Ops.addInPlace(hExp, y0);
+        float[] nExp = Ops.rmsNorm(hExp, rows, D, w, 1e-6f);
+        check("addRmsNorm h", fh.toHeapArray(), hExp);
+        check("addRmsNorm n", fn.toHeapArray(), nExp);
+        check("addRmsNorm twin", fromTwin(tn, rows * D), roundHalf(fn.toHeapArray()));
+
+        // headNormAddRmsNorm: per-head LN of x added into h, then RMSNorm into n
+        if (maxWorkGroup() >= TiRexKernels.FUSED_NORM_THREADS) {
+            float[] x0 = random(rows * D, 1f), wg = random(D, 1f), wr = random(D, 1f);
+            float[] packed = new float[2 * D];
+            System.arraycopy(wg, 0, packed, 0, D);
+            System.arraycopy(wr, 0, packed, D, D);
+            FloatArray fx = FloatArray.fromArray(x0), fh2 = FloatArray.fromArray(h0), fn2 = new FloatArray(rows * D);
+            FloatArray fp = FloatArray.fromArray(packed);
+            uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray tn2 = new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(rows * D);
+            TaskGraph g2 = new TaskGraph("k").transferToDevice(DataTransferMode.EVERY_EXECUTION, fx, fh2, fn2, fp, tn2)
+                    .task("t", TiRexKernels::headNormAddRmsNorm, ctx, fx, fh2, fn2, fp, 0, D, HEADS, 128, 1e-6f, 1e-6f, tn2, 1)
+                    .transferToHost(DataTransferMode.EVERY_EXECUTION, fh2, fn2, tn2);
+            execute(g2, grid1(rows * D, D));
+            float[] h2 = h0.clone();
+            Ops.addInPlace(h2, Ops.headLayerNorm(x0, rows, HEADS, 128, wg, 1e-6f));
+            check("headNormAddRms h", fh2.toHeapArray(), h2);
+            check("headNormAddRms n", fn2.toHeapArray(), Ops.rmsNorm(h2, rows, D, wr, 1e-6f));
+            check("headNormAddRms twin", fromTwin(tn2, rows * D), roundHalf(fn2.toHeapArray()));
+        }
+    }
+
+    private static void execute(TaskGraph g, WorkerGrid wg) {
+        try (TornadoExecutionPlan plan = new TornadoExecutionPlan(g.snapshot())) {
+            GridScheduler grid = new GridScheduler();
+            grid.addWorkerGrid("k.t", wg);
+            plan.withGridScheduler(grid);
+            String device = System.getProperty("tirex.tornado.device");
+            if (device != null && !device.isBlank()) {
+                String[] dd = device.split(":");
+                plan.withDevice(TornadoExecutionPlan.getDevice(Integer.parseInt(dd[0]), Integer.parseInt(dd[1])));
+            }
+            plan.execute();
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
     private static ai.beestream.jitllm.tirex.model.TiRex2Config testConfig() {
         return new ai.beestream.jitllm.tirex.model.TiRex2Config(12, 512, 32, 2048, 2048, 2048, 320, new float[9], true,
                 true, 1e-7f, true, false, java.util.List.of(), 4, 4, 4);

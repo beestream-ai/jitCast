@@ -200,6 +200,11 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         return n;
     }
 
+    /** Whether the fused per-head-norm + residual + RMSNorm kernel fits: one thread per element of a row. */
+    private boolean fusedNorm(int heads, int dh) {
+        return heads * dh == TiRexKernels.FUSED_NORM_THREADS && device().getDeviceMaxWorkgroupDimensions()[0] >= heads * dh;
+    }
+
     /** qkNorm vectors reduced concurrently: as many 128-thread segments as the device allows, up to 2·heads. */
     private int qkNormVectorsPerPass(int heads, int dh) {
         long max = Math.min(device().getDeviceMaxWorkgroupDimensions()[0], TiRexKernels.QKNORM_MAX_THREADS);
@@ -395,12 +400,13 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                     b.gemm(s + "comb", big, blk.combination(), cell, nKnown * seq, 0);
                     b.items(s + "scatter", nKnown * seq * d);
                     g.task(s + "scatter", TiRexKernels::scatterRows, ctx, cell, yc, known, nKnown, seq, d);
-                    b.items(s + "resid", tokens * d);
-                    g.task(s + "resid", TiRexKernels::addInPlace, ctx, h, yc, tokens * d);
-                } else {
-                    cell(b, s, blk, n, h, rows, true);
+                    // h += yc and the FFN's RMSNorm in one pass
+                    grid.addWorkerGrid(b.name + "." + s + "resid", group(tokens * TiRexKernels.NORM_THREADS, TiRexKernels.NORM_THREADS));
+                    g.task(s + "resid", TiRexKernels::addRmsNorm, ctx, h, yc, n, w, blk.normFfn(), d, TiRex2Config.NORM_EPS,
+                            b.twin(n), b.hasTwin(n));
+                } else if (!cell(b, s, blk, n, h, rows, true, blk.normFfn())) {
+                    b.rms(s + "fnorm", h, n, blk.normFfn(), tokens, d, TiRex2Config.NORM_EPS);
                 }
-                b.rms(s + "fnorm", h, n, blk.normFfn(), tokens, d, TiRex2Config.NORM_EPS);
                 b.gemm(s + "up", n, blk.upGateUp(), big, tokens, 0);
                 b.items(s + "swiglu", tokens * blk.ffnDim());
                 g.task(s + "swiglu", TiRexKernels::swiGlu, ctx, big, proj, tokens, blk.ffnDim(), b.twin(proj), b.hasTwin(proj));
@@ -442,6 +448,16 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
          */
         private void cell(Builder b, String s, PackedWeights.Block blk, FloatArray in, FloatArray dst, int count,
                 boolean add) {
+            cell(b, s, blk, in, dst, count, add, -1);
+        }
+
+        /**
+         * As above; with {@code ffnNorm >= 0} (and {@code add}) an sLSTM cell may also produce the
+         * FFN's RMSNorm of the new residual stream into {@code n} (weight at {@code ffnNorm}),
+         * fusing the per-head norm, the residual add and the RMSNorm. Returns whether it did.
+         */
+        private boolean cell(Builder b, String s, PackedWeights.Block blk, FloatArray in, FloatArray dst, int count,
+                boolean add, int ffnNorm) {
             TiRex2Config c = config;
             int seq = c.numPatches();
             int d = c.embeddingDim();
@@ -482,8 +498,15 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                     b.g.task(s + "slstm", TiRexKernels::slstmRecurrence, b.ctx, big, b.w, blk.recurrent(), blk.slstmBias(),
                             cell, count, seq, heads, gpt, rb);
                 }
+                if (add && ffnNorm >= 0 && fusedNorm(heads, dh)) {
+                    b.grid.addWorkerGrid(b.name + "." + s + "hnorm", group(tokens * heads * dh, heads * dh));
+                    b.g.task(s + "hnorm", TiRexKernels::headNormAddRmsNorm, b.ctx, cell, dst, n, b.w, blk.groupNorm(), ffnNorm,
+                            heads, dh, TiRex2Config.NORM_EPS, TiRex2Config.NORM_EPS, b.twin(n), b.hasTwin(n));
+                    return true;
+                }
                 b.headNorm(s + "hnorm", cell, dst, blk.groupNorm(), tokens, heads, dh, proj, 0, 0, add ? 2 : 0);
             }
+            return false;
         }
 
         /** The variate mixer over the {@code nk} kept rows: gather, attention + MLP, scatter back. */
@@ -674,11 +697,14 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             if (wm != null && graphWeights.add(wm)) {
                 g.transferToDevice(DataTransferMode.FIRST_EXECUTION, wm);
             }
-            if (bias) {
+            // SiLU without accumulation: the GEMM writes C (β = 0) and one epilogue adds the bias,
+            // applies SiLU and writes the FP16 twin
+            boolean siluEpilogue = (flags & TiRexKernels.SILU) != 0 && !acc;
+            if (bias && !siluEpilogue) {
                 items(name + "_bias", m * l.out());
                 g.task(name + "_bias", TiRexKernels::biasFill, ctx, c, w, l.b(), m, l.out(), acc ? 1 : 0);
             }
-            float beta = bias || acc ? 1f : 0f;
+            float beta = (bias && !siluEpilogue) || acc ? 1f : 0f;
             if (half) {
                 uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray wh = halfWeight(l);
                 uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray ah = halfInput(name, a, m, k);
@@ -693,7 +719,10 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 g.libraryTask(name, uk.ac.manchester.tornado.cublas.CuBlas::cublasSgemm, 1, 0, n, m, k, 1f, wm, k, a, k,
                         beta, c, n);
             }
-            if ((flags & TiRexKernels.SILU) != 0) {
+            if (siluEpilogue) {
+                items(name + "_silu", m * n);
+                g.task(name + "_silu", TiRexKernels::biasSilu, ctx, c, w, bias ? l.b() : -1, m, n, twin(c), hasTwin(c));
+            } else if ((flags & TiRexKernels.SILU) != 0) {
                 items(name + "_silu", m * n);
                 g.task(name + "_silu", TiRexKernels::siluInPlace, ctx, c, m * n, twin(c), hasTwin(c));
             }
