@@ -221,6 +221,9 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             TaskGraph g = b.begin("in");
             g.transferToDevice(DataTransferMode.FIRST_EXECUTION, shared);
             g.transferToDevice(DataTransferMode.EVERY_EXECUTION, perCall.toArray());
+            // Every graph registers at least one worker grid: TornadoVM 7.0.x's isGridRegistered()
+            // dereferences a null scheduler for a graph with none (the input graph under cuBLAS).
+            grid.addWorkerGrid(b.name + ".scale", new WorkerGrid1D(rows));
             g.task("scale", TiRexKernels::scalePatch, x, present, tok, stats, rows, len, p, c.useArcsinh() ? 1 : 0,
                     c.binaryAware() ? 1 : 0, TiRex2Config.SCALER_EPS);
             b.residual("in", tok, big, h, tokens, weights.inputEmbedding());
