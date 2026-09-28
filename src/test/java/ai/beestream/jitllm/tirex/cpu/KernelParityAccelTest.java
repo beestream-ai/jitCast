@@ -123,7 +123,7 @@ public class KernelParityAccelTest {
         float[] x = random(rows * D, 2f), w = random(D, 1f), gate = random(rows * D, 1f), y0 = random(rows * D, 1f);
         FloatArray fx = FloatArray.fromArray(x), fw = FloatArray.fromArray(w), fy = new FloatArray(rows * D);
         KernelContext ctx = new KernelContext();
-        run("t", grid1(rows * 256, 256), g -> g.task("t", TiRexKernels::rmsNorm, ctx, fx, fy, fw, 0, D, 1e-6f), fy, fx, fw);
+        run("t", grid1(rows * 256, 256), g -> g.task("t", TiRexKernels::rmsNorm, ctx, fx, fy, fw, 0, D, 1e-6f, NO_TWIN, 0), fy, fx, fw);
         check("rmsNorm", fy.toHeapArray(), Ops.rmsNorm(x, rows, D, w, 1e-6f));
 
         float[] ln = Ops.headLayerNorm(x, rows, HEADS, 128, w, 1e-6f);
@@ -131,7 +131,7 @@ public class KernelParityAccelTest {
             FloatArray fg = FloatArray.fromArray(gate), fo = FloatArray.fromArray(y0);
             int md = mode;
             run("t", grid1(rows * D, 128), g -> g.task("t", TiRexKernels::headLayerNorm, ctx, fx, fo, fw, 0, HEADS, 128,
-                    1e-6f, fg, D, 0, md), fo, fx, fw, fg);
+                    1e-6f, fg, D, 0, md, NO_TWIN, 0), fo, fx, fw, fg);
             float[] exp = ln.clone();
             for (int i = 0; i < exp.length; i++) {
                 exp[i] = mode == 1 ? (float) (Ops.sigmoid(gate[i]) * exp[i]) : mode == 2 ? exp[i] + y0[i] : exp[i];
@@ -220,7 +220,7 @@ public class KernelParityAccelTest {
         float[] big = random(n * 2 * ffn, 2f);
         FloatArray fb = FloatArray.fromArray(big), fo = new FloatArray(n * ffn);
         KernelContext ctx = new KernelContext();
-        run("t", items(n * ffn), g -> g.task("t", TiRexKernels::swiGlu, ctx, fb, fo, n, ffn), fo, fb);
+        run("t", items(n * ffn), g -> g.task("t", TiRexKernels::swiGlu, ctx, fb, fo, n, ffn, NO_TWIN, 0), fo, fb);
         float[] exp = new float[n * ffn];
         for (int r = 0; r < n; r++) {
             for (int j = 0; j < ffn; j++) {
@@ -248,7 +248,7 @@ public class KernelParityAccelTest {
         FloatArray fx = FloatArray.fromArray(clean), fp = FloatArray.fromArray(here);
         FloatArray ft = new FloatArray(rows * 74 * 64), fs = new FloatArray(rows * 3);
         KernelContext ctx = new KernelContext();
-        run("t", grid1(rows * 256, 256), g -> g.task("t", TiRexKernels::scalePatch, ctx, fx, fp, ft, fs, rows, len, p, 1, 1, 1e-8f), ft,
+        run("t", grid1(rows * 256, 256), g -> g.task("t", TiRexKernels::scalePatch, ctx, fx, fp, ft, fs, rows, len, p, 1, 1, 1e-8f, NO_TWIN, 0), ft,
                 fx, fp, fs);
         float[][] rowsX = new float[rows][];
         for (int r = 0; r < rows; r++) {
@@ -273,7 +273,7 @@ public class KernelParityAccelTest {
         FloatArray fp = FloatArray.fromArray(p), fo = new FloatArray(nk * SEQ * D);
         IntArray fs = IntArray.fromArray(start), fe = IntArray.fromArray(end), ft = IntArray.fromArray(target);
         TaskGraph g = new TaskGraph("k").transferToDevice(DataTransferMode.EVERY_EXECUTION, fp, fs, fe, ft, fo)
-                .task("t", TiRexKernels::variateAttention, new KernelContext(), fp, fo, fs, fe, ft, nk, SEQ, HEADS, dh, stride)
+                .task("t", TiRexKernels::variateAttention, new KernelContext(), fp, fo, fs, fe, ft, nk, SEQ, HEADS, dh, stride, NO_TWIN, 0)
                 .transferToHost(DataTransferMode.EVERY_EXECUTION, fo);
         try (TornadoExecutionPlan plan = new TornadoExecutionPlan(g.snapshot())) {
             GridScheduler grid = new GridScheduler();
@@ -330,19 +330,62 @@ public class KernelParityAccelTest {
     public void qkNormPerHead() {
         int tokens = 37, dh = 128, stride = 3 * D;
         float[] p = random(tokens * stride, 3f);
-        FloatArray fp = FloatArray.fromArray(p);
-        KernelContext ctx = new KernelContext();
-        float eps = Math.ulp(1.0f);
-        run("t", grid1(tokens * dh, dh), g -> g.task("t", TiRexKernels::qkNorm, ctx, fp, tokens, HEADS, dh, stride, eps), fp, fp);
         float[] exp = p.clone();
         for (int tok = 0; tok < tokens; tok++) {
             // q and k (the first 2·D values of the token) per head; v untouched
             float[] qk = java.util.Arrays.copyOfRange(p, tok * stride, tok * stride + 2 * D);
-            float[] nrm = Ops.rmsNorm(qk, 2 * HEADS, dh, null, eps);
+            float[] nrm = Ops.rmsNorm(qk, 2 * HEADS, dh, null, Math.ulp(1.0f));
             System.arraycopy(nrm, 0, exp, tok * stride, 2 * D);
         }
-        check("qkNorm", fp.toHeapArray(), exp);
+        KernelContext ctx = new KernelContext();
+        float eps = Math.ulp(1.0f);
+        for (int vpp : new int[] {1, 2, 8}) {
+            if ((long) vpp * dh > maxWorkGroup()) {
+                continue;
+            }
+            FloatArray fp = FloatArray.fromArray(p);
+            run("t", grid1(tokens * vpp * dh, vpp * dh), g -> g.task("t", TiRexKernels::qkNorm, ctx, fp, tokens, HEADS, dh, stride, eps, vpp), fp, fp);
+            check("qkNorm vectors/pass=" + vpp, fp.toHeapArray(), exp);
+        }
     }
+
+    @Test
+    public void producersWriteTheFp16Twin() {
+        int rows = 5;
+        float[] x = random(rows * D, 2f), w = random(D, 1f);
+        FloatArray fx = FloatArray.fromArray(x), fw = FloatArray.fromArray(w), fy = new FloatArray(rows * D);
+        uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray fh = new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(rows * D);
+        KernelContext ctx = new KernelContext();
+        TaskGraph g = new TaskGraph("k").transferToDevice(DataTransferMode.EVERY_EXECUTION, fx, fw, fy, fh)
+                .task("t", TiRexKernels::rmsNorm, ctx, fx, fy, fw, 0, D, 1e-6f, fh, 1)
+                .transferToHost(DataTransferMode.EVERY_EXECUTION, fy, fh);
+        try (TornadoExecutionPlan plan = new TornadoExecutionPlan(g.snapshot())) {
+            GridScheduler grid = new GridScheduler();
+            grid.addWorkerGrid("k.t", grid1(rows * 256, 256));
+            plan.withGridScheduler(grid);
+            String device = System.getProperty("tirex.tornado.device");
+            if (device != null && !device.isBlank()) {
+                String[] dd = device.split(":");
+                plan.withDevice(TornadoExecutionPlan.getDevice(Integer.parseInt(dd[0]), Integer.parseInt(dd[1])));
+            }
+            plan.execute();
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+        float[] y = fy.toHeapArray();
+        float[] twin = new float[rows * D];
+        for (int i = 0; i < twin.length; i++) {
+            twin[i] = Float.float16ToFloat(fh.getSegment().getAtIndex(java.lang.foreign.ValueLayout.JAVA_SHORT, i));
+        }
+        float[] rounded = new float[y.length];
+        for (int i = 0; i < y.length; i++) {
+            rounded[i] = Float.float16ToFloat(Float.floatToFloat16(y[i]));
+        }
+        check("rmsNorm FP16 twin", twin, rounded);
+    }
+
+    private static final uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray NO_TWIN =
+            new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(1);
 
     private static ai.beestream.jitllm.tirex.model.TiRex2Config testConfig() {
         return new ai.beestream.jitllm.tirex.model.TiRex2Config(12, 512, 32, 2048, 2048, 2048, 320, new float[9], true,

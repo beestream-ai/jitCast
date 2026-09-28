@@ -40,7 +40,7 @@ public final class TiRexKernels {
      * mask) and the scaler state {@code stats [r·3 + {0: loc, 1: scale, 2: binary}]}.
      */
     public static void scalePatch(KernelContext ctx, FloatArray x, FloatArray present, FloatArray tok, FloatArray stats,
-            int rows, int len, int patch, int arcsinh, int binaryAware, float eps) {
+            int rows, int len, int patch, int arcsinh, int binaryAware, float eps, HalfFloatArray th, int twin) {
         int r = ctx.groupIdx;
         int tid = ctx.localIdx;
         float[] sum = ctx.allocateFloatLocalArray(NORM_THREADS);
@@ -110,6 +110,10 @@ public final class TiRexKernels {
             }
             tok.set(o + i, here * z);
             tok.set(o + patch + i, here);
+            if (twin == 1) {
+                th.set(o + i, new HalfFloat(here * z));
+                th.set(o + patch + i, new HalfFloat(here));
+            }
         }
     }
 
@@ -155,7 +159,7 @@ public final class TiRexKernels {
     }
 
     /** {@code y = x · rsqrt(mean(x²) + eps) · w} per row of {@code d}; one work-group per row. */
-    public static void rmsNorm(KernelContext ctx, FloatArray x, FloatArray y, FloatArray w, int wOff, int d, float eps) {
+    public static void rmsNorm(KernelContext ctx, FloatArray x, FloatArray y, FloatArray w, int wOff, int d, float eps, HalfFloatArray th, int twin) {
         int row = ctx.groupIdx;
         int tid = ctx.localIdx;
         float[] part = ctx.allocateFloatLocalArray(NORM_THREADS);
@@ -175,7 +179,11 @@ public final class TiRexKernels {
         }
         float inv = 1f / TornadoMath.sqrt(part[0] / d + eps);
         for (int i = tid; i < d; i += NORM_THREADS) {
-            y.set(base + i, x.get(base + i) * inv * w.get(wOff + i));
+            float v = x.get(base + i) * inv * w.get(wOff + i);
+            y.set(base + i, v);
+            if (twin == 1) {
+                th.set(base + i, new HalfFloat(v));
+            }
         }
     }
 
@@ -185,7 +193,7 @@ public final class TiRexKernels {
      * LN(x)} with the gate read at {@code gOff + rowIndex·gStride}; 2: {@code y += LN(x)}.
      */
     public static void headLayerNorm(KernelContext ctx, FloatArray x, FloatArray y, FloatArray w, int wOff, int heads,
-            int dh, float eps, FloatArray g, int gStride, int gOff, int mode) {
+            int dh, float eps, FloatArray g, int gStride, int gOff, int mode, HalfFloatArray th, int twin) {
         int rh = ctx.groupIdx;
         int e = ctx.localIdx;
         int row = rh / heads;
@@ -221,6 +229,9 @@ public final class TiRexKernels {
             out += y.get(idx);
         }
         y.set(idx, out);
+        if (twin == 1) {
+            th.set(idx, new HalfFloat(out));
+        }
     }
 
     /** The mLSTM kernel keeps one step's scores in local memory: sequences up to this length. */
@@ -464,14 +475,18 @@ public final class TiRexKernels {
     }
 
     /** {@code out[i] = SiLU(big[r·2f + j]) · big[r·2f + f + j]} for the fused up-gate|up projection. */
-    public static void swiGlu(KernelContext ctx, FloatArray big, FloatArray out, int n, int ffn) {
+    public static void swiGlu(KernelContext ctx, FloatArray big, FloatArray out, int n, int ffn, HalfFloatArray th, int twin) {
         int id = ctx.globalIdx;
         if (id < n * ffn) {
             int r = id / ffn;
             int j = id - r * ffn;
             float g = big.get(r * 2 * ffn + j);
             float u = big.get(r * 2 * ffn + ffn + j);
-            out.set(id, g / (1f + TornadoMath.exp(-g)) * u);
+            float v = g / (1f + TornadoMath.exp(-g)) * u;
+            out.set(id, v);
+            if (twin == 1) {
+                th.set(id, new HalfFloat(v));
+            }
         }
     }
 
@@ -504,7 +519,7 @@ public final class TiRexKernels {
      * {@code dst[(k·seq + t)·d + j] = src[(idx[k]·seq + t')·d + j]} with {@code t' = seq−1−t} when
      * {@code flip} is 1 (the reverse cell pass reads the known covariates back to front).
      */
-    public static void gatherRows(KernelContext ctx, FloatArray src, FloatArray dst, IntArray idx, int count, int seq, int d, int flip) {
+    public static void gatherRows(KernelContext ctx, FloatArray src, FloatArray dst, IntArray idx, int count, int seq, int d, int flip, HalfFloatArray th, int twin) {
         int id = ctx.globalIdx;
         if (id < count * seq * d) {
             int k = id / (seq * d);
@@ -512,7 +527,11 @@ public final class TiRexKernels {
             int t = rem / d;
             int j = rem - t * d;
             int ts = flip == 1 ? seq - 1 - t : t;
-            dst.set(id, src.get((idx.get(k) * seq + ts) * d + j));
+            float v = src.get((idx.get(k) * seq + ts) * d + j);
+            dst.set(id, v);
+            if (twin == 1) {
+                th.set(id, new HalfFloat(v));
+            }
         }
     }
 
@@ -532,7 +551,7 @@ public final class TiRexKernels {
      * The combination input of the known covariates: {@code cat[(k·seq + t)·2d] = y[known[k], t] |
      * rev[k, seq−1−t]} (the reverse output is flipped back to forward time).
      */
-    public static void concatForward(KernelContext ctx, FloatArray y, FloatArray rev, IntArray known, FloatArray cat, int count, int seq, int d) {
+    public static void concatForward(KernelContext ctx, FloatArray y, FloatArray rev, IntArray known, FloatArray cat, int count, int seq, int d, HalfFloatArray th, int twin) {
         int id = ctx.globalIdx;
         if (id < count * seq * 2 * d) {
             int k = id / (seq * 2 * d);
@@ -546,6 +565,9 @@ public final class TiRexKernels {
                 v = rev.get((k * seq + (seq - 1 - t)) * d + j - d);
             }
             cat.set(id, v);
+            if (twin == 1) {
+                th.set(id, new HalfFloat(v));
+            }
         }
     }
 
@@ -557,29 +579,39 @@ public final class TiRexKernels {
         }
     }
 
+    /** Local memory of {@link #qkNorm}: up to 8 vectors of 128 reduced concurrently. */
+    public static final int QKNORM_MAX_THREADS = 1024;
+
     /**
      * RMS-normalises q and k of the fused {@code q | k | v} projection in place, per head, with no
-     * weight ({@code F.rms_norm}). One work-group of {@code dh = 128} threads per token: thread j
-     * holds element j of each of the {@code 2·heads} vectors (coalesced), reduced in local memory.
+     * weight ({@code F.rms_norm}). One work-group per token; its {@code vectorsPerPass·128} threads
+     * reduce that many of the {@code 2·heads} vectors at once (one 128-thread segment each, element
+     * j per thread, coalesced), so on a device allowing 1024 threads a token takes one pass.
      */
-    public static void qkNorm(KernelContext ctx, FloatArray p, int tokens, int heads, int dh, int stride, float eps) {
+    public static void qkNorm(KernelContext ctx, FloatArray p, int tokens, int heads, int dh, int stride, float eps,
+            int vectorsPerPass) {
         int tok = ctx.groupIdx;
-        int j = ctx.localIdx;
-        float[] part = ctx.allocateFloatLocalArray(128);
-        for (int vec = 0; vec < 2 * heads; vec++) {
-            int o = tok * stride + vec * dh + j; // vec = which·heads + h, and q | k are adjacent
-            float v = p.get(o);
-            part[j] = v * v;
+        int tid = ctx.localIdx;
+        int seg = tid / 128;
+        int j = tid - seg * 128;
+        float[] part = ctx.allocateFloatLocalArray(QKNORM_MAX_THREADS);
+        for (int base = 0; base < 2 * heads; base += vectorsPerPass) {
+            int vec = base + seg; // vec = which·heads + h, and q | k are adjacent
+            int o = tok * stride + vec * dh + j;
+            float v = vec < 2 * heads ? p.get(o) : 0f;
+            part[tid] = v * v;
             ctx.localBarrier();
             for (int st = 64; st > 0; st >>= 1) {
                 if (j < st) {
-                    part[j] += part[j + st];
+                    part[tid] += part[tid + st];
                 }
                 ctx.localBarrier();
             }
-            float inv = 1f / TornadoMath.sqrt(part[0] / dh + eps);
+            float inv = 1f / TornadoMath.sqrt(part[seg * 128] / dh + eps);
             ctx.localBarrier();
-            p.set(o, v * inv);
+            if (vec < 2 * heads) {
+                p.set(o, v * inv);
+            }
         }
     }
 
@@ -600,7 +632,7 @@ public final class TiRexKernels {
      * {@code out [(row·seq + t)·heads·dh]}. Requires {@code dh == 128}.
      */
     public static void variateAttention(KernelContext ctx, FloatArray p, FloatArray out, IntArray groupStart, IntArray groupEnd,
-            IntArray isTarget, int nk, int seq, int heads, int dh, int stride) {
+            IntArray isTarget, int nk, int seq, int heads, int dh, int stride, HalfFloatArray th, int twin) {
         int wg = ctx.groupIdx;
         int tid = ctx.localIdx;
         int h = wg % heads;
@@ -676,7 +708,12 @@ public final class TiRexKernels {
         }
         for (int qq = 0; qq < ATTN_QUERIES; qq++) {
             if (qq < qn) {
-                out.set(((q0 + qq) * seq + t) * d + h * dh + tid, acc[qq] / lRun[qq]);
+                int oi = ((q0 + qq) * seq + t) * d + h * dh + tid;
+                float v = acc[qq] / lRun[qq];
+                out.set(oi, v);
+                if (twin == 1) {
+                    th.set(oi, new HalfFloat(v));
+                }
             }
         }
     }
@@ -694,11 +731,15 @@ public final class TiRexKernels {
     }
 
     /** {@code x[i] = SiLU(x[i])} for the first {@code count} elements. */
-    public static void siluInPlace(KernelContext ctx, FloatArray x, int count) {
+    public static void siluInPlace(KernelContext ctx, FloatArray x, int count, HalfFloatArray th, int twin) {
         int i = ctx.globalIdx;
         if (i < count) {
             float v = x.get(i);
-            x.set(i, v / (1f + TornadoMath.exp(-v)));
+            float y = v / (1f + TornadoMath.exp(-v));
+            x.set(i, y);
+            if (twin == 1) {
+                th.set(i, new HalfFloat(y));
+            }
         }
     }
     /** {@code dst[i] = (half) src[i]} for the first {@code count} elements (A operand of an FP16 GEMM). */
@@ -713,7 +754,7 @@ public final class TiRexKernels {
      * {@link #gemm} flags, so the FP32 residual stream only ever sees FP32 arithmetic.
      */
     public static void fromHalfEpilogue(KernelContext ctx, HalfFloatArray h, FloatArray c, FloatArray w, int bOff, int m, int n,
-            int flags) {
+            int flags, HalfFloatArray th, int twin) {
         int i = ctx.globalIdx;
         if (i < m * n) {
             float v = h.get(i).getFloat32();
@@ -727,6 +768,9 @@ public final class TiRexKernels {
                 v += c.get(i);
             }
             c.set(i, v);
+            if (twin == 1) {
+                th.set(i, new HalfFloat(v));
+            }
         }
     }
 }
