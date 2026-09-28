@@ -11,11 +11,11 @@ batch assembly, forward pass and postprocessor. It matches the reference in ever
 - each forward stage: relative error ≤ 5.5e-6;
 - final forecasts: relative error ≤ 2.3e-6.
 
-The TornadoVM engine (`tornado.TornadoTiRex2Engine`) runs univariate batches end to end on the device, with portable kernels that are not yet optimised. It matches the reference on OpenCL and on Metal (Apple M4 Pro):
-- model output: relative error ≤ 1.3e-5;
+The TornadoVM engine (`tornado.TornadoTiRex2Engine`) runs the full model on the device, including covariates, multi-target series and mixed batches. Its kernels are portable and not yet optimised. It matches the reference in all 13 golden cases on OpenCL and on Metal (Apple M4 Pro):
+- model output: relative error ≤ 2.2e-5;
 - forecasts: relative error ≤ 8e-6.
 
-Next: covariates and multivariate (P2), and the CUDA hybrid path on cyclone (cuBLASLt, CUDA graph).
+Next: the CUDA hybrid path on cyclone (cuBLASLt, CUDA graph, BF16), then the benchmark matrix against NXAI.
 
 | Phase | Scope |
 |---|---|
@@ -38,6 +38,12 @@ TORNADOVM_HOME=/path/sdk ../mvnw test -Paccel-tests -Dtest='*AccelTest' -Dtirex.
     -Dtirex.weights=/path/tirex2.safetensors -Dtirex.golden=/path/golden-cpu
 ```
 
+Two TornadoVM 7.0.1 constraints shape the engine:
+- **Graph limits.** A task graph holds at most 256 tasks and an 8 KiB bytecode buffer, so the forward pass is split into 14 graphs that pass device buffers along with `persistOnDevice` / `consumeFromDevice`.
+- **A codegen bug.** A short-circuit `a || b` condition inside a loop is emitted without a `continue`, so the variate-attention mask is computed as an int instead.
+
+The variate attention loops only over the rows of the query's own group, which costs O(Σ group²). NXAI's dense masked attention costs O(rows²).
+
 The host uploads values with NaN replaced by 0, plus an is-present mask, so no kernel ever tests for NaN. Device compilers may assume NaNs don't occur (Metal's default fast math does, and so does CUDA's `--use_fast_math`), which makes `v != v` checks unreliable.
 
 ## Java layout (`ai.beestream.jitllm.tirex`)
@@ -50,7 +56,7 @@ The host uploads values with NaN replaced by 0, plus an is-present mask, so no k
 | `cpu` | FP32 CPU reference, the oracle for the device kernels: `Ops`, `InputStage`, `Cells` (mLSTM, sLSTM), `CpuReference` (the full forward pass) |
 | `host` | `ForecastPipeline` (`ForecastModel.forecast`: 512-series windows, batch assembly and padding, horizon slicing, sign-flip TTA) and `PostProcessor` (trend detection, differencing, band calibration) — shared by every engine |
 | `cpu` … | `CpuTiRex2Engine` wraps `CpuReference` in the pipeline |
-| `tornado` | `TiRexKernels` (scale+patch, tiled GEMM with bias/SiLU/accumulate epilogues, RMSNorm, per-head LayerNorm, mLSTM cell, sLSTM gates + recurrence, SwiGLU, un-patch), `PackedWeights` (one device buffer; fused q\|k\|v\|o\|i\|f and up_gate\|up), `TornadoForward` (one cached plan per row count), `TornadoTiRex2Engine` |
+| `tornado` | `TiRexKernels` (scale+patch, tiled GEMM with bias/SiLU/accumulate epilogues, RMSNorm, per-head LayerNorm, mLSTM cell, sLSTM gates + recurrence, SwiGLU, un-patch), `PackedWeights` (one device buffer; fused q\|k\|v\|o\|i\|f and up_gate\|up), `TornadoForward` (a plan per batch shape — rows, known covariates, rows in multi-row groups — built as a chain of task graphs: input, one per block, output), `TornadoTiRex2Engine` |
 
 ## Scripts (`scripts/`)
 

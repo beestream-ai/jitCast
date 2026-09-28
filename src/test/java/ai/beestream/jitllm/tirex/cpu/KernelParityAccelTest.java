@@ -16,6 +16,7 @@ import uk.ac.manchester.tornado.api.WorkerGrid1D;
 import uk.ac.manchester.tornado.api.WorkerGrid2D;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
+import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 
 /**
  * Each TornadoVM kernel on its own, on random inputs, against the CPU reference operator it
@@ -200,6 +201,65 @@ public class KernelParityAccelTest {
             rowsX[r] = java.util.Arrays.copyOfRange(x, r * len, (r + 1) * len);
         }
         check("scalePatch", ft.toHeapArray(), InputStage.apply(rowsX, testConfig()).tokens());
+    }
+
+    @Test
+    public void variateAttentionWithGroupsAndMask() {
+        // two groups: rows 0..2 (target, cov, cov) and rows 3..6 (target, target, cov, cov)
+        int nk = 7, dh = 128, stride = 3 * D;
+        int[] start = {0, 0, 0, 3, 3, 3, 3}, end = {3, 3, 3, 7, 7, 7, 7}, target = {1, 0, 0, 1, 1, 0, 0};
+        float[] p = random(nk * SEQ * stride, 1f);
+        FloatArray fp = FloatArray.fromArray(p), fo = new FloatArray(nk * SEQ * D);
+        IntArray fs = IntArray.fromArray(start), fe = IntArray.fromArray(end), ft = IntArray.fromArray(target);
+        TaskGraph g = new TaskGraph("k").transferToDevice(DataTransferMode.EVERY_EXECUTION, fp, fs, fe, ft, fo)
+                .task("t", TiRexKernels::variateAttention, fp, fo, fs, fe, ft, nk, SEQ, HEADS, dh, stride)
+                .transferToHost(DataTransferMode.EVERY_EXECUTION, fo);
+        try (TornadoExecutionPlan plan = new TornadoExecutionPlan(g.snapshot())) {
+            String device = System.getProperty("tirex.tornado.device");
+            if (device != null && !device.isBlank()) {
+                String[] dd = device.split(":");
+                plan.withDevice(TornadoExecutionPlan.getDevice(Integer.parseInt(dd[0]), Integer.parseInt(dd[1])));
+            }
+            plan.execute();
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+        float[] exp = new float[nk * SEQ * D];
+        double scale = 1 / Math.sqrt(dh);
+        for (int q = 0; q < nk; q++) {
+            for (int t = 0; t < SEQ; t++) {
+                for (int h = 0; h < HEADS; h++) {
+                    int qo = (q * SEQ + t) * stride + h * dh;
+                    double[] sc = new double[nk];
+                    double max = Double.NEGATIVE_INFINITY;
+                    for (int k = start[q]; k < end[q]; k++) {
+                        if (target[q] == 1 || target[k] == 0) {
+                            double dot = 0;
+                            for (int j = 0; j < dh; j++) {
+                                dot += (double) p[qo + j] * p[(k * SEQ + t) * stride + D + h * dh + j];
+                            }
+                            sc[k] = dot * scale;
+                            max = Math.max(max, sc[k]);
+                        }
+                    }
+                    double sum = 0;
+                    double[] acc = new double[dh];
+                    for (int k = start[q]; k < end[q]; k++) {
+                        if (target[q] == 1 || target[k] == 0) {
+                            double e = Math.exp(sc[k] - max);
+                            sum += e;
+                            for (int j = 0; j < dh; j++) {
+                                acc[j] += e * p[(k * SEQ + t) * stride + 2 * D + h * dh + j];
+                            }
+                        }
+                    }
+                    for (int j = 0; j < dh; j++) {
+                        exp[(q * SEQ + t) * D + h * dh + j] = (float) (acc[j] / sum);
+                    }
+                }
+            }
+        }
+        check("variateAttention", fo.toHeapArray(), exp);
     }
 
     private static ai.beestream.jitllm.tirex.model.TiRex2Config testConfig() {

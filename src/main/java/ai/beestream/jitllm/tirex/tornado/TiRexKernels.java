@@ -3,6 +3,7 @@ package ai.beestream.jitllm.tirex.tornado;
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.math.TornadoMath;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
+import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 
 /**
  * The TornadoVM kernels of the TiRex-2 forward pass (portable: OpenCL, Metal, CUDA). Each one is a
@@ -367,6 +368,143 @@ public final class TiRexKernels {
                 v = (TornadoMath.exp(cv) - TornadoMath.exp(-cv)) * 0.5f;
             }
             out.set(id, v * stats.get(r * 3 + 1) + stats.get(r * 3));
+        }
+    }
+    // ---- P2: covariates and multivariate --------------------------------------------------------
+
+    /**
+     * {@code dst[(k·seq + t)·d + j] = src[(idx[k]·seq + t')·d + j]} with {@code t' = seq−1−t} when
+     * {@code flip} is 1 (the reverse cell pass reads the known covariates back to front).
+     */
+    public static void gatherRows(FloatArray src, FloatArray dst, IntArray idx, int count, int seq, int d, int flip) {
+        for (@uk.ac.manchester.tornado.api.annotations.Parallel int id = 0; id < count * seq * d; id++) {
+            int k = id / (seq * d);
+            int rem = id - k * seq * d;
+            int t = rem / d;
+            int j = rem - t * d;
+            int ts = flip == 1 ? seq - 1 - t : t;
+            dst.set(id, src.get((idx.get(k) * seq + ts) * d + j));
+        }
+    }
+
+    /** {@code dst[(idx[k]·seq + t)·d + j] = src[(k·seq + t)·d + j]}. */
+    public static void scatterRows(FloatArray src, FloatArray dst, IntArray idx, int count, int seq, int d) {
+        for (@uk.ac.manchester.tornado.api.annotations.Parallel int id = 0; id < count * seq * d; id++) {
+            int k = id / (seq * d);
+            int rem = id - k * seq * d;
+            int t = rem / d;
+            int j = rem - t * d;
+            dst.set((idx.get(k) * seq + t) * d + j, src.get(id));
+        }
+    }
+
+    /**
+     * The combination input of the known covariates: {@code cat[(k·seq + t)·2d] = y[known[k], t] |
+     * rev[k, seq−1−t]} (the reverse output is flipped back to forward time).
+     */
+    public static void concatForward(FloatArray y, FloatArray rev, IntArray known, FloatArray cat, int count, int seq, int d) {
+        for (@uk.ac.manchester.tornado.api.annotations.Parallel int id = 0; id < count * seq * 2 * d; id++) {
+            int k = id / (seq * 2 * d);
+            int rem = id - k * seq * 2 * d;
+            int t = rem / (2 * d);
+            int j = rem - t * 2 * d;
+            float v;
+            if (j < d) {
+                v = y.get((known.get(k) * seq + t) * d + j);
+            } else {
+                v = rev.get((k * seq + (seq - 1 - t)) * d + j - d);
+            }
+            cat.set(id, v);
+        }
+    }
+
+    /** {@code acc[i] += x[i]}. */
+    public static void addInPlace(FloatArray acc, FloatArray x, int n) {
+        for (@uk.ac.manchester.tornado.api.annotations.Parallel int i = 0; i < n; i++) {
+            acc.set(i, acc.get(i) + x.get(i));
+        }
+    }
+
+    /**
+     * RMS-normalises q and k of the fused {@code q | k | v} projection in place, per head, with no
+     * weight ({@code F.rms_norm}); one thread per (token, q or k, head).
+     */
+    public static void qkNorm(FloatArray p, int tokens, int heads, int dh, int stride, float eps) {
+        for (@uk.ac.manchester.tornado.api.annotations.Parallel int id = 0; id < tokens * 2 * heads; id++) {
+            int tok = id / (2 * heads);
+            int rem = id - tok * 2 * heads;
+            int o = tok * stride + rem * dh; // rem = which·heads + h, and q | k are adjacent
+            float ss = 0f;
+            for (int j = 0; j < dh; j++) {
+                float v = p.get(o + j);
+                ss += v * v;
+            }
+            float inv = 1f / TornadoMath.sqrt(ss / dh + eps);
+            for (int j = 0; j < dh; j++) {
+                p.set(o + j, p.get(o + j) * inv);
+            }
+        }
+    }
+
+    /**
+     * Attention across the rows of a group, per patch and head; one thread per (query row, t, head).
+     * Rows are the kept rows {@code 0..nk}, token-major {@code [(row·seq + t)·stride]}; a query
+     * attends to the keys {@code groupStart[q] .. groupEnd[q]} of its own group, except that a
+     * covariate query does not attend to target keys. Writes {@code out [(row·seq + t)·heads·dh]}.
+     */
+    public static void variateAttention(FloatArray p, FloatArray out, IntArray groupStart, IntArray groupEnd,
+            IntArray isTarget, int nk, int seq, int heads, int dh, int stride) {
+        for (@uk.ac.manchester.tornado.api.annotations.Parallel int id = 0; id < nk * seq * heads; id++) {
+            int q = id / (seq * heads);
+            int rem = id - q * seq * heads;
+            int t = rem / heads;
+            int h = rem - t * heads;
+            int d = heads * dh;
+            float scale = 1f / TornadoMath.sqrt(dh);
+            int qo = (q * seq + t) * stride + h * dh;
+            int qTarget = isTarget.get(q);
+            int s0 = groupStart.get(q);
+            int s1 = groupEnd.get(q);
+            float max = -3.4e38f;
+            // The mask is an int, not `qTarget == 1 || isTarget[k] == 0`: TornadoVM 7.0.1 emits that
+            // short-circuit inside a loop without a `continue`, so a masked key falls through into the
+            // loop body with the next k.
+            for (int k = s0; k < s1; k++) {
+                int allowed = qTarget | (1 - isTarget.get(k));
+                if (allowed != 0) {
+                    int ko = (k * seq + t) * stride + d + h * dh;
+                    float dot = 0f;
+                    for (int j = 0; j < dh; j++) {
+                        dot += p.get(qo + j) * p.get(ko + j);
+                    }
+                    max = TornadoMath.max(max, dot * scale);
+                }
+            }
+            float[] acc = new float[128];
+            for (int j = 0; j < dh; j++) {
+                acc[j] = 0f;
+            }
+            float sum = 0f;
+            for (int k = s0; k < s1; k++) {
+                int allowed = qTarget | (1 - isTarget.get(k));
+                if (allowed != 0) {
+                    int ko = (k * seq + t) * stride + d + h * dh;
+                    float dot = 0f;
+                    for (int j = 0; j < dh; j++) {
+                        dot += p.get(qo + j) * p.get(ko + j);
+                    }
+                    float e = TornadoMath.exp(dot * scale - max);
+                    sum += e;
+                    int vo = (k * seq + t) * stride + 2 * d + h * dh;
+                    for (int j = 0; j < dh; j++) {
+                        acc[j] += e * p.get(vo + j);
+                    }
+                }
+            }
+            int oo = (q * seq + t) * d + h * dh;
+            for (int j = 0; j < dh; j++) {
+                out.set(oo + j, acc[j] / sum);
+            }
         }
     }
 }

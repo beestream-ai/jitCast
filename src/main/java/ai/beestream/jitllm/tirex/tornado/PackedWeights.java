@@ -18,7 +18,8 @@ import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
  *   <li>mLSTM {@code q | k | v | o | i | f} → one {@code [1544, 512]} matrix, bias zero except
  *       for i and f;
  *   <li>SwiGLU {@code up_gate | up} → one {@code [2·ffn, 512]} matrix;
- *   <li>sLSTM gate projections in slot order {@code (fgate, igate, zgate, ogate)} → contiguous.
+ *   <li>sLSTM gate projections in slot order {@code (fgate, igate, zgate, ogate)} → contiguous;
+ *   <li>variate attention {@code WQ | WK | WV} → one {@code [3D, D]} matrix.
  * </ul>
  */
 public final class PackedWeights {
@@ -30,7 +31,11 @@ public final class PackedWeights {
 
     /** Offsets of one block; the unused cell's fields are -1 / null. */
     public record Block(boolean mlstm, int normLstm, Lin mlstmProj, int headNorm, Lin outProj, int slstmGates,
-            int recurrent, int slstmBias, int groupNorm, int normFfn, Lin upGateUp, Lin down, int ffnDim) {}
+            int recurrent, int slstmBias, int groupNorm, Lin combination, int normFfn, Lin upGateUp, Lin down,
+            int ffnDim, Variate variate) {}
+
+    /** The variate mixer: {@code WQ | WK | WV} fused into {@code qkv [3D, D]}, then WO and the MLP. */
+    public record Variate(int normAttn, Lin qkv, Lin wo, int normFfn, Lin ffnIn, Lin ffnOut) {}
 
     private final FloatArray data;
     private final Residual inputEmbedding;
@@ -70,11 +75,15 @@ public final class PackedWeights {
                 bias = p.put(s.bias());
                 groupNorm = p.put(s.groupNorm());
             }
+            Lin combination = p.linear(t.combination());
             int normFfn = p.put(t.normFfn());
             Lin upGateUp = p.fused(List.of(t.ffnUpGate(), t.ffnUp()));
             Lin down = p.linear(t.ffnDown());
-            blocks.add(new Block(mlstm, normLstm, proj, headNorm, outProj, gates, rec, bias, groupNorm, normFfn,
-                    upGateUp, down, t.ffnUp().out()));
+            TiRex2Weights.VariateMixer v = b.variate();
+            Variate variate = new Variate(p.put(v.normAttn()), p.fused(List.of(v.wq(), v.wk(), v.wv())),
+                    p.linear(v.wo()), p.put(v.normFfn()), p.linear(v.ffnIn()), p.linear(v.ffnOut()));
+            blocks.add(new Block(mlstm, normLstm, proj, headNorm, outProj, gates, rec, bias, groupNorm, combination,
+                    normFfn, upGateUp, down, t.ffnUp().out(), variate));
         }
         int outNorm = p.put(w.stackOutNorm());
         Residual out = p.residual(w.outputEmbedding());

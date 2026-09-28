@@ -15,27 +15,13 @@ import ai.beestream.jitllm.tirex.model.ModelBatch;
 import org.junit.Test;
 
 /**
- * The TornadoVM forward pass and engine against the reference, on every golden case in P1 scope
- * (every row alone in its group). Runs under -Paccel-tests; pick the device with
+ * The TornadoVM forward pass and engine against the reference, on every golden case (univariate,
+ * multi-target, past and future covariates, mixed batches). Runs under -Paccel-tests; pick the device with
  * {@code -Dtirex.tornado.device=<driver>:<device>}.
  */
 public class TornadoForwardAccelTest {
 
     private static final double TOLERANCE = 1e-4;
-
-    private static boolean univariate(ModelBatch b) {
-        for (int r = 0; r < b.rows(); r++) {
-            if (!b.target()[r]) {
-                return false;
-            }
-            for (int o = r + 1; o < b.rows(); o++) {
-                if (b.group()[o] == b.group()[r]) {
-                    return false;
-                }
-            }
-        }
-        return true;
-    }
 
     @Test
     public void forwardAndForecastMatchTheReference() throws IOException {
@@ -45,9 +31,6 @@ public class TornadoForwardAccelTest {
             for (String testCase : GoldenData.cases()) {
                 try (SafeTensors g = GoldenData.open(testCase)) {
                     ModelBatch batch = GoldenData.batch(g, 0);
-                    if (!univariate(batch)) {
-                        continue;
-                    }
                     checked++;
                     long t0 = System.nanoTime();
                     float[][][] out = engine.forwardPass().forward(batch);
@@ -68,7 +51,7 @@ public class TornadoForwardAccelTest {
                         ferr = Math.max(ferr, GoldenData.relativeMaxError(flatten(f.get(s).values()),
                                 g.get("forecast." + s).toFloatArray()));
                     }
-                    System.out.printf("%-26s rows=%d  first %6d ms  again %8.2f ms  model.out %.2e  forecast %.2e%n",
+                    System.out.printf("%-26s rows=%2d  first %6d ms  again %8.2f ms  model.out %.2e  forecast %.2e%n",
                             testCase, batch.rows(), first, again, err, ferr);
                     if (err > TOLERANCE || ferr > TOLERANCE) {
                         failures.add(testCase + ": model.out " + err + ", forecast " + ferr);
