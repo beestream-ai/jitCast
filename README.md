@@ -15,7 +15,20 @@ The TornadoVM engine (`tornado.TornadoTiRex2Engine`) runs the full model on the 
 - model output: relative error ≤ 2.2e-5;
 - forecasts: relative error ≤ 8e-6.
 
-Next: the CUDA hybrid path on cyclone (cuBLASLt, CUDA graph, BF16), then the benchmark matrix against NXAI.
+On cyclone (RTX 5070 Ti, CUDA backend, cuBLAS FP32 GEMMs), all golden cases pass and compute-sanitizer is clean.
+
+**Univariate e2e vs NXAI (eager / `torch.compile`, best of)**
+
+| batch | NXAI | TornadoVM |
+|---|---|---|
+| 1 | 9.8 ms | **4.6 ms** |
+| 8 | 15.4 ms | **9.6 ms** |
+| 16 | 19.6 ms | **15.4 ms** |
+| 32 | 28.3 ms | 28.3 ms |
+| 64 | **49.0 ms** | 59.1 ms |
+| plateau | **~1,400 series/s** | ~1,080 series/s |
+
+Batch 1 is dominated by the sLSTM recurrence (~66% of GPU time); large batches by FP32 SGEMM (~76%).
 
 | Phase | Scope |
 |---|---|
