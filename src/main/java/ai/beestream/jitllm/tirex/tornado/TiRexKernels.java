@@ -704,4 +704,25 @@ public final class TiRexKernels {
             dst.set(i, new HalfFloat(src.get(i)));
         }
     }
+    /**
+     * After an all-FP16 GEMM: {@code C[i] = act(float(h[i]) + b[col]) (+ C[i])} with the
+     * {@link #gemm} flags, so the FP32 residual stream only ever sees FP32 arithmetic.
+     */
+    public static void fromHalfEpilogue(KernelContext ctx, HalfFloatArray h, FloatArray c, FloatArray w, int bOff, int m, int n,
+            int flags) {
+        int i = ctx.globalIdx;
+        if (i < m * n) {
+            float v = h.get(i).getFloat32();
+            if ((flags & BIAS) != 0) {
+                v += w.get(bOff + i % n);
+            }
+            if ((flags & SILU) != 0) {
+                v = v / (1f + TornadoMath.exp(-v));
+            }
+            if ((flags & ACCUMULATE) != 0) {
+                v += c.get(i);
+            }
+            c.set(i, v);
+        }
+    }
 }
