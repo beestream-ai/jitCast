@@ -1,11 +1,17 @@
-# jitllm-tirex
+# jitrex
 
 A TornadoVM inference engine for [TiRex-2](https://github.com/NX-AI/tirex-2), NXAI's zero-shot
-time-series forecasting model (xLSTM backbone, 9-quantile output), built on jitllm's TornadoVM
-kernels and the TornadoVM hybrid CUDA libraries (cuBLAS/cuBLASLt/cuDNN).
+time-series forecasting model (xLSTM backbone, 9-quantile output), in Java. Its kernels are
+TornadoVM KernelContext kernels (portable: CUDA, OpenCL, Metal); on CUDA the GEMMs can also run
+on the TornadoVM hybrid libraries (cuBLAS, cuBLASLt) or on CUDA Tile.
 
-Status: **P0 running on cyclone; P1 in progress**. The reference tooling and the NXAI baseline
-harness are in place. `CpuTiRex2Engine.forecast()` runs end to end in Java on the CPU (FP32):
+This started as a module of [jitllm](https://github.com/beehive-lab/jitllm) (`jitllm-tirex/`);
+the history up to the move is kept here. Apart from a small JSON reader/writer copied from jitllm
+(`util.Json`), it has no jitllm code or dependency.
+
+Status: P0–P3 are done and P4 (evaluation) is in progress: the benchmark matrix and cold start
+are in `results/2026-09-29-cyclone/summary.md`, and the accuracy parity runs (fev-bench mini,
+GIFT-Eval univariate) are under way. `CpuTiRex2Engine.forecast()` runs end to end in Java on the CPU (FP32):
 batch assembly, forward pass and postprocessor. It matches the reference in every golden case:
 - assembled batch: bit-identical;
 - each forward stage: relative error ≤ 5.5e-6;
@@ -21,6 +27,8 @@ On cyclone (RTX 5070 Ti, CUDA backend, cuBLAS FP32 GEMMs), all golden cases pass
 - GEMMs use FP16 tensor cores (FP16 in, FP32 out) from 1,024 rows, and FP32 below that.
 - The sLSTM recurrent weights are FP16.
 - Worst error against the FP32 reference: model output 1.4e-3, forecasts 6.3e-4 (FP16 forced on every GEMM). NXAI's own CUDA path is at 7.7e-3.
+
+**GEMM modes** (`-Dtirex.tornado.gemm`): `tiled` (FP32 KernelContext, any backend, the default), `half` (FP16 KernelContext, any backend), `cublas`, `cublas-tf32`, `cublas-fp16`, `cublas-auto` (CUDA, cuBLAS), and `cutile` (CUDA Tile API, tensor cores; needs CUDA Toolkit 13.3+, e.g. `pip install cuda-tile[tileiras]` and `-Dtornado.cuda.nvcc=<its nvcc>`). On an RTX 5070 Ti at batch 256, `cublas-auto` reaches ~4,500 series/s, `cutile` ~1,630 and `half` ~1,100.
 
 **cuBLAS library.** TornadoVM's cuBLAS provider dlopens `libcublas.so.12` first. On a machine that also has CUDA 12.0 cuBLAS installed, it silently runs generic, non-tensor-core fallback kernels on Blackwell. The cyclone runs use a user-space shim that maps `lib{cublas,cublasLt,cudart}.so.12` to CUDA 13.0 (`scripts/cyclone/exp_shim.sh`). NXAI uses the cuBLAS 13 that ships with PyTorch.
 
@@ -53,15 +61,15 @@ Each kernel that produces a GEMM input also writes that input's FP16 twin, so th
 ## Build and test
 
 ```bash
-# once, from the repository root: install jitllm against the TornadoVM 7.0.1 release
-./mvnw -Prelease -DskipTests -Dgpg.skip=true install
-# this module; the golden tests are skipped unless both paths are given
-cd jitllm-tirex
-../mvnw test -Dtirex.weights=/path/tirex2.safetensors -Dtirex.golden=/path/golden-cpu
+# JDK 22+ and a TornadoVM SDK (7.0.1 from Maven Central by default; -Dtornadovm.version=... otherwise).
+# The golden tests are skipped unless both paths are given.
+./mvnw test -Dtirex.weights=/path/tirex2.safetensors -Dtirex.golden=/path/golden-cpu
 # device tests: kernel parity and the TornadoVM engine against the goldens (device <driver>:<device>)
-TORNADOVM_HOME=/path/sdk ../mvnw test -Paccel-tests -Dtest='*AccelTest' -Dtirex.tornado.device=1:0 \
+TORNADOVM_HOME=/path/sdk ./mvnw test -Paccel-tests -Dtest='*AccelTest' -Dtirex.tornado.device=1:0 \
     -Dtirex.weights=/path/tirex2.safetensors -Dtirex.golden=/path/golden-cpu
 ```
+
+The weights come from `scripts/convert_ckpt.py` (a Hugging Face checkpoint to safetensors), and the goldens from `scripts/dump_golden.py`.
 
 Two TornadoVM 7.0.1 constraints shape the engine:
 - **Graph limits.** A task graph holds at most 256 tasks and an 8 KiB bytecode buffer, so the forward pass is split into 14 graphs that pass device buffers along with `persistOnDevice` / `consumeFromDevice`.
