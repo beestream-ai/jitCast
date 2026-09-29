@@ -497,6 +497,177 @@ public final class TiRexKernels {
         hOut.set((r * seq + t) * heads * dv + h * dv + j, num / norm);
     }
 
+    /** Query steps per work-group of {@link #mlstmChunk}. */
+    public static final int MLSTM_TB = 16;
+    /** Key steps {@link #mlstmChunk} stages in local memory at a time. */
+    public static final int MLSTM_SB = 16;
+
+    /**
+     * The mLSTM cell, chunkwise ({@link #mlstmCell} computes the same thing one step per
+     * work-group). One work-group of {@code dv = 128} threads per (row, head, block of
+     * {@link #MLSTM_TB} query steps). Keys and values stream through local memory in blocks of
+     * {@link #MLSTM_SB}, and every staged key serves all the block's queries, so global traffic
+     * falls by the query-block size: this is what matters at long contexts, where the per-step
+     * kernel re-reads O(seq²) keys and values.
+     *
+     * <p>The stabiliser is kept online, as in flash attention: {@code m} starts at the zero
+     * initial state's {@code F[t]} and grows with each key block, rescaling the running numerator
+     * and denominator, so it ends at {@code max(F[t], max_s logD[t, s])} exactly as in the
+     * per-step form. Log-decays are suffix sums relative to the block's last step {@code T}:
+     * {@code logD[t, s] = A[s] − B[t]} with {@code A[s] = i_s + Σ_{s<u≤T} logσ(f_u)} and
+     * {@code B[t] = Σ_{t<u≤T} logσ(f_u)} (at most {@link #MLSTM_TB} terms), which keeps the
+     * cancellation small where the weights are large.
+     */
+    public static void mlstmChunk(KernelContext ctx, FloatArray p, FloatArray hOut, int rows, int seq, int heads,
+            int stride, int kOff, int vOff, int iOff, int fOff, float cap, float eps) {
+        int wg = ctx.groupIdx;
+        int j = ctx.localIdx;
+        int blocks = (seq + MLSTM_TB - 1) / MLSTM_TB;
+        int tb = wg % blocks;
+        int rh = wg / blocks;
+        int h = rh % heads;
+        int r = rh / heads;
+        int dqk = 64;
+        int dv = 128;
+        float scale = 0.125f; // 1/sqrt(64)
+        int t0 = tb * MLSTM_TB;
+        int last = TornadoMath.min(t0 + MLSTM_TB, seq) - 1; // T, the block's last step
+        float[] a = ctx.allocateFloatLocalArray(MLSTM_MAX_SEQ);  // logσ(f_s), then A[s]
+        float[] ig = ctx.allocateFloatLocalArray(MLSTM_MAX_SEQ); // capped i_s
+        float[] q = ctx.allocateFloatLocalArray(MLSTM_TB * 64);
+        float[] k = ctx.allocateFloatLocalArray(MLSTM_SB * 64);
+        float[] v = ctx.allocateFloatLocalArray(MLSTM_SB * 128);
+        float[] w = ctx.allocateFloatLocalArray(MLSTM_TB * MLSTM_SB); // scores, then weights
+        float[] lg = ctx.allocateFloatLocalArray(MLSTM_TB * MLSTM_SB);
+        float[] num = ctx.allocateFloatLocalArray(MLSTM_TB * 128);
+        float[] bq = ctx.allocateFloatLocalArray(MLSTM_TB);  // B[t]
+        float[] mq = ctx.allocateFloatLocalArray(MLSTM_TB);  // running stabiliser
+        float[] den = ctx.allocateFloatLocalArray(MLSTM_TB);
+        float[] fac = ctx.allocateFloatLocalArray(MLSTM_TB); // this block's rescale factor
+        float[] ftot = ctx.allocateFloatLocalArray(1);
+
+        for (int s = j; s <= last; s += 128) {
+            int so = (r * seq + s) * stride;
+            float f = p.get(so + fOff + h);
+            f = cap * TornadoMath.tanh(f / cap);
+            a[s] = TornadoMath.min(f, 0f) - TornadoMath.log(1f + TornadoMath.exp(-TornadoMath.abs(f)));
+            float gi = p.get(so + iOff + h);
+            ig[s] = cap * TornadoMath.tanh(gi / cap);
+        }
+        for (int e = j; e < MLSTM_TB * dqk; e += 128) {
+            int tq = e / dqk;
+            float qv = 0f;
+            if (t0 + tq < seq) {
+                qv = p.get((r * seq + t0 + tq) * stride + h * dqk + e % dqk);
+            }
+            q[e] = qv;
+        }
+        for (int e = j; e < MLSTM_TB * dv; e += 128) {
+            num[e] = 0f;
+        }
+        if (j < MLSTM_TB) {
+            bq[j] = 0f;
+        }
+        ctx.localBarrier();
+        if (j == 0) {
+            // suffix sums from T backwards: A[s] = i_s + Σ_{s<u≤T} logσ(f_u), B[t], Σ_{u≤T} logσ(f_u)
+            float acc = 0f;
+            for (int s = last; s >= 0; s--) {
+                float lf = a[s];
+                if (s >= t0) {
+                    bq[s - t0] = acc;
+                }
+                a[s] = ig[s] + acc;
+                acc += lf;
+            }
+            ftot[0] = acc;
+        }
+        ctx.localBarrier();
+        if (j < MLSTM_TB) {
+            mq[j] = ftot[0] - bq[j]; // F[t], the zero initial state's stabiliser term
+            den[j] = 0f;
+        }
+        ctx.localBarrier();
+
+        for (int s0 = 0; s0 <= last; s0 += MLSTM_SB) {
+            for (int e = j; e < MLSTM_SB * dqk; e += 128) {
+                int sk = s0 + e / dqk;
+                float kv = 0f;
+                if (sk <= last) {
+                    kv = p.get((r * seq + sk) * stride + kOff + h * dqk + e % dqk);
+                }
+                k[e] = kv;
+            }
+            for (int e = j; e < MLSTM_SB * dv; e += 128) {
+                int sk = s0 + e / dv;
+                float vv = 0f;
+                if (sk <= last) {
+                    vv = p.get((r * seq + sk) * stride + vOff + h * dv + e % dv);
+                }
+                v[e] = vv;
+            }
+            ctx.localBarrier();
+            // scores and log-decays of the block's (query, key) pairs, two per thread
+            for (int pr = j; pr < MLSTM_TB * MLSTM_SB; pr += 128) {
+                int tq = pr / MLSTM_SB;
+                int sk = pr % MLSTM_SB;
+                float dot = 0f;
+                for (int e = 0; e < dqk; e++) {
+                    dot += q[tq * dqk + e] * k[sk * dqk + e];
+                }
+                w[pr] = dot * scale;
+                float l = -1e30f;
+                int s = s0 + sk;
+                if (s <= t0 + tq) {
+                    if (s <= last) {
+                        l = a[s] - bq[tq];
+                    }
+                }
+                lg[pr] = l;
+            }
+            ctx.localBarrier();
+            // online stabiliser: one thread per query
+            if (j < MLSTM_TB) {
+                float mOld = mq[j];
+                float mNew = mOld;
+                for (int sk = 0; sk < MLSTM_SB; sk++) {
+                    mNew = TornadoMath.max(mNew, lg[j * MLSTM_SB + sk]);
+                }
+                float f = TornadoMath.exp(mOld - mNew);
+                float d = den[j] * f;
+                for (int sk = 0; sk < MLSTM_SB; sk++) {
+                    float l = lg[j * MLSTM_SB + sk];
+                    float c = 0f;
+                    if (l > -1e29f) {
+                        c = w[j * MLSTM_SB + sk] * TornadoMath.exp(l - mNew);
+                    }
+                    w[j * MLSTM_SB + sk] = c;
+                    d += c;
+                }
+                den[j] = d;
+                mq[j] = mNew;
+                fac[j] = f;
+            }
+            ctx.localBarrier();
+            // thread j accumulates output column j for every query of the block
+            for (int tq = 0; tq < MLSTM_TB; tq++) {
+                float acc = num[tq * dv + j] * fac[tq];
+                for (int sk = 0; sk < MLSTM_SB; sk++) {
+                    acc += w[tq * MLSTM_SB + sk] * v[sk * dv + j];
+                }
+                num[tq * dv + j] = acc;
+            }
+            ctx.localBarrier();
+        }
+        for (int tq = 0; tq < MLSTM_TB; tq++) {
+            int t = t0 + tq;
+            if (t < seq) {
+                float norm = TornadoMath.max(TornadoMath.abs(den[tq]), TornadoMath.exp(-mq[tq])) + eps;
+                hOut.set((r * seq + t) * heads * dv + h * dv + j, num[tq * dv + j] / norm);
+            }
+        }
+    }
+
     /** Rows per work-group the sLSTM recurrence can hold in local memory. */
     public static final int SLSTM_MAX_ROWS = 8;
 

@@ -233,6 +233,21 @@ public class KernelParityAccelTest {
     }
 
     @Test
+    public void mlstmChunk() {
+        // 74 and 285 patches, plus lengths that leave a partial last block (1, 17, 31)
+        for (int seq : new int[] {SEQ, 285, 1, 17, 31}) {
+            int rows = 2, stride = 1544;
+            float[] p = random(rows * seq * stride, 1f);
+            FloatArray fp = FloatArray.fromArray(p), fh = new FloatArray(rows * seq * D);
+            KernelContext ctx = new KernelContext();
+            int blocks = (seq + TiRexKernels.MLSTM_TB - 1) / TiRexKernels.MLSTM_TB;
+            run("t", grid1(rows * HEADS * blocks * 128, 128), g -> g.task("t", TiRexKernels::mlstmChunk, ctx, fp, fh, rows, seq, HEADS,
+                    stride, 256, 512, 1536, 1540, 15f, 1e-6f), fh, fp);
+            check("mlstmChunk seq=" + seq, fh.toHeapArray(), Cells.mlstmCore(p, rows, seq, HEADS, stride));
+        }
+    }
+
+    @Test
     public void slstmGatesAndRecurrence() {
         int rows = 3, n = rows * SEQ, dh = 128;
         float[] x = random(n * D, 1f), wg = random(4 * HEADS * dh * dh, 0.05f);

@@ -108,6 +108,13 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 || (gemmMode == GemmMode.CUBLAS_AUTO && pad(m) >= fp16MinTokens);
     }
 
+    /**
+     * {@code -Dtirex.tornado.mlstm=chunk|step}: the chunkwise mLSTM kernel (blocks of query steps
+     * share each staged key; {@link TiRexKernels#mlstmChunk}) or the one-step-per-work-group one
+     * ({@link TiRexKernels#mlstmCell}).
+     */
+    private final boolean mlstmChunk = !"step".equalsIgnoreCase(System.getProperty("tirex.tornado.mlstm", "chunk"));
+
     /** {@code -Dtirex.tornado.slstmR=fp16}: read the sLSTM recurrent kernels from an FP16 copy. */
     private final boolean halfRecurrent = "fp16".equalsIgnoreCase(System.getProperty("tirex.tornado.slstmR", "fp32"));
 
@@ -478,6 +485,10 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 // CUDA backend only: each task graph is captured once and replayed as a CUDA graph
                 exec.withAllGraphs().withCUDAGraph();
             }
+            if (Boolean.getBoolean("tirex.tornado.profile")) {
+                // per-task kernel times on stdout after every execution (analysis only; slows every call)
+                exec.withProfiler(uk.ac.manchester.tornado.api.enums.ProfilerMode.CONSOLE);
+            }
         }
 
         /**
@@ -513,9 +524,16 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 if (seq > TiRexKernels.MLSTM_MAX_SEQ) {
                     throw new IllegalStateException("mlstmCell supports up to " + TiRexKernels.MLSTM_MAX_SEQ + " patches");
                 }
-                b.grid.addWorkerGrid(b.name + "." + s + "mlstm", group(count * heads * seq * (d / heads), d / heads));
-                b.g.task(s + "mlstm", TiRexKernels::mlstmCell, b.ctx, proj, cell, count, seq, heads, pr.out(), qk, 2 * qk,
-                        2 * qk + 2 * d, 2 * qk + 2 * d + heads, TiRex2Config.GATE_SOFT_CAP, TiRex2Config.MLSTM_EPS);
+                if (mlstmChunk) {
+                    int blocks = (seq + TiRexKernels.MLSTM_TB - 1) / TiRexKernels.MLSTM_TB;
+                    b.grid.addWorkerGrid(b.name + "." + s + "mlstm", group(count * heads * blocks * (d / heads), d / heads));
+                    b.g.task(s + "mlstm", TiRexKernels::mlstmChunk, b.ctx, proj, cell, count, seq, heads, pr.out(), qk, 2 * qk,
+                            2 * qk + 2 * d, 2 * qk + 2 * d + heads, TiRex2Config.GATE_SOFT_CAP, TiRex2Config.MLSTM_EPS);
+                } else {
+                    b.grid.addWorkerGrid(b.name + "." + s + "mlstm", group(count * heads * seq * (d / heads), d / heads));
+                    b.g.task(s + "mlstm", TiRexKernels::mlstmCell, b.ctx, proj, cell, count, seq, heads, pr.out(), qk, 2 * qk,
+                            2 * qk + 2 * d, 2 * qk + 2 * d + heads, TiRex2Config.GATE_SOFT_CAP, TiRex2Config.MLSTM_EPS);
+                }
                 b.headNorm(s + "hnorm", cell, in, blk.headNorm(), tokens, heads, d / heads, proj, pr.out(), 2 * qk + d, 1);
                 b.gemm(s + "out", in, blk.outProj(), dst, tokens, add ? TiRexKernels.ACCUMULATE : 0);
             } else {
