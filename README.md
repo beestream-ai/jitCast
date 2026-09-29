@@ -1,3 +1,16 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/jitrex-logo-dark.svg">
+    <img alt="jitrex" src="docs/images/jitrex-logo-light.svg" width="480">
+  </picture>
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg"></a>
+  <img alt="Java 22+" src="https://img.shields.io/badge/java-22%2B-orange.svg">
+  <img alt="TornadoVM" src="https://img.shields.io/badge/TornadoVM-7.0.1%2B-0B1F33.svg">
+</p>
+
 # jitrex
 
 **jitrex** is an inference engine for [TiRex-2](https://github.com/NX-AI/tirex-2), NXAI's zero-shot
@@ -358,3 +371,10 @@ An *FP16 twin* is an FP16 copy of a kernel's output that the kernel writes for t
 ```bash
 ./scripts/cyclone_p0.sh ~/tirex2
 ```
+
+## License
+
+jitrex is released under the [Apache License, Version 2.0](LICENSE).
+Copyright (c) 2026 Beestream Ltd.
+`util/Json.java` is derived from [jitllm](https://github.com/beehive-lab/jitllm) (MIT); see [NOTICE](NOTICE).
+The TiRex-2 model and its weights are NX-AI's, under their own licence terms.

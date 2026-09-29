@@ -12,6 +12,19 @@
     <name>jitrex</name>
     <description>An inference engine for NX-AI TiRex-2 time-series forecasting on TornadoVM, with the hybrid CUDA libraries (cuBLAS) and CUDA Tile</description>
 
+    <url>https://github.com/beestream-ai/jitcast</url>
+    <organization>
+        <name>Beestream Ltd</name>
+        <url>https://github.com/beestream-ai</url>
+    </organization>
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <!-- The TornadoVM artifacts this builds against (on cyclone: -Dtornadovm.version=7.0.2-jdk22plus-dev). -->
