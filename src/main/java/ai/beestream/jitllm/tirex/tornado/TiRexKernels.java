@@ -234,8 +234,11 @@ public final class TiRexKernels {
         }
     }
 
-    /** The mLSTM kernel keeps one step's scores in local memory: sequences up to this length. */
-    public static final int MLSTM_MAX_SEQ = 128;
+    /**
+     * The mLSTM kernel keeps one step's scores in local memory: sequences up to this length (the
+     * GIFT-Eval checkpoints use 285 patches, the base model 74).
+     */
+    public static final int MLSTM_MAX_SEQ = 512;
 
     /**
      * The mLSTM cell (parallel stabilised form, {@code cpu.Cells.mlstmCore}): one work-group of
@@ -258,35 +261,38 @@ public final class TiRexKernels {
         float[] cum = ctx.allocateFloatLocalArray(MLSTM_MAX_SEQ);
         float[] logD = ctx.allocateFloatLocalArray(MLSTM_MAX_SEQ);
         float[] score = ctx.allocateFloatLocalArray(MLSTM_MAX_SEQ);
-        // logσ(capped f_s) and capped i_s for s ≤ t
-        if (j <= t) {
-            int so = (r * seq + j) * stride;
+        // logσ(capped f_s) and capped i_s for s ≤ t (128 threads stride over the steps)
+        for (int s = j; s <= t; s += 128) {
+            int so = (r * seq + s) * stride;
             float f = p.get(so + fOff + h);
             f = cap * TornadoMath.tanh(f / cap);
-            cum[j] = TornadoMath.min(f, 0f) - TornadoMath.log(1f + TornadoMath.exp(-TornadoMath.abs(f)));
+            cum[s] = TornadoMath.min(f, 0f) - TornadoMath.log(1f + TornadoMath.exp(-TornadoMath.abs(f)));
             float ig = p.get(so + iOff + h);
-            logD[j] = cap * TornadoMath.tanh(ig / cap);
+            logD[s] = cap * TornadoMath.tanh(ig / cap);
         }
         ctx.localBarrier();
+        float[] fTotal = ctx.allocateFloatLocalArray(1);
         if (j == 0) {
+            // logD[t, s] = F[t] − F[s] + i[s] with F[t] − F[s] = Σ_{s<u≤t} logσ(f_u) summed from t
+            // backwards: a prefix sum F grows to hundreds over long sequences, and subtracting two of
+            // them in FP32 costs ~1e-4 in the exponent exactly where the weights are largest
             float acc = 0f;
-            for (int s = 0; s <= t; s++) {
+            for (int s = t; s >= 0; s--) {
+                logD[s] = logD[s] + acc;
                 acc += cum[s];
-                cum[s] = acc;
             }
+            fTotal[0] = acc; // F[t], the zero initial state's stabiliser term
         }
         ctx.localBarrier();
-        float ft = cum[t];
-        if (j <= t) {
-            // logD[t, s] = F[t] − F[s] + i[s], and the scaled score q_t·k_s
-            logD[j] = ft - cum[j] + logD[j];
-            int qo = (r * seq + t) * stride + h * dqk;
-            int ko = (r * seq + j) * stride + kOff + h * dqk;
+        float ft = fTotal[0];
+        int qo = (r * seq + t) * stride + h * dqk;
+        for (int s = j; s <= t; s += 128) {
+            int ko = (r * seq + s) * stride + kOff + h * dqk;
             float dot = 0f;
             for (int e = 0; e < dqk; e++) {
                 dot += p.get(qo + e) * p.get(ko + e);
             }
-            score[j] = dot * scale;
+            score[s] = dot * scale;
         }
         ctx.localBarrier();
         // m[t] = max(F[t], max_s logD[t, s]), computed redundantly by every thread
@@ -295,8 +301,8 @@ public final class TiRexKernels {
             m = TornadoMath.max(m, logD[s]);
         }
         ctx.localBarrier();
-        if (j <= t) {
-            score[j] = score[j] * TornadoMath.exp(logD[j] - m);
+        for (int s = j; s <= t; s += 128) {
+            score[s] = score[s] * TornadoMath.exp(logD[s] - m);
         }
         ctx.localBarrier();
         float den = 0f;

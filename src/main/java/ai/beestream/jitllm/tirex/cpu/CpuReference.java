@@ -164,8 +164,11 @@ public final class CpuReference implements ForwardPass {
             System.arraycopy(x, kept[k] * seq * d, xk, k * seq * d, seq * d);
         }
         float[] nrm = Ops.rmsNorm(xk, n, d, w.normAttn(), TiRex2Config.NORM_EPS);
-        float[] q = Ops.rmsNorm(w.wq().apply(nrm, n), n * heads, dh, null, Ops.FLOAT32_EPS);
-        float[] kk = Ops.rmsNorm(w.wk().apply(nrm, n), n * heads, dh, null, Ops.FLOAT32_EPS);
+        float[] qRaw = w.wq().apply(nrm, n);
+        float[] kRaw = w.wk().apply(nrm, n);
+        boolean qkNorm = config.useQkNorm();
+        float[] q = qkNorm ? Ops.rmsNorm(qRaw, n * heads, dh, null, Ops.FLOAT32_EPS) : qRaw;
+        float[] kk = qkNorm ? Ops.rmsNorm(kRaw, n * heads, dh, null, Ops.FLOAT32_EPS) : kRaw;
         float[] v = w.wv().apply(nrm, n);
         double scale = 1.0 / Math.sqrt(dh);
         float[] attn = new float[n * d];

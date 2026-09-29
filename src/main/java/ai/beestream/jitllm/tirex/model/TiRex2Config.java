@@ -29,7 +29,8 @@ public record TiRex2Config(
         List<BlockType> recipe,
         int timeMixerHeads,
         int slstmHeads,
-        int variateHeads) {
+        int variateHeads,
+        boolean useQkNorm) {
 
     /** The time mixer of a block. Every block's variate mixer is attention. */
     public enum BlockType {
@@ -132,7 +133,9 @@ public record TiRex2Config(
                 outNorm == null ? Float.NaN : ((Number) outNorm.getOrDefault("eps", 1e-7)).floatValue(),
                 !Boolean.FALSE.equals(c.get("tta_diff")),
                 Boolean.TRUE.equals(c.get("tta_sign_flip")),
-                recipe, heads, slstmHeads < 0 ? heads : slstmHeads, variateHeads);
+                recipe, heads, slstmHeads < 0 ? heads : slstmHeads, variateHeads,
+                // RMS-normalise q and k in the variate attention (off in the GIFT-Eval checkpoints)
+                !Boolean.FALSE.equals(c.get("use_qk_norm")));
     }
 
     private static int same(int current, int value, String what) {

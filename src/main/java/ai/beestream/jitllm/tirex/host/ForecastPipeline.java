@@ -44,6 +44,16 @@ public final class ForecastPipeline {
         this.ttaSignFlip = ttaSignFlip;
     }
 
+    /** Whether trend differencing is on (the checkpoint's {@code tta_diff}). */
+    public boolean trendDiff() {
+        return ttaDiff;
+    }
+
+    /** Whether sign-flip TTA is on (the checkpoint's {@code tta_sign_flip} unless overridden). */
+    public boolean signFlip() {
+        return ttaSignFlip;
+    }
+
     /** The same pipeline with sign-flip TTA on or off (the {@code tta_sign_flip} argument of predict). */
     public ForecastPipeline withSignFlip(boolean signFlip) {
         return new ForecastPipeline(config, forward, batchSize, ttaDiff, signFlip);

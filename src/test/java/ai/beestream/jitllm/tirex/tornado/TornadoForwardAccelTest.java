@@ -43,7 +43,9 @@ public class TornadoForwardAccelTest {
                     Map<String, Object> info = GoldenData.caseInfo(testCase);
                     int h = ((Number) info.get("H")).intValue();
                     @SuppressWarnings("unchecked")
-                    boolean signFlip = Boolean.TRUE.equals(((Map<String, Object>) info.get("kwargs")).get("tta_sign_flip"));
+                    Map<String, Object> kw = (Map<String, Object>) info.get("kwargs");
+                    boolean signFlip = kw.containsKey("tta_sign_flip") ? Boolean.TRUE.equals(kw.get("tta_sign_flip"))
+                            : engine.pipeline().signFlip();
                     List<TimeSeries> in = GoldenData.inputs(g);
                     List<Forecast> f = engine.pipeline().withSignFlip(signFlip).forecast(in, h);
                     double ferr = 0;

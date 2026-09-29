@@ -142,15 +142,17 @@ public class KernelParityAccelTest {
 
     @Test
     public void mlstmCell() {
-        int rows = 2, stride = 1544;
-        float[] p = random(rows * SEQ * stride, 1f);
-        FloatArray fp = FloatArray.fromArray(p), fh = new FloatArray(rows * SEQ * D);
-        KernelContext ctx = new KernelContext();
-        run("t", grid1(rows * HEADS * SEQ * 128, 128), g -> g.task("t", TiRexKernels::mlstmCell, ctx, fp, fh, rows, SEQ, HEADS, stride,
-                256, 512, 1536, 1540, 15f, 1e-6f), fh, fp);
-        // the CPU cell from the same projections: identity projections over the fused layout
-        float[] exp = Cells.mlstmCore(p, rows, SEQ, HEADS, stride);
-        check("mlstmCell", fh.toHeapArray(), exp);
+        // 74 patches (the base model) and 285 (the GIFT-Eval checkpoints: steps beyond one per thread)
+        for (int seq : new int[] {SEQ, 285}) {
+            int rows = 2, stride = 1544;
+            float[] p = random(rows * seq * stride, 1f);
+            FloatArray fp = FloatArray.fromArray(p), fh = new FloatArray(rows * seq * D);
+            KernelContext ctx = new KernelContext();
+            run("t", grid1(rows * HEADS * seq * 128, 128), g -> g.task("t", TiRexKernels::mlstmCell, ctx, fp, fh, rows, seq, HEADS,
+                    stride, 256, 512, 1536, 1540, 15f, 1e-6f), fh, fp);
+            // the CPU cell from the same projections: identity projections over the fused layout
+            check("mlstmCell seq=" + seq, fh.toHeapArray(), Cells.mlstmCore(p, rows, seq, HEADS, stride));
+        }
     }
 
     @Test
@@ -475,8 +477,24 @@ public class KernelParityAccelTest {
         }
     }
 
+    @Test
+    public void slstmRecurrenceLongSequence() {
+        int rows = 2, seq = 285, n = rows * seq, dh = 128;
+        float[] wx = random(n * 4 * D, 1f), r = random(HEADS * dh * 4 * dh, 0.05f), b = random(HEADS * 4 * dh, 0.5f);
+        float[] wrb = new float[r.length + b.length];
+        System.arraycopy(r, 0, wrb, 0, r.length);
+        System.arraycopy(b, 0, wrb, r.length, b.length);
+        FloatArray fwx = FloatArray.fromArray(wx), fwrb = FloatArray.fromArray(wrb), fy = new FloatArray(n * D);
+        KernelContext ctx = new KernelContext();
+        int threads = (int) Math.min(512, maxWorkGroup());
+        int gpt = 512 / threads;
+        run("t", grid1(rows * HEADS * threads, threads), g -> g.task("t", TiRexKernels::slstmRecurrence, ctx, fwx, fwrb, 0, r.length,
+                fy, rows, seq, HEADS, gpt, 1), fy, fwx, fwrb);
+        check("slstmRecurrence seq=285", fy.toHeapArray(), Cells.slstmRecurrence(wx, rows, seq, D, HEADS, r, b));
+    }
+
     private static ai.beestream.jitllm.tirex.model.TiRex2Config testConfig() {
         return new ai.beestream.jitllm.tirex.model.TiRex2Config(12, 512, 32, 2048, 2048, 2048, 320, new float[9], true,
-                true, 1e-7f, true, false, java.util.List.of(), 4, 4, 4);
+                true, 1e-7f, true, false, java.util.List.of(), 4, 4, 4, true);
     }
 }

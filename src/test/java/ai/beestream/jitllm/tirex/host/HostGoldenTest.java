@@ -38,7 +38,7 @@ public class HostGoldenTest {
                         List<TimeSeries> series = pass == 0 ? in : in.stream().map(ForecastPipeline::negate).toList();
                         ForecastPipeline.Assembled assembled = engine.pipeline().assemble(series, Math.min(h, 320));
                         ModelBatch actual = assembled.batch();
-                        if (testCase.equals("trend_diff") && pass == 0) {
+                        if (testCase.equals("trend_diff") && pass == 0 && engine.pipeline().trendDiff()) {
                             assertTrue("trend_diff must take the differencing path", assembled.differenced()[0][0]);
                         }
                         ModelBatch expected = GoldenData.batch(g, pass);
@@ -66,7 +66,9 @@ public class HostGoldenTest {
                 int h = ((Number) info.get("H")).intValue();
                 @SuppressWarnings("unchecked")
                 Map<String, Object> kwargs = (Map<String, Object>) info.get("kwargs");
-                boolean signFlip = Boolean.TRUE.equals(kwargs.get("tta_sign_flip"));
+                // the case's own tta_sign_flip, else the checkpoint's default (as TiRex2.predict)
+                boolean signFlip = kwargs.containsKey("tta_sign_flip") ? Boolean.TRUE.equals(kwargs.get("tta_sign_flip"))
+                        : engine.pipeline().signFlip();
                 ForecastPipeline pipeline = engine.pipeline().withSignFlip(signFlip);
                 try (SafeTensors g = GoldenData.open(testCase)) {
                     List<TimeSeries> in = GoldenData.inputs(g);

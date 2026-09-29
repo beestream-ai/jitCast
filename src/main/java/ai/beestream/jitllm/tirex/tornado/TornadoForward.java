@@ -538,9 +538,11 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             b.g.task(s + "vgather", TiRexKernels::gatherRows, b.ctx, h, xk, kept, nk, seq, d, 0, b.noTwin, 0);
             b.rms(s + "vnorm", xk, n, v.normAttn(), tokens, d, TiRex2Config.NORM_EPS);
             b.gemm(s + "qkv", n, v.qkv(), proj, tokens, 0);
-            int qkVectors = qkNormVectorsPerPass(heads, dh);
-            b.grid.addWorkerGrid(b.name + "." + s + "qknorm", group(tokens * qkVectors * dh, qkVectors * dh));
-            b.g.task(s + "qknorm", TiRexKernels::qkNorm, b.ctx, proj, tokens, heads, dh, 3 * d, Math.ulp(1.0f), qkVectors);
+            if (c.useQkNorm()) {
+                int qkVectors = qkNormVectorsPerPass(heads, dh);
+                b.grid.addWorkerGrid(b.name + "." + s + "qknorm", group(tokens * qkVectors * dh, qkVectors * dh));
+                b.g.task(s + "qknorm", TiRexKernels::qkNorm, b.ctx, proj, tokens, heads, dh, 3 * d, Math.ulp(1.0f), qkVectors);
+            }
             if (dh != 128) {
                 throw new IllegalStateException("variateAttention assumes a head dim of 128");
             }
