@@ -43,8 +43,10 @@ import ai.beestream.jitllm.tirex.tornado.TornadoForward;
  * <p>A plan is built per batch shape and cuBLAS handles leak across plans (bug T4), so a long
  * benchmark would eventually fail {@code cublasCreate}. Two mitigations: a batch of plain
  * univariate series is padded to a power-of-two size with copies of its first series (their
- * forecasts are dropped), and once {@code --max-shapes} distinct shapes have been built the
- * response asks the client to start a fresh server ({@code restart = 1}).
+ * forecasts are dropped), and once {@code --max-shapes} distinct shapes, or {@code --max-builds}
+ * plan builds in all, have happened the response asks the client to start a fresh server
+ * ({@code restart = 1}). The second limit exists because closing an evicted plan does not give
+ * back all of its device memory, so rebuilding the same few shapes eventually runs out (O5).
  *
  * <pre>
  * java … TiRexServer --weights model.safetensors --port-file port.txt [--engine tornado|cpu] [--batch-size 512]
@@ -64,7 +66,10 @@ public final class TiRexServer {
         };
         int batchSize = Integer.parseInt(a.getOrDefault("batch-size", String.valueOf(ForecastPipeline.DEFAULT_BATCH_SIZE)));
         int maxShapes = Integer.parseInt(a.getOrDefault("max-shapes", "12"));
+        int maxBuilds = Integer.parseInt(a.getOrDefault("max-builds", "1000000"));
         java.util.Set<TornadoForward.Shape> seen = new java.util.HashSet<>();
+        java.util.Set<TornadoForward.Shape> cached = new java.util.HashSet<>();
+        int builds = 0;
         ForecastPipeline base = new ForecastPipeline(weights.config(), forward, batchSize, weights.config().ttaDiff(),
                 weights.config().ttaSignFlip());
 
@@ -106,9 +111,16 @@ public final class TiRexServer {
                             out.write(bb.array());
                         }
                         if (forward instanceof TornadoForward tf) {
-                            seen.addAll(tf.cachedShapes());
+                            List<TornadoForward.Shape> now = tf.cachedShapes();
+                            for (TornadoForward.Shape sh : now) {
+                                if (!cached.contains(sh)) {
+                                    builds++;
+                                }
+                            }
+                            cached = new java.util.HashSet<>(now);
+                            seen.addAll(now);
                         }
-                        writeInt(out, seen.size() >= maxShapes ? 1 : 0);
+                        writeInt(out, seen.size() >= maxShapes || builds >= maxBuilds ? 1 : 0);
                     } catch (RuntimeException e) {
                         byte[] msg = String.valueOf(e).getBytes(StandardCharsets.UTF_8);
                         writeInt(out, 1);
