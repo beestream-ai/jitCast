@@ -5,12 +5,12 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>ai.beestream</groupId>
-    <artifactId>jitllm-tirex</artifactId>
+    <artifactId>jitrex</artifactId>
     <version>0.1.0${jdk.version.suffix}</version>
     <packaging>jar</packaging>
 
-    <name>jitllm-tirex</name>
-    <description>TiRex-2 time-series forecasting on TornadoVM, built on jitllm's kernels and the TornadoVM hybrid CUDA libraries</description>
+    <name>jitrex</name>
+    <description>An inference engine for NX-AI TiRex-2 time-series forecasting on TornadoVM, with the hybrid CUDA libraries (cuBLAS) and CUDA Tile</description>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

@@ -71,7 +71,7 @@ The variate attention loops only over the rows of the query's own group, which c
 
 The host uploads values with NaN replaced by 0, plus an is-present mask, so no kernel ever tests for NaN. Device compilers may assume NaNs don't occur (Metal's default fast math does, and so does CUDA's `--use_fast_math`), which makes `v != v` checks unreliable.
 
-## Java layout (`ai.beestream.jitllm.tirex`)
+## Java layout (`ai.beestream.jitrex`)
 
 | Package | Contents |
 |---|---|
