@@ -1,1 +1,10 @@
 target/
+.mvn/wrapper/maven-wrapper.jar
+.idea/
+*.iml
+.vscode/
+.DS_Store
+__pycache__/
+*.safetensors
+*.nsys-rep
+*.sqlite

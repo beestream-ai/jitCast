@@ -3,7 +3,7 @@ package ai.beestream.jitllm.tirex.model;
 import java.util.List;
 import java.util.Map;
 
-import org.beehive.jitllm.server.Json;
+import ai.beestream.jitllm.tirex.util.Json;
 
 /**
  * The TiRex-2 hyper-parameters, read from the {@code model-config.yaml} that

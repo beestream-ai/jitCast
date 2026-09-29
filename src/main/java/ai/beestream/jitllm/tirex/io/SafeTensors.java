@@ -14,7 +14,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.beehive.jitllm.server.Json;
+import ai.beestream.jitllm.tirex.util.Json;
 
 /**
  * A read-only, memory-mapped <a href="https://huggingface.co/docs/safetensors">safetensors</a>

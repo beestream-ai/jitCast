@@ -9,7 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.beehive.jitllm.server.Json;
+import ai.beestream.jitllm.tirex.util.Json;
 import ai.beestream.jitllm.tirex.api.TimeSeries;
 import ai.beestream.jitllm.tirex.host.ForecastPipeline;
 import ai.beestream.jitllm.tirex.io.SafeTensors;
