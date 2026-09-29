@@ -17,7 +17,7 @@ The TornadoVM engine (`tornado.TornadoTiRex2Engine`) runs the full model on the 
 
 On cyclone (RTX 5070 Ti, CUDA backend, cuBLAS FP32 GEMMs), all golden cases pass and compute-sanitizer is clean.
 
-**Best configuration:** `-Dtirex.tornado.gemm=cublas-auto -Dtirex.tornado.slstmR=fp16`.
+**Best configuration:** `-Dtirex.tornado.gemm=cublas-auto -Dtirex.tornado.slstmR=fp16`. CUDA graphs are on by default with the cuBLAS modes (`-Dtirex.tornado.cudaGraph`).
 - GEMMs use FP16 tensor cores (FP16 in, FP32 out) from 1,024 rows, and FP32 below that.
 - The sLSTM recurrent weights are FP16.
 - Worst error against the FP32 reference: model output 1.4e-3, forecasts 6.3e-4 (FP16 forced on every GEMM). NXAI's own CUDA path is at 7.7e-3.
@@ -28,14 +28,14 @@ End-to-end `forecast()` on cyclone (RTX 5070 Ti). NXAI is the best of eager / `t
 
 | univariate batch | NXAI | TornadoVM | speed-up |
 |---|---|---|---|
-| 1 | 9.76 ms | **2.75 ms** | 3.5× |
+| 1 | 9.76 ms | **2.41 ms** (CUDA graphs) | 4.0× |
 | 8 | 15.4 ms | **5.45 ms** | 2.8× |
 | 64 | 48.8 ms | **14.3 ms** | 3.4× |
 | 512 | 367 ms | **106 ms** | 3.5× (4,811 vs 1,400 series/s) |
 
 | multivariate (series × covariates) | NXAI | TornadoVM | speed-up |
 |---|---|---|---|
-| 1 × 15 | 30.8 ms | **11.0 ms** | 2.8× |
+| 1 × 15 | 30.8 ms | **10.2 ms** (CUDA graphs) | 3.0× |
 | 1 × 63 | 62.9 ms | **31.1 ms** | 2.0× |
 | 32 × 15 | 488 ms | **210 ms** | 2.3× |
 | 32 × 63 (2,048 rows) | 1,869 ms | **949 ms** | 2.0× |

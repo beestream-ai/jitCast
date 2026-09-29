@@ -57,6 +57,14 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
     /** {@code -Dtirex.tornado.fuse=false} turns the fused SiLU epilogue and residual+RMSNorm kernels off (A/B). */
     private final boolean fuse = !"false".equalsIgnoreCase(System.getProperty("tirex.tornado.fuse", "true"));
 
+    /**
+     * Capture and replay each task graph as a CUDA graph ({@code -Dtirex.tornado.cudaGraph}). On
+     * by default with the cuBLAS (CUDA-only) GEMM modes: −11% at batch 1 on an RTX 5070 Ti, with
+     * identical results; off with the portable tiled GEMMs, which also run on OpenCL and Metal.
+     */
+    private final boolean cudaGraph = Boolean.parseBoolean(
+            System.getProperty("tirex.tornado.cudaGraph", String.valueOf(gemmMode != GemmMode.TILED)));
+
     private final int fp16MinTokens = Integer.getInteger("tirex.tornado.fp16MinTokens", 1024);
 
     /**
@@ -443,7 +451,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 String[] dd = device.split(":");
                 exec.withDevice(TornadoExecutionPlan.getDevice(Integer.parseInt(dd[0]), Integer.parseInt(dd[1])));
             }
-            if (Boolean.getBoolean("tirex.tornado.cudaGraph")) {
+            if (cudaGraph) {
                 // CUDA backend only: each task graph is captured once and replayed as a CUDA graph
                 exec.withAllGraphs().withCUDAGraph();
             }
