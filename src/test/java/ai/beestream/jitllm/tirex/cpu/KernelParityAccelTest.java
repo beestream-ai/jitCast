@@ -117,6 +117,68 @@ public class KernelParityAccelTest {
         }
     }
 
+    /** The FP16 GEMMs: FP16-rounded A and W, FP32 bias, accumulation and C, plus C's FP16 twin. */
+    private void checkHalfGemm(boolean tile) {
+        int m = 150, n = 200, k = 88; // ragged in every dimension against 64 × 64 × 16/32 tiles
+        float[] a = roundHalf(random(m * k, 1f)), wm = roundHalf(random(n * k, 0.2f)), b = random(n, 0.5f), c0 = random(m * n, 1f);
+        int[] flagSets = {0, TiRexKernels.BIAS | TiRexKernels.SILU, TiRexKernels.BIAS | TiRexKernels.ACCUMULATE, TiRexKernels.ACCUMULATE};
+        for (int flags : flagSets) {
+            uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray ha = half(a), hw = half(wm);
+            uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray th = new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(m * n);
+            FloatArray fc = FloatArray.fromArray(c0), fb = FloatArray.fromArray(b);
+            TaskGraph g = new TaskGraph("k").transferToDevice(DataTransferMode.EVERY_EXECUTION, ha, hw, fc, fb, th);
+            WorkerGrid wg;
+            boolean bias = (flags & TiRexKernels.BIAS) != 0;
+            if (tile) {
+                wg = new WorkerGrid2D((m + TiRexKernels.CT_M - 1) / TiRexKernels.CT_M, (n + TiRexKernels.CT_N - 1) / TiRexKernels.CT_N);
+                float fb1 = bias ? 1f : 0f, fs = (flags & TiRexKernels.SILU) != 0 ? 1f : 0f, fa = (flags & TiRexKernels.ACCUMULATE) != 0 ? 1f : 0f;
+                g.task("t", TiRexKernels::gemmHalfTile, new uk.ac.manchester.tornado.api.tile.TileContext(), ha, hw, fc, fb, 0, m, n, k, fb1, fs,
+                        fa, th, 1);
+            } else {
+                wg = new WorkerGrid2D((n + 63) / 64 * 16, (m + 63) / 64 * 16);
+                wg.setLocalWork(16, 16, 1);
+                KernelContext ctx = new KernelContext();
+                g.task("t", TiRexKernels::gemmHalf, ctx, ha, hw, fc, fb, 0, m, n, k, flags, th, 1);
+            }
+            g.transferToHost(DataTransferMode.EVERY_EXECUTION, fc, th);
+            execute(g, wg);
+            float[] exp = Ops.linear(a, m, wm, bias ? b : null, k, n);
+            if ((flags & TiRexKernels.SILU) != 0) {
+                Ops.siluInPlace(exp);
+            }
+            if ((flags & TiRexKernels.ACCUMULATE) != 0) {
+                Ops.addInPlace(exp, c0);
+            }
+            String what = (tile ? "gemmHalfTile" : "gemmHalf") + " flags=" + flags;
+            check(what, fc.toHeapArray(), exp);
+            check(what + " twin", fromTwin(th, m * n), roundHalf(fc.toHeapArray()));
+        }
+    }
+
+    private static uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray half(float[] v) {
+        uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray h = new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(v.length);
+        for (int i = 0; i < v.length; i++) {
+            h.getSegment().setAtIndex(java.lang.foreign.ValueLayout.JAVA_SHORT, i, Float.floatToFloat16(v[i]));
+        }
+        return h;
+    }
+
+    @Test
+    public void gemmHalfKernelContext() {
+        checkHalfGemm(false);
+    }
+
+    @Test
+    public void gemmHalfTileApi() {
+        String device = System.getProperty("tirex.tornado.device");
+        uk.ac.manchester.tornado.api.common.TornadoDevice dev = device != null && !device.isBlank()
+                ? TornadoExecutionPlan.getDevice(Integer.parseInt(device.split(":")[0]), Integer.parseInt(device.split(":")[1]))
+                : uk.ac.manchester.tornado.api.runtime.TornadoRuntimeProvider.getTornadoRuntime().getDefaultDevice();
+        org.junit.Assume.assumeTrue("CUDA Tile needs the CUDA backend",
+                dev.getTornadoVMBackend() == uk.ac.manchester.tornado.api.enums.TornadoVMBackendType.CUDA);
+        checkHalfGemm(true);
+    }
+
     @Test
     public void rmsNormAndHeadNorm() {
         int rows = 9;

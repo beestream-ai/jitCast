@@ -2,6 +2,10 @@ package ai.beestream.jitllm.tirex.tornado;
 
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.math.TornadoMath;
+import uk.ac.manchester.tornado.api.tile.DType;
+import uk.ac.manchester.tornado.api.tile.PartitionView;
+import uk.ac.manchester.tornado.api.tile.Tile;
+import uk.ac.manchester.tornado.api.tile.TileContext;
 import uk.ac.manchester.tornado.api.types.HalfFloat;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
@@ -155,6 +159,167 @@ public final class TiRexKernels {
                 acc += c.get(ci);
             }
             c.set(ci, acc);
+        }
+    }
+
+    // ---- FP16 GEMMs written in TornadoVM (FP16 A and W, FP32 accumulation and C) -------------
+
+    /** Output tile edge of {@link #gemmHalf}: a 16 × 16 work-group computes 64 × 64, 4 × 4 per thread. */
+    public static final int HGEMM_TILE = 64;
+    /** The K slice {@link #gemmHalf} stages in local memory. */
+    public static final int HGEMM_K = 16;
+    /** Threads per dimension of a {@link #gemmHalf} work-group. */
+    public static final int HGEMM_THREADS = 16;
+
+    /**
+     * {@code C[m, n] (+)= act(A[m, :] · W[n, :] + b[n])} with FP16 {@code A} (the producer's
+     * twin) and FP16 {@code W} ({@code [N, K]}), accumulated and written in FP32, plus the FP16
+     * twin of {@code C} when {@code twin == 1}. The portable counterpart of
+     * {@code cublasGemmExFP16FP32}: it runs on OpenCL and Metal as well as CUDA, without tensor
+     * cores. Flags and epilogue order as {@link #gemm} (bias, SiLU, then accumulate).
+     *
+     * <p>Register-blocked: each work-group stages a 64 × 16 slice of A and of W in local memory
+     * (converted to FP32 once), and each thread accumulates a 4 × 4 block whose rows and columns
+     * are 16 apart, so the stores of a warp are contiguous. Global work
+     * {@code (⌈N/64⌉·16, ⌈M/64⌉·16)}, local {@code (16, 16)}.
+     */
+    public static void gemmHalf(KernelContext ctx, HalfFloatArray a, HalfFloatArray wh, FloatArray c, FloatArray w, int bOff,
+            int m, int n, int k, int flags, HalfFloatArray th, int twin) {
+        int lx = ctx.localIdx;
+        int ly = ctx.localIdy;
+        int tid = ly * HGEMM_THREADS + lx;
+        int rowBase = ctx.groupIdy * HGEMM_TILE;
+        int colBase = ctx.groupIdx * HGEMM_TILE;
+        float[] as = ctx.allocateFloatLocalArray(HGEMM_TILE * HGEMM_K);
+        float[] ws = ctx.allocateFloatLocalArray(HGEMM_TILE * HGEMM_K);
+        float c00 = 0f, c01 = 0f, c02 = 0f, c03 = 0f;
+        float c10 = 0f, c11 = 0f, c12 = 0f, c13 = 0f;
+        float c20 = 0f, c21 = 0f, c22 = 0f, c23 = 0f;
+        float c30 = 0f, c31 = 0f, c32 = 0f, c33 = 0f;
+        for (int kt = 0; kt < k; kt += HGEMM_K) {
+            // 64 × 16 elements of each operand, 4 per thread; consecutive threads read along K
+            for (int e = 0; e < 4; e++) {
+                int idx = tid + e * HGEMM_THREADS * HGEMM_THREADS;
+                int r = idx / HGEMM_K;
+                int ka = kt + idx % HGEMM_K;
+                float av = 0f;
+                if (rowBase + r < m && ka < k) {
+                    av = a.get((rowBase + r) * k + ka).getFloat32();
+                }
+                as[idx] = av;
+                float wv = 0f;
+                if (colBase + r < n && ka < k) {
+                    wv = wh.get((colBase + r) * k + ka).getFloat32();
+                }
+                ws[idx] = wv;
+            }
+            ctx.localBarrier();
+            for (int kk = 0; kk < HGEMM_K; kk++) {
+                float a0 = as[ly * HGEMM_K + kk];
+                float a1 = as[(ly + 16) * HGEMM_K + kk];
+                float a2 = as[(ly + 32) * HGEMM_K + kk];
+                float a3 = as[(ly + 48) * HGEMM_K + kk];
+                float b0 = ws[lx * HGEMM_K + kk];
+                float b1 = ws[(lx + 16) * HGEMM_K + kk];
+                float b2 = ws[(lx + 32) * HGEMM_K + kk];
+                float b3 = ws[(lx + 48) * HGEMM_K + kk];
+                c00 += a0 * b0;
+                c01 += a0 * b1;
+                c02 += a0 * b2;
+                c03 += a0 * b3;
+                c10 += a1 * b0;
+                c11 += a1 * b1;
+                c12 += a1 * b2;
+                c13 += a1 * b3;
+                c20 += a2 * b0;
+                c21 += a2 * b1;
+                c22 += a2 * b2;
+                c23 += a2 * b3;
+                c30 += a3 * b0;
+                c31 += a3 * b1;
+                c32 += a3 * b2;
+                c33 += a3 * b3;
+            }
+            ctx.localBarrier();
+        }
+        int r0 = rowBase + ly;
+        int col0 = colBase + lx;
+        gemmStore(c, w, bOff, r0, col0, m, n, flags, c00, th, twin);
+        gemmStore(c, w, bOff, r0, col0 + 16, m, n, flags, c01, th, twin);
+        gemmStore(c, w, bOff, r0, col0 + 32, m, n, flags, c02, th, twin);
+        gemmStore(c, w, bOff, r0, col0 + 48, m, n, flags, c03, th, twin);
+        gemmStore(c, w, bOff, r0 + 16, col0, m, n, flags, c10, th, twin);
+        gemmStore(c, w, bOff, r0 + 16, col0 + 16, m, n, flags, c11, th, twin);
+        gemmStore(c, w, bOff, r0 + 16, col0 + 32, m, n, flags, c12, th, twin);
+        gemmStore(c, w, bOff, r0 + 16, col0 + 48, m, n, flags, c13, th, twin);
+        gemmStore(c, w, bOff, r0 + 32, col0, m, n, flags, c20, th, twin);
+        gemmStore(c, w, bOff, r0 + 32, col0 + 16, m, n, flags, c21, th, twin);
+        gemmStore(c, w, bOff, r0 + 32, col0 + 32, m, n, flags, c22, th, twin);
+        gemmStore(c, w, bOff, r0 + 32, col0 + 48, m, n, flags, c23, th, twin);
+        gemmStore(c, w, bOff, r0 + 48, col0, m, n, flags, c30, th, twin);
+        gemmStore(c, w, bOff, r0 + 48, col0 + 16, m, n, flags, c31, th, twin);
+        gemmStore(c, w, bOff, r0 + 48, col0 + 32, m, n, flags, c32, th, twin);
+        gemmStore(c, w, bOff, r0 + 48, col0 + 48, m, n, flags, c33, th, twin);
+    }
+
+    /** One output element of {@link #gemmHalf}: bias, SiLU, accumulate, store, FP16 twin. */
+    private static void gemmStore(FloatArray c, FloatArray w, int bOff, int row, int col, int m, int n, int flags, float acc,
+            HalfFloatArray th, int twin) {
+        if (row < m && col < n) {
+            float v = acc;
+            if ((flags & BIAS) != 0) {
+                v += w.get(bOff + col);
+            }
+            if ((flags & SILU) != 0) {
+                v = v / (1f + TornadoMath.exp(-v));
+            }
+            int ci = row * n + col;
+            if ((flags & ACCUMULATE) != 0) {
+                v += c.get(ci);
+            }
+            c.set(ci, v);
+            if (twin == 1) {
+                th.set(ci, new HalfFloat(v));
+            }
+        }
+    }
+
+    /** Tile shape of {@link #gemmHalfTile}: 64 × 64 outputs per tile block, K in steps of 32. */
+    public static final int CT_M = 64;
+    public static final int CT_N = 64;
+    public static final int CT_K = 32;
+
+    /**
+     * {@link #gemmHalf} with the CUDA Tile API (CUDA only, compute capability 8.0+, toolkit
+     * 13.3+): one tile block per 64 × 64 output tile, {@code mma} on tensor cores with an FP32
+     * accumulator, {@code W} read as {@code [N, K]} and transposed on load. Masked loads and stores
+     * cover ragged M, N and K. The epilogue flags arrive as 0/1 floats and act through
+     * {@code select}, so the only control flow is the scalar test around the FP16 twin store; a
+     * kernel without a bias passes {@code bOff = 0} (any readable offset). The worker grid counts
+     * tile blocks: {@code (⌈M/64⌉, ⌈N/64⌉)}.
+     */
+    public static void gemmHalfTile(TileContext tc, HalfFloatArray a, HalfFloatArray wh, FloatArray c, FloatArray w, int bOff,
+            int m, int n, int k, float bias, float silu, float accumulate, HalfFloatArray th, int twin) {
+        PartitionView av = tc.partition(tc.view(a, m, k), CT_M, CT_K);
+        PartitionView wv = tc.partition(tc.view(wh, n, k), CT_N, CT_K);
+        PartitionView cv = tc.partition(tc.view(c, m, n), CT_M, CT_N);
+        PartitionView bv = tc.partition(tc.viewStrided(w, bOff, 1, n, n), 1, CT_N);
+        int rowBlock = tc.bidX();
+        int colBlock = tc.bidY();
+        int kBlocks = (k + CT_K - 1) / CT_K;
+        Tile acc = tc.zeros(DType.F32, CT_M, CT_N);
+        for (int step = 0; step < kBlocks; step++) {
+            acc = tc.mma(av.loadMasked(rowBlock, step), tc.transpose(wv.loadMasked(colBlock, step)), acc);
+        }
+        Tile zero = tc.zeros(DType.F32, CT_M, CT_N);
+        Tile v = tc.select(tc.lessThan(zero, bias), tc.add(acc, bv.loadMasked(0, colBlock)), acc);
+        Tile act = tc.div(v, tc.add(tc.ones(DType.F32, CT_M, CT_N), tc.exp(tc.scale(v, -1.0))));
+        v = tc.select(tc.lessThan(zero, silu), act, v);
+        v = tc.select(tc.lessThan(zero, accumulate), tc.add(v, cv.loadMasked(rowBlock, colBlock)), v);
+        cv.storeMasked(v, rowBlock, colBlock);
+        if (twin == 1) {
+            PartitionView tv = tc.partition(tc.view(th, m, n), CT_M, CT_N);
+            tv.storeMasked(tc.cast(v, DType.F16), rowBlock, colBlock);
         }
     }
 

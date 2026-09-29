@@ -42,9 +42,16 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
      * output, so the residual stream stays FP32). {@code CUBLAS_AUTO} picks per GEMM: FP16 once the
      * row count reaches {@code -Dtirex.tornado.fp16MinTokens} (default 1024), FP32 below it, where
      * cuBLAS falls back to a non-tensor-core kernel for FP16 inputs with FP32 output.
+     * {@code HALF} and {@code CUTILE} are the same FP16 GEMM written in TornadoVM, for every row
+     * count: {@code HALF} with KernelContext ({@link TiRexKernels#gemmHalf}, any backend) and
+     * {@code CUTILE} with the CUDA Tile API ({@link TiRexKernels#gemmHalfTile}, tensor cores).
      */
     public enum GemmMode {
-        TILED, CUBLAS, CUBLAS_TF32, CUBLAS_FP16, CUBLAS_AUTO;
+        TILED, CUBLAS, CUBLAS_TF32, CUBLAS_FP16, CUBLAS_AUTO, HALF, CUTILE;
+
+        boolean cublas() {
+            return this == CUBLAS || this == CUBLAS_TF32 || this == CUBLAS_FP16 || this == CUBLAS_AUTO;
+        }
 
         static GemmMode fromProperty() {
             String v = System.getProperty("tirex.tornado.gemm", "tiled").trim().toUpperCase().replace('-', '_');
@@ -63,7 +70,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
      * identical results; off with the portable tiled GEMMs, which also run on OpenCL and Metal.
      */
     private final boolean cudaGraph = Boolean.parseBoolean(
-            System.getProperty("tirex.tornado.cudaGraph", String.valueOf(gemmMode != GemmMode.TILED)));
+            System.getProperty("tirex.tornado.cudaGraph", String.valueOf(gemmMode.cublas() || gemmMode == GemmMode.CUTILE)));
 
     private final int fp16MinTokens = Integer.getInteger("tirex.tornado.fp16MinTokens", 1024);
 
@@ -82,7 +89,8 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
 
     /** Whether a GEMM over {@code m} rows runs in FP16 under the current mode. */
     private boolean halfGemm(int m) {
-        return gemmMode == GemmMode.CUBLAS_FP16 || (gemmMode == GemmMode.CUBLAS_AUTO && pad(m) >= fp16MinTokens);
+        return gemmMode == GemmMode.CUBLAS_FP16 || gemmMode == GemmMode.HALF || gemmMode == GemmMode.CUTILE
+                || (gemmMode == GemmMode.CUBLAS_AUTO && pad(m) >= fp16MinTokens);
     }
 
     /** {@code -Dtirex.tornado.slstmR=fp16}: read the sLSTM recurrent kernels from an FP16 copy. */
@@ -339,7 +347,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             xk = nKept > 0 ? new FloatArray(pad(nKept * seq) * d) : null;
             aHalf = halfGemm(tokens)
                     ? new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(tokensP * maxGemmInput()) : null;
-            cHalf = halfGemm(tokens) && fp16Kernel != Fp16Kernel.GEMMEX_MIXED
+            cHalf = halfGemm(tokens) && gemmMode.cublas() && fp16Kernel != Fp16Kernel.GEMMEX_MIXED
                     ? new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(tokensP * maxGemmOutput()) : null;
             known = nKnown > 0 ? new IntArray(nKnown) : null;
             kept = nKept > 0 ? new IntArray(nKept) : null;
@@ -672,8 +680,12 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         }
 
         void gemm(String name, FloatArray a, PackedWeights.Lin l, FloatArray c, int m, int flags) {
-            if (gemmMode != GemmMode.TILED) {
+            if (gemmMode.cublas()) {
                 cublasGemm(name, a, l, c, m, flags);
+                return;
+            }
+            if (gemmMode == GemmMode.HALF || gemmMode == GemmMode.CUTILE) {
+                tornadoHalfGemm(name, a, l, c, m, flags);
                 return;
             }
             int tile = TiRexKernels.TILE;
@@ -682,6 +694,34 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             grid.addWorkerGrid(this.name + "." + name, wg);
             int f = flags | (l.b() >= 0 ? TiRexKernels.BIAS : 0);
             g.task(name, TiRexKernels::gemm, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, 0, m, l.out(), l.in(), f);
+        }
+
+        /**
+         * {@code C = act(A·Wᵀ + b) (+ C)} with a TornadoVM FP16 GEMM: FP16 A (the producer's twin)
+         * and W, FP32 accumulation and C, with the bias, SiLU, residual and C's own twin in the
+         * kernel's epilogue, so no other task is needed.
+         */
+        private void tornadoHalfGemm(String name, FloatArray a, PackedWeights.Lin l, FloatArray c, int m, int flags) {
+            uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray wh = halfWeight(l);
+            uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray ah = halfInput(name, a, m, l.in());
+            int n = l.out(), k = l.in();
+            boolean bias = l.b() >= 0;
+            int bOff = Math.max(l.b(), 0);
+            WorkerGrid wg;
+            if (gemmMode == GemmMode.CUTILE) {
+                // the grid counts tile blocks; the block shape is the tile compiler's
+                wg = new WorkerGrid2D((m + TiRexKernels.CT_M - 1) / TiRexKernels.CT_M, (n + TiRexKernels.CT_N - 1) / TiRexKernels.CT_N);
+                g.task(name, TiRexKernels::gemmHalfTile, new uk.ac.manchester.tornado.api.tile.TileContext(), ah, wh, c, w, bOff, m, n,
+                        k, bias ? 1f : 0f, (flags & TiRexKernels.SILU) != 0 ? 1f : 0f, (flags & TiRexKernels.ACCUMULATE) != 0 ? 1f : 0f,
+                        twin(c), hasTwin(c));
+            } else {
+                int t = TiRexKernels.HGEMM_TILE, threads = TiRexKernels.HGEMM_THREADS;
+                wg = new WorkerGrid2D((n + t - 1) / t * threads, (m + t - 1) / t * threads);
+                wg.setLocalWork(threads, threads, 1);
+                int f = flags | (bias ? TiRexKernels.BIAS : 0);
+                g.task(name, TiRexKernels::gemmHalf, ctx, ah, wh, c, w, bOff, m, n, k, f, twin(c), hasTwin(c));
+            }
+            grid.addWorkerGrid(this.name + "." + name, wg);
         }
 
         /**
