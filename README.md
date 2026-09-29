@@ -14,7 +14,7 @@
 # jitrex
 
 **jitrex** is an inference engine for [TiRex-2](https://github.com/NX-AI/tirex-2), NXAI's zero-shot
-time-series forecasting model, written in Java on [TornadoVM](https://github.com/beehive-lab/TornadoVM).
+time-series forecasting model, written in Java on [TornadoVM](https://github.com/beehive-lab/TornadoVM) (similar to [jitLLM](https://github.com/beehive-lab/jitllm)).
 
 jitrex reproduces NXAI's `ForecastModel.forecast()` end to end: 9-quantile forecasts for
 univariate series, multi-target series, and series with past or future covariates. The host
