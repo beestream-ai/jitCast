@@ -191,7 +191,16 @@ public class KernelParityAccelTest {
                 : uk.ac.manchester.tornado.api.runtime.TornadoRuntimeProvider.getTornadoRuntime().getDefaultDevice();
         org.junit.Assume.assumeTrue("CUDA Tile needs the CUDA backend",
                 dev.getTornadoVMBackend() == uk.ac.manchester.tornado.api.enums.TornadoVMBackendType.CUDA);
-        checkHalfGemm(true);
+        try {
+            checkHalfGemm(true);
+        } catch (IllegalStateException e) {
+            // no CUDA Tile toolchain here (toolkit 13.3+, or -Dtornado.cuda.nvcc): skip rather than fail
+            for (Throwable c = e; c != null; c = c.getCause()) {
+                org.junit.Assume.assumeFalse(String.valueOf(c.getMessage()),
+                        c instanceof uk.ac.manchester.tornado.api.exceptions.TornadoDeviceTileNotSupported);
+            }
+            throw e;
+        }
     }
 
     @Test
