@@ -80,21 +80,24 @@ Covariates, the benchmark and cold-start tools, the harness server and the tests
 
 ## Performance
 
-End-to-end `forecast()` on an RTX 5070 Ti, against the best of NXAI's eager, `torch.compile` and
-FlexAttention configurations:
+End-to-end `forecast()`, jitrex's best configuration against NXAI's best on the same GPU
+(NVIDIA: `cublas-auto` against the best of eager, `torch.compile` and FlexAttention; Apple: Metal `half` against eager MPS):
 
-| Workload | NXAI | jitrex | Speed-up |
-|---|---|---|---|
-| 1 series | 9.70 ms | **2.41 ms** | 4.0× |
-| 64 series | 48.2 ms | **14.1 ms** | 3.4× |
-| 512 series | 361 ms | **105 ms** | 3.4× (4,858 vs 1,417 series/s) |
-| 1 series × 15 covariates | 30.8 ms | **10.2 ms** | 3.0× |
-| 32 series × 63 covariates | 1,869 ms | **920 ms** | 2.0× |
-| 32 series, GIFT-Eval checkpoint (285 patches) | 130.8 ms | **73.5 ms** | 1.8× |
-| Cold start: process → first forecast | 8.18 s | **1.41 s** | 5.8× |
+| Workload | RTX 5070 Ti: NXAI | jitrex | Speed-up | M4 Pro: NXAI | jitrex | Speed-up |
+|---|---|---|---|---|---|---|
+| 1 series | 9.63 ms | **1.42 ms** | 6.8× | 88.1 ms | **27.5 ms** | 3.2× |
+| 64 series | 48.6 ms | **13.7 ms** | 3.6× | 357.5 ms | **277.7 ms** | 1.3× |
+| 512 series | 1,419 series/s | **4,716 series/s** | 3.3× | 223 series/s | **246 series/s** | 1.1× |
+| 1 series × 15 covariates | 30.7 ms | **7.83 ms** | 3.9× | 293.9 ms | **196.9 ms** | 1.5× |
+| 32 series × 63 covariates | 1,870 ms | **936.5 ms** | 2.0× | 15,968 ms | 17,941 ms | 0.9× |
+| 1 series, GIFT-Eval checkpoint (285 patches) | 30.4 ms | **9.05 ms** | 3.4× | 522.1 ms | **84.1 ms** | 6.2× |
+| 32 series, GIFT-Eval checkpoint | 130.4 ms | **63.3 ms** | 2.1× | 1,181 ms | **1,085 ms** | 1.1× |
+| Cold start: process → first forecast | 6.65 s | **1.66 s** | 4.0× | 2.04 s | **1.98 s** | 1.0× |
 
-The method, the full tables, memory use and the Apple Silicon numbers are in
-[docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+![jitrex speed-up over NXAI on the RTX 5070 Ti](docs/images/eval-nvidia.svg)
+
+The full eight-row matrix (CUDA without hybrid, CUDA Tile, cuBLAS, OpenCL on both GPUs), the long-context
+and cold-start tables and the method are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 
 ## Documentation
 
@@ -104,7 +107,7 @@ The method, the full tables, memory use and the Apple Silicon numbers are in
 | [USAGE.md](docs/USAGE.md) | The Java API, benchmark, cold start, harness server, tests |
 | [CONFIGURATION.md](docs/CONFIGURATION.md) | Every engine option, GEMM modes, hybrid APIs, per-platform recommendations |
 | [VALIDATION.md](docs/VALIDATION.md) | How the implementation was checked, from an executable spec to GIFT-Eval and fev-bench |
-| [PERFORMANCE.md](docs/PERFORMANCE.md) | The comparison with NXAI's engine: method and results |
+| [PERFORMANCE.md](docs/PERFORMANCE.md) | The eight-row comparison with NXAI's engine on NVIDIA and Apple GPUs: method, results, charts |
 | [KERNELS.md](docs/KERNELS.md) | All 26 kernels, with source links and their hybrid alternatives |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Architecture, code layout and scripts |
 
