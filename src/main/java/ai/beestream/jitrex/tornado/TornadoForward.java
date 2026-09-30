@@ -248,12 +248,14 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
     }
 
     /**
-     * {@code -Dtirex.tornado.rowBuckets=pow2|off}: round each batch's row count up to a power of two,
-     * so the batch sizes an application sends share a handful of plans instead of building one per
-     * size (a new plan costs 0.2–0.6 s with cuBLAS, 0.5–1.3 s with the portable GEMMs). The extra
-     * rows are copies of row 0, each alone in its group, and their outputs are dropped.
+     * {@code -Dtirex.tornado.rowBuckets=off|pow2}: with {@code pow2}, round each batch's row count up
+     * to a power of two, so batch sizes share a handful of plans instead of building one per size
+     * (a new plan costs 0.2–0.6 s with cuBLAS, 0.5–1.3 s with the portable GEMMs). The extra rows are
+     * copies of row 0, each alone in its group, and their outputs are dropped. Off by default: the
+     * padding rows are real work, 20–60% on every call of a size that is not a power of two (RTX
+     * 5070 Ti, cublas-auto), so it only pays for workloads with many sizes each seen a few times.
      */
-    private final boolean rowBuckets = !"off".equalsIgnoreCase(System.getProperty("tirex.tornado.rowBuckets", "pow2"));
+    private final boolean rowBuckets = "pow2".equalsIgnoreCase(System.getProperty("tirex.tornado.rowBuckets", "off"));
 
     /** The row count a batch of {@code rows} is padded to. */
     static int rowBucket(int rows) {
