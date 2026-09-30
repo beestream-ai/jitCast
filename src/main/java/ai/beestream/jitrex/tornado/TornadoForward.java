@@ -142,6 +142,12 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         return "fp16-reg".equals(slstmR) && dh == 128 && slstmGatesPerThread(dh) == 1;
     }
 
+    /**
+     * Rows per work-group the register-resident sLSTM kernel can take: with 8, its 512 threads ask
+     * for more registers than an SM has (CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES on an RTX 5070 Ti).
+     */
+    static final int SLSTM_REG_MAX_ROWS = 4;
+
     /** What a compiled plan depends on: the row count and the sizes of the two gathered subsets. */
     public record Shape(int rows, int known, int kept) {}
 
@@ -567,6 +573,9 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 int gpt = slstmGatesPerThread(dh);
                 int threads = 4 * dh / gpt;
                 int rb = slstmRowsPerGroup(count, heads);
+                if (halfRecurrent && registerRecurrent(dh)) {
+                    rb = Math.min(rb, SLSTM_REG_MAX_ROWS);
+                }
                 int groups = (count + rb - 1) / rb * heads;
                 b.grid.addWorkerGrid(b.name + "." + s + "slstm", group(groups * threads, threads));
                 if (halfRecurrent) {
