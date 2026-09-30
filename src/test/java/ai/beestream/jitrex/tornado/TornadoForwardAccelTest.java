@@ -36,7 +36,9 @@ import org.junit.Test;
  */
 public class TornadoForwardAccelTest {
 
-    private static final double TOLERANCE = 1e-4;
+    // FP32 throughout: ~1e-5 from the reference; FP16/TF32 anywhere: up to ~2e-3 (model output)
+    private static final double TOLERANCE = ai.beestream.jitrex.tornado.TornadoForward.reducedPrecision() ? 3e-3 : 1e-4;
+    private static final double FORECAST_TOLERANCE = ai.beestream.jitrex.tornado.TornadoForward.reducedPrecision() ? 1e-3 : 1e-4;
 
     @Test
     public void forwardAndForecastMatchTheReference() throws IOException {
@@ -70,7 +72,7 @@ public class TornadoForwardAccelTest {
                     }
                     System.out.printf("%-26s rows=%2d  first %6d ms  again %8.2f ms  model.out %.2e  forecast %.2e%n",
                             testCase, batch.rows(), first, again, err, ferr);
-                    if (err > TOLERANCE || ferr > TOLERANCE) {
+                    if (err > TOLERANCE || ferr > FORECAST_TOLERANCE) {
                         failures.add(testCase + ": model.out " + err + ", forecast " + ferr);
                     }
                 }

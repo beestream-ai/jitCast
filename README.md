@@ -33,8 +33,8 @@ pipeline is in Java, and the model's forward pass runs on the GPU through Tornad
 
 | Platform | Backend | Status | Recommended flags |
 |---|---|---|---|
-| NVIDIA GPU | CUDA | validated, benchmarked (RTX 5070 Ti) | `-Dtirex.tornado.gemm=cublas-auto -Dtirex.tornado.slstmR=fp16` |
-| Apple Silicon | Metal or OpenCL | validated (M4 Pro) | `-Dtirex.tornado.gemm=half -Dtirex.tornado.slstmR=fp16` |
+| NVIDIA GPU | CUDA | validated, benchmarked (RTX 5070 Ti) | `-Dtirex.tornado.gemm=cublas-auto` |
+| Apple Silicon | Metal or OpenCL | validated (M4 Pro) | `-Dtirex.tornado.gemm=half` |
 | Other OpenCL GPUs | OpenCL | expected to work, not tested | `-Dtirex.tornado.gemm=half` |
 | Any CPU | plain JVM | FP32 reference, for validation | — |
 
@@ -72,7 +72,7 @@ Run it on the TornadoVM JVM, choosing the device and flags:
 
 ```bash
 java @$TORNADOVM_HOME/tornado-argfile --add-modules jdk.incubator.vector -cp target/classes:<your app> \
-     -Dtirex.tornado.device=0:0 -Dtirex.tornado.gemm=cublas-auto -Dtirex.tornado.slstmR=fp16 your.Main
+     -Dtirex.tornado.device=0:0 -Dtirex.tornado.gemm=cublas-auto your.Main
 ```
 
 Covariates, the benchmark and cold-start tools, the harness server and the tests are covered in

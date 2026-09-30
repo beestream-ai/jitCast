@@ -23,7 +23,7 @@ try (TiRex2Engine engine = TornadoTiRex2Engine.load(Path.of("tirex2.safetensors"
 `CpuTiRex2Engine` is the same API on the CPU reference. Engine options are JVM properties (`-Dtirex.tornado.*`, see [CONFIGURATION.md](CONFIGURATION.md)), for example:
 
 ```bash
-$JITREX -Dtirex.tornado.device=0:0 -Dtirex.tornado.gemm=cublas-auto -Dtirex.tornado.slstmR=fp16 my.App
+$JITREX -Dtirex.tornado.device=0:0 -Dtirex.tornado.gemm=cublas-auto my.App
 ```
 
 ## Benchmark, cold start and harness server
@@ -33,7 +33,7 @@ $JITREX -Dtirex.tornado.device=0:0 -Dtirex.tornado.gemm=cublas-auto -Dtirex.torn
 python scripts/bench_nxai.py workloads --out workloads.safetensors
 
 # latency and throughput: univariate batches and multivariate series × covariates
-$JITREX -Dtirex.tornado.gemm=cublas-auto -Dtirex.tornado.slstmR=fp16 ai.beestream.jitrex.bench.TiRexBench \
+$JITREX -Dtirex.tornado.gemm=cublas-auto ai.beestream.jitrex.bench.TiRexBench \
     --weights tirex2.safetensors --workloads workloads.safetensors --engine tornado \
     --scenarios throughput,multivariate --batches 1,8,64,512 --mv-batches 1,32 --covariates 15 --out results.jsonl
 

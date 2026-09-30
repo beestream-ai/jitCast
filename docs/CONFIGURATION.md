@@ -10,7 +10,7 @@
 | `tirex.tornado.gemm` | `tiled`, `half`, `cublas`, `cublas-tf32`, `cublas-fp16`, `cublas-auto`, `cutile` | GEMM implementation (see *GEMM modes*) |
 | `tirex.tornado.fp16MinTokens` | `1024` | `cublas-auto`: GEMMs over at least this many rows use FP16, smaller ones FP32 |
 | `tirex.tornado.fp16Kernel` | `gemmex-mixed`, `gemmex-h16`, `lt-h16` | cuBLAS call for an FP16 GEMM: GemmEx FP16→FP32, GemmEx all-FP16, or cuBLASLt all-FP16 (the last two with an FP32 epilogue kernel) |
-| `tirex.tornado.slstmR` | `fp32`, `fp16` | Precision of the sLSTM recurrent weights. FP16 halves the bytes each step streams, and the state stays FP32 |
+| `tirex.tornado.slstmR` | `fp16-reg`, `fp16`, `fp32` | The sLSTM recurrent weights R. `fp16-reg`: FP16, with half of each thread's R values held in registers for the whole sequence where that is faster (up to ~64 rows; it needs 512-thread work-groups and falls back to `fp16` elsewhere). `fp16`: FP16, streamed every step. `fp32`: FP32, streamed. The state is FP32 in all three |
 | `tirex.tornado.slstmRows` | `0` (auto) | Rows per sLSTM work-group. Auto picks the largest value that still gives 64 work-groups |
 | `tirex.tornado.mlstm` | `auto`, `chunk`, `step` | mLSTM kernel: `chunk` (blocks of 16 query steps share each staged key/value block) or `step` (one work-group per time step). `auto` takes `chunk` unless its grid would have fewer than 64 work-groups (a single 74-patch series) |
 | `tirex.tornado.profile` | `false`, `true` | Print TornadoVM's per-task kernel times after every execution (analysis only: it slows every call) |
@@ -38,10 +38,10 @@ TornadoVM properties used alongside: `tornado.device.memory` (device heap, e.g. 
 
 | Platform | Recommended flags | Why |
 |---|---|---|
-| **NVIDIA** (tested: RTX 5070 Ti) | `-Dtirex.tornado.gemm=cublas-auto -Dtirex.tornado.slstmR=fp16` (CUDA graphs on by default), plus the cuBLAS 13 shim on machines that also have CUDA 12 cuBLAS | Fastest at every batch size: 2.41 ms at batch 1, ~4,850 series/s at batch 512. Error 1.5e-4 / 4.7e-5 |
-| NVIDIA, closest to FP32 | `-Dtirex.tornado.gemm=cublas` | FP32 GEMMs, error 2.7e-6 / 1.4e-6; slower than `cublas-auto` at large batches, where the FP16 tensor-core GEMMs pay off |
+| **NVIDIA** (tested: RTX 5070 Ti) | `-Dtirex.tornado.gemm=cublas-auto` (FP16 sLSTM weights in registers and CUDA graphs are the defaults), plus the cuBLAS 13 shim on machines that also have CUDA 12 cuBLAS | Fastest at every batch size: 2.41 ms at batch 1, ~4,850 series/s at batch 512. Error 1.5e-4 / 4.7e-5 |
+| NVIDIA, closest to FP32 | `-Dtirex.tornado.gemm=cublas -Dtirex.tornado.slstmR=fp32` | FP32 GEMMs, error 2.7e-6 / 1.4e-6; slower than `cublas-auto` at large batches, where the FP16 tensor-core GEMMs pay off |
 | NVIDIA, no vendor libraries | `-Dtirex.tornado.gemm=cutile` (toolkit 13.3+), otherwise `half` | `cutile`: 3.1 ms at batch 1, ~1,630 series/s at batch 256. `half`: 7.5 ms, ~1,100 series/s |
-| **Apple Silicon** (tested: M4 Pro), Metal or OpenCL | `-Dtirex.tornado.gemm=half -Dtirex.tornado.slstmR=fp16`, on either backend | `half` is 1.9–2.5× faster than `tiled` from batch 8 up; Metal and OpenCL are within ~5% of each other; see [PERFORMANCE.md](PERFORMANCE.md#apple-silicon) |
+| **Apple Silicon** (tested: M4 Pro), Metal or OpenCL | `-Dtirex.tornado.gemm=half`, on either backend | `half` is 1.9–2.5× faster than `tiled` from batch 8 up; Metal and OpenCL are within ~5% of each other; see [PERFORMANCE.md](PERFORMANCE.md#apple-silicon) |
 | Other OpenCL devices | `-Dtirex.tornado.gemm=half` (or `tiled` for FP32) | Portable; not tuned |
 | Long contexts (GIFT-Eval checkpoints, 285 patches) | the platform's flags (the chunkwise mLSTM is the default), plus `-Dtirex.tornado.cudaGraph=false`, and batches of at most 128 series on a 16 GB GPU | `cublas-auto` is 1.8–2.5× faster than NXAI there ([PERFORMANCE.md](PERFORMANCE.md#long-context-gift-eval-checkpoints)). Device memory grows with rows × patches, and CUDA graphs can fail after many plan rebuilds (a TornadoVM issue under investigation) |
 

@@ -130,21 +130,42 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
     }
 
     /** {@code -Dtirex.tornado.slstmR=fp16}: read the sLSTM recurrent kernels from an FP16 copy. */
-    private final String slstmR = System.getProperty("tirex.tornado.slstmR", "fp32").trim().toLowerCase();
+    /**
+     * {@code -Dtirex.tornado.slstmR=fp16-reg|fp16|fp32}: the precision of the sLSTM recurrent
+     * weights, and where they live. {@code fp16-reg} (default) is FP16 with half of each thread's
+     * R values held in registers where it pays (see {@link #registerRecurrent}); {@code fp16}
+     * streams FP16 R every step; {@code fp32} streams FP32 R, for results closest to FP32.
+     */
+    private final String slstmR = System.getProperty("tirex.tornado.slstmR", "fp16-reg").trim().toLowerCase();
     private final boolean halfRecurrent = slstmR.startsWith("fp16");
+
+    /**
+     * Whether the configuration computes anything below FP32 (FP16 or TF32 GEMM inputs, FP16 sLSTM
+     * weights): results then differ from the FP32 reference by up to ~2e-3 instead of ~1e-5.
+     */
+    public static boolean reducedPrecision() {
+        String gemm = System.getProperty("tirex.tornado.gemm", "tiled").trim().toLowerCase();
+        String r = System.getProperty("tirex.tornado.slstmR", "fp16-reg").trim().toLowerCase();
+        return !(gemm.equals("tiled") || gemm.equals("cublas")) || r.startsWith("fp16");
+    }
 
     /**
      * {@code -Dtirex.tornado.slstmR=fp16-reg}: FP16 R with half of each thread's R values held in
      * registers for the whole sequence ({@link TiRexKernels#slstmRecurrenceRegR}); it needs
      * 512-thread work-groups, and falls back to {@code fp16} on devices that cap them lower.
      */
-    private boolean registerRecurrent(int dh) {
-        return "fp16-reg".equals(slstmR) && dh == 128 && slstmGatesPerThread(dh) == 1;
+    private boolean registerRecurrent(int dh, int streamedRowsPerGroup) {
+        return "fp16-reg".equals(slstmR) && dh == 128 && slstmGatesPerThread(dh) == 1
+                && streamedRowsPerGroup < TiRexKernels.SLSTM_MAX_ROWS;
     }
 
     /**
      * Rows per work-group the register-resident sLSTM kernel can take: with 4 or more, its 512 threads ask
-     * for more registers than an SM has (CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES on an RTX 5070 Ti).
+     * for more registers than an SM has (CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES on an RTX 5070 Ti, and
+     * CL_OUT_OF_RESOURCES on NVIDIA's OpenCL). So it only replaces the streamed kernel where that
+     * one would take fewer than {@link TiRexKernels#SLSTM_MAX_ROWS} rows per group: on an RTX 5070 Ti
+     * it is 14–23% faster end to end up to about 64 rows, and 3% slower where the streamed kernel
+     * shares each R read between 8 rows (the largest batches).
      */
     static final int SLSTM_REG_MAX_ROWS = 2;
 
@@ -573,7 +594,8 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 int gpt = slstmGatesPerThread(dh);
                 int threads = 4 * dh / gpt;
                 int rb = slstmRowsPerGroup(count, heads);
-                if (halfRecurrent && registerRecurrent(dh)) {
+                boolean inRegisters = halfRecurrent && registerRecurrent(dh, rb);
+                if (inRegisters) {
                     rb = Math.min(rb, SLSTM_REG_MAX_ROWS);
                 }
                 int groups = (count + rb - 1) / rb * heads;
@@ -583,7 +605,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                     if (b.graphWeights.add(rh)) {
                         b.g.transferToDevice(DataTransferMode.FIRST_EXECUTION, rh);
                     }
-                    if (registerRecurrent(dh)) {
+                    if (inRegisters) {
                         b.g.task(s + "slstm", TiRexKernels::slstmRecurrenceRegR, b.ctx, big, b.w, rh,
                                 weights.recurrentHalfOffset(blk), blk.slstmBias(), cell, count, seq, heads, rb);
                     } else {
