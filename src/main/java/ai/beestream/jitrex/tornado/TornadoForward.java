@@ -247,8 +247,51 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         return rb;
     }
 
+    /**
+     * {@code -Dtirex.tornado.rowBuckets=pow2|off}: round each batch's row count up to a power of two,
+     * so the batch sizes an application sends share a handful of plans instead of building one per
+     * size (a new plan costs 0.2–0.6 s with cuBLAS, 0.5–1.3 s with the portable GEMMs). The extra
+     * rows are copies of row 0, each alone in its group, and their outputs are dropped.
+     */
+    private final boolean rowBuckets = !"off".equalsIgnoreCase(System.getProperty("tirex.tornado.rowBuckets", "pow2"));
+
+    /** The row count a batch of {@code rows} is padded to. */
+    static int rowBucket(int rows) {
+        return rows <= 1 ? 1 : Integer.highestOneBit(rows - 1) << 1;
+    }
+
+    /**
+     * The batch with {@code padded − rows} extra rows appended: copies of row 0, targets, each in a
+     * group of its own, so the known covariates and the multi-row groups (the rest of the plan's
+     * shape) are unchanged.
+     */
+    static ModelBatch padRows(ModelBatch batch, int padded) {
+        int rows = batch.rows();
+        float[][] x = java.util.Arrays.copyOf(batch.x(), padded);
+        float[] group = java.util.Arrays.copyOf(batch.group(), padded);
+        boolean[] target = java.util.Arrays.copyOf(batch.target(), padded);
+        float next = 0f;
+        for (float g : batch.group()) {
+            next = Math.max(next, g + 1f);
+        }
+        for (int r = rows; r < padded; r++) {
+            x[r] = batch.x()[0];
+            group[r] = next + (r - rows);
+            target[r] = true;
+        }
+        return new ModelBatch(x, group, target);
+    }
+
     @Override
     public float[][][] forward(ModelBatch batch) {
+        int rows = batch.rows();
+        if (rowBuckets && rowBucket(rows) != rows) {
+            return java.util.Arrays.copyOf(forwardExact(padRows(batch, rowBucket(rows))), rows);
+        }
+        return forwardExact(batch);
+    }
+
+    private float[][][] forwardExact(ModelBatch batch) {
         Structure s = structure(batch);
         Shape shape = s.shape(batch.rows());
         Plan plan = plans.get(shape);
