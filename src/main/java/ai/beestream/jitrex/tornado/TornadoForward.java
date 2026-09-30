@@ -109,11 +109,25 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
     }
 
     /**
-     * {@code -Dtirex.tornado.mlstm=chunk|step}: the chunkwise mLSTM kernel (blocks of query steps
-     * share each staged key; {@link TiRexKernels#mlstmChunk}) or the one-step-per-work-group one
-     * ({@link TiRexKernels#mlstmCell}).
+     * {@code -Dtirex.tornado.mlstm=auto|chunk|step}: the chunkwise mLSTM kernel (blocks of query
+     * steps share each staged key; {@link TiRexKernels#mlstmChunk}) or the one-step-per-work-group
+     * one ({@link TiRexKernels#mlstmCell}). {@code auto} (default) takes the chunkwise kernel unless
+     * its grid would be smaller than {@link #MLSTM_CHUNK_MIN_GROUPS} work-groups: on an RTX 5070 Ti
+     * it is 26–35% faster at 285 patches from 8 series up and 4–5% faster at 74 patches from 64
+     * series, but 5% slower for a single 74-patch series, whose 20 work-groups leave the GPU idle.
      */
-    private final boolean mlstmChunk = !"step".equalsIgnoreCase(System.getProperty("tirex.tornado.mlstm", "chunk"));
+    private final String mlstmMode = System.getProperty("tirex.tornado.mlstm", "auto").trim().toLowerCase();
+
+    static final int MLSTM_CHUNK_MIN_GROUPS = 64;
+
+    private boolean mlstmChunk(int rows, int heads, int seq) {
+        int blocks = (seq + TiRexKernels.MLSTM_TB - 1) / TiRexKernels.MLSTM_TB;
+        return switch (mlstmMode) {
+            case "chunk" -> true;
+            case "step" -> false;
+            default -> rows * heads * blocks >= MLSTM_CHUNK_MIN_GROUPS;
+        };
+    }
 
     /** {@code -Dtirex.tornado.slstmR=fp16}: read the sLSTM recurrent kernels from an FP16 copy. */
     private final boolean halfRecurrent = "fp16".equalsIgnoreCase(System.getProperty("tirex.tornado.slstmR", "fp32"));
@@ -524,7 +538,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 if (seq > TiRexKernels.MLSTM_MAX_SEQ) {
                     throw new IllegalStateException("mlstmCell supports up to " + TiRexKernels.MLSTM_MAX_SEQ + " patches");
                 }
-                if (mlstmChunk) {
+                if (mlstmChunk(count, heads, seq)) {
                     int blocks = (seq + TiRexKernels.MLSTM_TB - 1) / TiRexKernels.MLSTM_TB;
                     b.grid.addWorkerGrid(b.name + "." + s + "mlstm", group(count * heads * blocks * (d / heads), d / heads));
                     b.g.task(s + "mlstm", TiRexKernels::mlstmChunk, b.ctx, proj, cell, count, seq, heads, pr.out(), qk, 2 * qk,
