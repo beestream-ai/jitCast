@@ -143,10 +143,10 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
     }
 
     /**
-     * Rows per work-group the register-resident sLSTM kernel can take: with 8, its 512 threads ask
+     * Rows per work-group the register-resident sLSTM kernel can take: with 4 or more, its 512 threads ask
      * for more registers than an SM has (CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES on an RTX 5070 Ti).
      */
-    static final int SLSTM_REG_MAX_ROWS = 4;
+    static final int SLSTM_REG_MAX_ROWS = 2;
 
     /** What a compiled plan depends on: the row count and the sizes of the two gathered subsets. */
     public record Shape(int rows, int known, int kept) {}

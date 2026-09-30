@@ -307,8 +307,8 @@ public class KernelParityAccelTest {
             check("slstmRecurrence FP16 R gpt=" + gpt, oh.toHeapArray(), expHalf);
             // FP16 R, half of it held in registers: 512 threads, so only where the device allows them
             if (gpt == 1) {
-                // up to TornadoForward.SLSTM_REG_MAX_ROWS rows per group: 8 exceeds the register file on CUDA
-                for (int rb : new int[] {1, 2, 4}) {
+                // up to TornadoForward.SLSTM_REG_MAX_ROWS rows per group: 4 or more exceed the register file on CUDA and OpenCL
+                for (int rb : new int[] {1, 2}) {
                     FloatArray or = new FloatArray(n * D);
                     int groups = (rows + rb - 1) / rb * HEADS;
                     run("t", grid1(groups * threads, threads), g -> g.task("t", TiRexKernels::slstmRecurrenceRegR, ctx, fwx,
