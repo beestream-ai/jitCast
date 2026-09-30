@@ -55,8 +55,10 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
      * How GEMMs run: the portable tiled kernel, or on CUDA cuBLAS in FP32, TF32, or FP16 tensor
      * cores ({@code cublasGemmExFP16FP32}: FP16 weights and activations, FP32 accumulation and
      * output, so the residual stream stays FP32). {@code CUBLAS_AUTO} picks per GEMM: FP16 once the
-     * row count reaches {@code -Dtirex.tornado.fp16MinTokens} (default 1024), FP32 below it, where
-     * cuBLAS falls back to a non-tensor-core kernel for FP16 inputs with FP32 output.
+     * row count reaches {@code -Dtirex.tornado.fp16MinTokens}, FP32 below it. The default, 0, is
+     * FP16 everywhere: with CUDA 13 cuBLAS the FP16 tensor-core GEMM is faster at every row count
+     * (−30% at 1 series, −44% at 8 on an RTX 5070 Ti). The threshold dates from CUDA 12.0 cuBLAS,
+     * whose FP16→FP32 GEMM fell back to a non-tensor-core kernel at small row counts.
      * {@code HALF} and {@code CUTILE} are the same FP16 GEMM written in TornadoVM, for every row
      * count: {@code HALF} with KernelContext ({@link TiRexKernels#gemmHalf}, any backend) and
      * {@code CUTILE} with the CUDA Tile API ({@link TiRexKernels#gemmHalfTile}, tensor cores).
@@ -87,7 +89,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
     private final boolean cudaGraph = Boolean.parseBoolean(
             System.getProperty("tirex.tornado.cudaGraph", String.valueOf(gemmMode.cublas() || gemmMode == GemmMode.CUTILE)));
 
-    private final int fp16MinTokens = Integer.getInteger("tirex.tornado.fp16MinTokens", 1024);
+    private final int fp16MinTokens = Integer.getInteger("tirex.tornado.fp16MinTokens", 0);
 
     /**
      * Which cuBLAS call runs an FP16 GEMM: {@code gemmex-mixed} ({@code cublasGemmEx}, FP16 in,
