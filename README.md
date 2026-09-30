@@ -90,6 +90,7 @@ FlexAttention configurations:
 | 512 series | 361 ms | **105 ms** | 3.4× (4,858 vs 1,417 series/s) |
 | 1 series × 15 covariates | 30.8 ms | **10.2 ms** | 3.0× |
 | 32 series × 63 covariates | 1,869 ms | **920 ms** | 2.0× |
+| 32 series, GIFT-Eval checkpoint (285 patches) | 130.8 ms | **73.5 ms** | 1.8× |
 | Cold start: process → first forecast | 8.18 s | **1.41 s** | 5.8× |
 
 The method, the full tables, memory use and the Apple Silicon numbers are in
@@ -104,7 +105,7 @@ The method, the full tables, memory use and the Apple Silicon numbers are in
 | [CONFIGURATION.md](docs/CONFIGURATION.md) | Every engine option, GEMM modes, hybrid APIs, per-platform recommendations |
 | [VALIDATION.md](docs/VALIDATION.md) | How the implementation was checked, from an executable spec to GIFT-Eval and fev-bench |
 | [PERFORMANCE.md](docs/PERFORMANCE.md) | The comparison with NXAI's engine: method and results |
-| [KERNELS.md](docs/KERNELS.md) | All 24 kernels, with source links and their hybrid alternatives |
+| [KERNELS.md](docs/KERNELS.md) | All 25 kernels, with source links and their hybrid alternatives |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Architecture, code layout and scripts |
 
 ## License
