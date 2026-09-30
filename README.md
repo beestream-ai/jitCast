@@ -105,7 +105,7 @@ The method, the full tables, memory use and the Apple Silicon numbers are in
 | [CONFIGURATION.md](docs/CONFIGURATION.md) | Every engine option, GEMM modes, hybrid APIs, per-platform recommendations |
 | [VALIDATION.md](docs/VALIDATION.md) | How the implementation was checked, from an executable spec to GIFT-Eval and fev-bench |
 | [PERFORMANCE.md](docs/PERFORMANCE.md) | The comparison with NXAI's engine: method and results |
-| [KERNELS.md](docs/KERNELS.md) | All 25 kernels, with source links and their hybrid alternatives |
+| [KERNELS.md](docs/KERNELS.md) | All 26 kernels, with source links and their hybrid alternatives |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Architecture, code layout and scripts |
 
 ## License

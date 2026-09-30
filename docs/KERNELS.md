@@ -16,20 +16,21 @@ All kernels are in [`TiRexKernels.java`](../src/main/java/ai/beestream/jitrex/to
 | [`mlstmChunk`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L521) | The same cell chunkwise, as in flash attention: blocks of 16 query steps share each key/value block staged in local memory, with an online stabiliser and block-relative suffix sums; the default (`-Dtirex.tornado.mlstm=auto`) | — |
 | [`slstmRecurrence`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L683) | sLSTM recurrence over all steps, one work-group per (row block, head), each R read shared by the rows | — |
 | [`slstmRecurrenceHalfR`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L760) | The same with FP16 recurrent weights | — |
-| [`swiGlu`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L835) | `SiLU(gate) · up` for the fused up-gate projection; FP16 twin | — |
-| [`unpatch`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L854) | Patches back to a sequence, then `sinh(clamp(y))·scale + loc` | — |
-| [`gatherRows`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L879) | Gathers the known-covariate rows, time-reversed for the reverse cell pass; FP16 twin | — |
-| [`scatterRows`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L896) | Scatters the combined rows back | — |
-| [`concatForward`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L911) | Forward and reverse outputs, concatenated for the combination layer; FP16 twin | — |
-| [`addInPlace`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L932) | Residual add | — |
-| [`qkNorm`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L948) | Weightless RMS normalisation of q and k per head, several vectors per pass | — |
-| [`variateAttention`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L991) | Flash-style attention across the rows of each group, masked (covariates don't attend to targets), costing O(Σ group²); FP16 twin | — |
-| [`biasFill`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L1081) | Writes the bias into C before a cuBLAS GEMM with β = 1 | helper for the cuBLAS path |
-| [`siluInPlace`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L1091) | SiLU after a cuBLAS GEMM; FP16 twin | helper for the cuBLAS path |
-| [`toHalf`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L1103) | FP32 → FP16 for a GEMM input without a twin | helper for the FP16 GEMMs |
-| [`fromHalfEpilogue`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L1113) | FP16 C → FP32 with bias / SiLU / accumulate, after an all-FP16 cuBLAS GEMM | helper for `gemmex-h16`, `lt-h16` |
-| [`biasSilu`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L1139) | Fused bias + SiLU + FP16 twin after a cuBLAS GEMM | helper for the cuBLAS path (`fuse`) |
-| [`addRmsNorm`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L1164) | Fused residual add + RMSNorm; FP16 twin | — (`fuse`) |
-| [`headNormAddRmsNorm`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L1204) | Fused sLSTM head LayerNorm + residual add + RMSNorm; FP16 twin (needs 512 threads per work-group) | — (`fuse`) |
+| [`slstmRecurrenceRegR`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L846) | The same with half of each thread's FP16 R values held in registers for the whole sequence (generated scalars), so each step streams only the other half; the default (`slstmR=fp16-reg`) where the streamed kernel would take fewer than 8 rows per group, up to 2 rows per group, on devices with 512-thread work-groups | — |
+| [`swiGlu`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L1047) | `SiLU(gate) · up` for the fused up-gate projection; FP16 twin | — |
+| [`unpatch`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L1066) | Patches back to a sequence, then `sinh(clamp(y))·scale + loc` | — |
+| [`gatherRows`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L1091) | Gathers the known-covariate rows, time-reversed for the reverse cell pass; FP16 twin | — |
+| [`scatterRows`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L1108) | Scatters the combined rows back | — |
+| [`concatForward`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L1123) | Forward and reverse outputs, concatenated for the combination layer; FP16 twin | — |
+| [`addInPlace`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L1144) | Residual add | — |
+| [`qkNorm`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L1160) | Weightless RMS normalisation of q and k per head, several vectors per pass | — |
+| [`variateAttention`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L1203) | Flash-style attention across the rows of each group, masked (covariates don't attend to targets), costing O(Σ group²); FP16 twin | — |
+| [`biasFill`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L1293) | Writes the bias into C before a cuBLAS GEMM with β = 1 | helper for the cuBLAS path |
+| [`siluInPlace`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L1303) | SiLU after a cuBLAS GEMM; FP16 twin | helper for the cuBLAS path |
+| [`toHalf`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L1315) | FP32 → FP16 for a GEMM input without a twin | helper for the FP16 GEMMs |
+| [`fromHalfEpilogue`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L1325) | FP16 C → FP32 with bias / SiLU / accumulate, after an all-FP16 cuBLAS GEMM | helper for `gemmex-h16`, `lt-h16` |
+| [`biasSilu`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L1351) | Fused bias + SiLU + FP16 twin after a cuBLAS GEMM | helper for the cuBLAS path (`fuse`) |
+| [`addRmsNorm`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L1376) | Fused residual add + RMSNorm; FP16 twin | — (`fuse`) |
+| [`headNormAddRmsNorm`](../src/main/java/ai/beestream/jitrex/tornado/TiRexKernels.java#L1416) | Fused sLSTM head LayerNorm + residual add + RMSNorm; FP16 twin (needs 512 threads per work-group) | — (`fuse`) |
 
 An *FP16 twin* is an FP16 copy of a kernel's output that the kernel writes for the next GEMM. With twins, the FP16 GEMM modes need no separate conversion pass.
