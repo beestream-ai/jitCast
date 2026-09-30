@@ -130,7 +130,17 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
     }
 
     /** {@code -Dtirex.tornado.slstmR=fp16}: read the sLSTM recurrent kernels from an FP16 copy. */
-    private final boolean halfRecurrent = "fp16".equalsIgnoreCase(System.getProperty("tirex.tornado.slstmR", "fp32"));
+    private final String slstmR = System.getProperty("tirex.tornado.slstmR", "fp32").trim().toLowerCase();
+    private final boolean halfRecurrent = slstmR.startsWith("fp16");
+
+    /**
+     * {@code -Dtirex.tornado.slstmR=fp16-reg}: FP16 R with half of each thread's R values held in
+     * registers for the whole sequence ({@link TiRexKernels#slstmRecurrenceRegR}); it needs
+     * 512-thread work-groups, and falls back to {@code fp16} on devices that cap them lower.
+     */
+    private boolean registerRecurrent(int dh) {
+        return "fp16-reg".equals(slstmR) && dh == 128 && slstmGatesPerThread(dh) == 1;
+    }
 
     /** What a compiled plan depends on: the row count and the sizes of the two gathered subsets. */
     public record Shape(int rows, int known, int kept) {}
@@ -564,8 +574,13 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                     if (b.graphWeights.add(rh)) {
                         b.g.transferToDevice(DataTransferMode.FIRST_EXECUTION, rh);
                     }
-                    b.g.task(s + "slstm", TiRexKernels::slstmRecurrenceHalfR, b.ctx, big, b.w, rh,
-                            weights.recurrentHalfOffset(blk), blk.slstmBias(), cell, count, seq, heads, gpt, rb);
+                    if (registerRecurrent(dh)) {
+                        b.g.task(s + "slstm", TiRexKernels::slstmRecurrenceRegR, b.ctx, big, b.w, rh,
+                                weights.recurrentHalfOffset(blk), blk.slstmBias(), cell, count, seq, heads, rb);
+                    } else {
+                        b.g.task(s + "slstm", TiRexKernels::slstmRecurrenceHalfR, b.ctx, big, b.w, rh,
+                                weights.recurrentHalfOffset(blk), blk.slstmBias(), cell, count, seq, heads, gpt, rb);
+                    }
                 } else {
                     b.g.task(s + "slstm", TiRexKernels::slstmRecurrence, b.ctx, big, b.w, blk.recurrent(), blk.slstmBias(),
                             cell, count, seq, heads, gpt, rb);

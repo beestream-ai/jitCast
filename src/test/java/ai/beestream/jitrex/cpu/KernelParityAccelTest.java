@@ -305,6 +305,16 @@ public class KernelParityAccelTest {
             run("t", grid1((rows + 1) / 2 * HEADS * threads, threads), g -> g.task("t", TiRexKernels::slstmRecurrenceHalfR, ctx, fwx,
                     bOnly, rh, 0, 0, oh, rows, SEQ, HEADS, gpt, 2), oh, fwx, bOnly);
             check("slstmRecurrence FP16 R gpt=" + gpt, oh.toHeapArray(), expHalf);
+            // FP16 R, half of it held in registers: 512 threads, so only where the device allows them
+            if (gpt == 1) {
+                for (int rb : new int[] {1, 2, 8}) {
+                    FloatArray or = new FloatArray(n * D);
+                    int groups = (rows + rb - 1) / rb * HEADS;
+                    run("t", grid1(groups * threads, threads), g -> g.task("t", TiRexKernels::slstmRecurrenceRegR, ctx, fwx,
+                            bOnly, rh, 0, 0, or, rows, SEQ, HEADS, rb), or, fwx, bOnly);
+                    check("slstmRecurrence FP16 R in registers rows/group=" + rb, or.toHeapArray(), expHalf);
+                }
+            }
         }
     }
 

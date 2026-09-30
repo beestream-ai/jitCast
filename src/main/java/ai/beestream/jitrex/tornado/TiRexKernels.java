@@ -831,6 +831,218 @@ public final class TiRexKernels {
         }
     }
 
+    /** R values per thread that {@link #slstmRecurrenceRegR} keeps in registers (the rest are streamed). */
+    public static final int SLSTM_REG_R = 64;
+
+    /**
+     * {@link #slstmRecurrenceHalfR} with the first {@link #SLSTM_REG_R} of each thread's 128 R values
+     * held in registers for the whole sequence, so each step streams only the other half of R
+     * (the step is bound by streaming R from L2: 128 KB per head per step in FP16). One thread per
+     * (gate, lane): exactly {@code 4·dh = 512} threads per work-group (gatesPerThread = 1), so
+     * it needs a device that allows 512-thread work-groups. The registers are named scalars
+     * rather than a private array, which GPU compilers would move to local memory when indexed
+     * in a loop. Generated: the loads and the unrolled dot products follow one pattern.
+     */
+    public static void slstmRecurrenceRegR(KernelContext ctx, FloatArray wx, FloatArray w, HalfFloatArray rh, int rOff,
+            int bOff, FloatArray y, int rows, int seq, int heads, int rowsPerGroup) {
+        int wg = ctx.groupIdx;
+        int tid = ctx.localIdx;
+        int h = wg % heads;
+        int row0 = (wg / heads) * rowsPerGroup;
+        int dh = 128;
+        int d = heads * dh;
+        int e = tid % dh;
+        int g = tid / dh;
+        float[] yl = ctx.allocateFloatLocalArray(SLSTM_MAX_ROWS * 128);
+        float[] raw = ctx.allocateFloatLocalArray(SLSTM_MAX_ROWS * 512);
+        float[] c = new float[SLSTM_MAX_ROWS];
+        float[] nn = new float[SLSTM_MAX_ROWS];
+        float[] m = new float[SLSTM_MAX_ROWS];
+        float[] acc = new float[SLSTM_MAX_ROWS];
+        for (int rb = 0; rb < SLSTM_MAX_ROWS; rb++) {
+            c[rb] = 0f;
+            nn[rb] = 0f;
+            m[rb] = 0f;
+        }
+        if (tid < dh) {
+            for (int rb = 0; rb < rowsPerGroup; rb++) {
+                yl[rb * dh + tid] = 0f;
+            }
+        }
+        int ro = rOff + (h * dh * 4 + g) * dh + e;
+        float bias = w.get(bOff + (h * 4 + g) * dh + e);
+        float r0 = rh.get(ro + 0 * 4 * dh).getFloat32();
+        float r1 = rh.get(ro + 1 * 4 * dh).getFloat32();
+        float r2 = rh.get(ro + 2 * 4 * dh).getFloat32();
+        float r3 = rh.get(ro + 3 * 4 * dh).getFloat32();
+        float r4 = rh.get(ro + 4 * 4 * dh).getFloat32();
+        float r5 = rh.get(ro + 5 * 4 * dh).getFloat32();
+        float r6 = rh.get(ro + 6 * 4 * dh).getFloat32();
+        float r7 = rh.get(ro + 7 * 4 * dh).getFloat32();
+        float r8 = rh.get(ro + 8 * 4 * dh).getFloat32();
+        float r9 = rh.get(ro + 9 * 4 * dh).getFloat32();
+        float r10 = rh.get(ro + 10 * 4 * dh).getFloat32();
+        float r11 = rh.get(ro + 11 * 4 * dh).getFloat32();
+        float r12 = rh.get(ro + 12 * 4 * dh).getFloat32();
+        float r13 = rh.get(ro + 13 * 4 * dh).getFloat32();
+        float r14 = rh.get(ro + 14 * 4 * dh).getFloat32();
+        float r15 = rh.get(ro + 15 * 4 * dh).getFloat32();
+        float r16 = rh.get(ro + 16 * 4 * dh).getFloat32();
+        float r17 = rh.get(ro + 17 * 4 * dh).getFloat32();
+        float r18 = rh.get(ro + 18 * 4 * dh).getFloat32();
+        float r19 = rh.get(ro + 19 * 4 * dh).getFloat32();
+        float r20 = rh.get(ro + 20 * 4 * dh).getFloat32();
+        float r21 = rh.get(ro + 21 * 4 * dh).getFloat32();
+        float r22 = rh.get(ro + 22 * 4 * dh).getFloat32();
+        float r23 = rh.get(ro + 23 * 4 * dh).getFloat32();
+        float r24 = rh.get(ro + 24 * 4 * dh).getFloat32();
+        float r25 = rh.get(ro + 25 * 4 * dh).getFloat32();
+        float r26 = rh.get(ro + 26 * 4 * dh).getFloat32();
+        float r27 = rh.get(ro + 27 * 4 * dh).getFloat32();
+        float r28 = rh.get(ro + 28 * 4 * dh).getFloat32();
+        float r29 = rh.get(ro + 29 * 4 * dh).getFloat32();
+        float r30 = rh.get(ro + 30 * 4 * dh).getFloat32();
+        float r31 = rh.get(ro + 31 * 4 * dh).getFloat32();
+        float r32 = rh.get(ro + 32 * 4 * dh).getFloat32();
+        float r33 = rh.get(ro + 33 * 4 * dh).getFloat32();
+        float r34 = rh.get(ro + 34 * 4 * dh).getFloat32();
+        float r35 = rh.get(ro + 35 * 4 * dh).getFloat32();
+        float r36 = rh.get(ro + 36 * 4 * dh).getFloat32();
+        float r37 = rh.get(ro + 37 * 4 * dh).getFloat32();
+        float r38 = rh.get(ro + 38 * 4 * dh).getFloat32();
+        float r39 = rh.get(ro + 39 * 4 * dh).getFloat32();
+        float r40 = rh.get(ro + 40 * 4 * dh).getFloat32();
+        float r41 = rh.get(ro + 41 * 4 * dh).getFloat32();
+        float r42 = rh.get(ro + 42 * 4 * dh).getFloat32();
+        float r43 = rh.get(ro + 43 * 4 * dh).getFloat32();
+        float r44 = rh.get(ro + 44 * 4 * dh).getFloat32();
+        float r45 = rh.get(ro + 45 * 4 * dh).getFloat32();
+        float r46 = rh.get(ro + 46 * 4 * dh).getFloat32();
+        float r47 = rh.get(ro + 47 * 4 * dh).getFloat32();
+        float r48 = rh.get(ro + 48 * 4 * dh).getFloat32();
+        float r49 = rh.get(ro + 49 * 4 * dh).getFloat32();
+        float r50 = rh.get(ro + 50 * 4 * dh).getFloat32();
+        float r51 = rh.get(ro + 51 * 4 * dh).getFloat32();
+        float r52 = rh.get(ro + 52 * 4 * dh).getFloat32();
+        float r53 = rh.get(ro + 53 * 4 * dh).getFloat32();
+        float r54 = rh.get(ro + 54 * 4 * dh).getFloat32();
+        float r55 = rh.get(ro + 55 * 4 * dh).getFloat32();
+        float r56 = rh.get(ro + 56 * 4 * dh).getFloat32();
+        float r57 = rh.get(ro + 57 * 4 * dh).getFloat32();
+        float r58 = rh.get(ro + 58 * 4 * dh).getFloat32();
+        float r59 = rh.get(ro + 59 * 4 * dh).getFloat32();
+        float r60 = rh.get(ro + 60 * 4 * dh).getFloat32();
+        float r61 = rh.get(ro + 61 * 4 * dh).getFloat32();
+        float r62 = rh.get(ro + 62 * 4 * dh).getFloat32();
+        float r63 = rh.get(ro + 63 * 4 * dh).getFloat32();
+        ctx.localBarrier();
+        for (int t = 0; t < seq; t++) {
+            for (int rb = 0; rb < rowsPerGroup; rb++) {
+                int row = TornadoMath.min(row0 + rb, rows - 1);
+                int yo = rb * dh;
+                float a = wx.get((row * seq + t) * 4 * d + g * d + h * dh + e) + bias;
+                a += yl[yo + 0] * r0;
+                a += yl[yo + 1] * r1;
+                a += yl[yo + 2] * r2;
+                a += yl[yo + 3] * r3;
+                a += yl[yo + 4] * r4;
+                a += yl[yo + 5] * r5;
+                a += yl[yo + 6] * r6;
+                a += yl[yo + 7] * r7;
+                a += yl[yo + 8] * r8;
+                a += yl[yo + 9] * r9;
+                a += yl[yo + 10] * r10;
+                a += yl[yo + 11] * r11;
+                a += yl[yo + 12] * r12;
+                a += yl[yo + 13] * r13;
+                a += yl[yo + 14] * r14;
+                a += yl[yo + 15] * r15;
+                a += yl[yo + 16] * r16;
+                a += yl[yo + 17] * r17;
+                a += yl[yo + 18] * r18;
+                a += yl[yo + 19] * r19;
+                a += yl[yo + 20] * r20;
+                a += yl[yo + 21] * r21;
+                a += yl[yo + 22] * r22;
+                a += yl[yo + 23] * r23;
+                a += yl[yo + 24] * r24;
+                a += yl[yo + 25] * r25;
+                a += yl[yo + 26] * r26;
+                a += yl[yo + 27] * r27;
+                a += yl[yo + 28] * r28;
+                a += yl[yo + 29] * r29;
+                a += yl[yo + 30] * r30;
+                a += yl[yo + 31] * r31;
+                a += yl[yo + 32] * r32;
+                a += yl[yo + 33] * r33;
+                a += yl[yo + 34] * r34;
+                a += yl[yo + 35] * r35;
+                a += yl[yo + 36] * r36;
+                a += yl[yo + 37] * r37;
+                a += yl[yo + 38] * r38;
+                a += yl[yo + 39] * r39;
+                a += yl[yo + 40] * r40;
+                a += yl[yo + 41] * r41;
+                a += yl[yo + 42] * r42;
+                a += yl[yo + 43] * r43;
+                a += yl[yo + 44] * r44;
+                a += yl[yo + 45] * r45;
+                a += yl[yo + 46] * r46;
+                a += yl[yo + 47] * r47;
+                a += yl[yo + 48] * r48;
+                a += yl[yo + 49] * r49;
+                a += yl[yo + 50] * r50;
+                a += yl[yo + 51] * r51;
+                a += yl[yo + 52] * r52;
+                a += yl[yo + 53] * r53;
+                a += yl[yo + 54] * r54;
+                a += yl[yo + 55] * r55;
+                a += yl[yo + 56] * r56;
+                a += yl[yo + 57] * r57;
+                a += yl[yo + 58] * r58;
+                a += yl[yo + 59] * r59;
+                a += yl[yo + 60] * r60;
+                a += yl[yo + 61] * r61;
+                a += yl[yo + 62] * r62;
+                a += yl[yo + 63] * r63;
+                acc[rb] = a;
+            }
+            for (int pp = SLSTM_REG_R; pp < dh; pp++) {
+                float r = rh.get(ro + pp * 4 * dh).getFloat32();
+                for (int rb = 0; rb < rowsPerGroup; rb++) {
+                    acc[rb] += yl[rb * dh + pp] * r;
+                }
+            }
+            for (int rb = 0; rb < rowsPerGroup; rb++) {
+                raw[rb * 512 + g * dh + e] = acc[rb];
+            }
+            ctx.localBarrier();
+            if (tid < dh) {
+                for (int rb = 0; rb < rowsPerGroup; rb++) {
+                    int o = rb * 512;
+                    float ri = raw[o + e];
+                    float rf = raw[o + dh + e];
+                    float rz = raw[o + 2 * dh + e];
+                    float rog = raw[o + 3 * dh + e];
+                    float logf = TornadoMath.min(rf, 0f) - TornadoMath.log(1f + TornadoMath.exp(-TornadoMath.abs(rf))) + m[rb];
+                    float mNew = t == 0 ? ri : TornadoMath.max(ri, logf);
+                    float ig = TornadoMath.exp(ri - mNew);
+                    float fg = TornadoMath.exp(logf - mNew);
+                    c[rb] = fg * c[rb] + ig * TornadoMath.tanh(rz);
+                    nn[rb] = TornadoMath.max(fg * nn[rb] + ig, 1f);
+                    float yNew = c[rb] / nn[rb] / (1f + TornadoMath.exp(-rog));
+                    m[rb] = mNew;
+                    yl[rb * dh + e] = yNew;
+                    int row = row0 + rb;
+                    if (row < rows) {
+                        y.set((row * seq + t) * d + h * dh + e, yNew);
+                    }
+                }
+            }
+            ctx.localBarrier();
+        }
+    }
+
     /** {@code out[i] = SiLU(big[r·2f + j]) · big[r·2f + f + j]} for the fused up-gate|up projection. */
     public static void swiGlu(KernelContext ctx, FloatArray big, FloatArray out, int n, int ffn, HalfFloatArray th, int twin) {
         int id = ctx.globalIdx;
