@@ -99,6 +99,14 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
     private final boolean fuse = !"false".equalsIgnoreCase(System.getProperty("tirex.tornado.fuse", "true"));
 
     /**
+     * Build the forward pass as one task graph instead of a chain of graphs (input, one per
+     * block, output) sharing device buffers ({@code -Dtirex.tornado.singleGraph}, off by
+     * default). Needs a TornadoVM whose task graphs can exceed 256 tasks and 8 KiB of bytecode
+     * (beehive-lab/TornadoVM#1142, in TornadoVM 7.1.0); without it the graph build fails.
+     */
+    private final boolean singleGraph = Boolean.getBoolean("tirex.tornado.singleGraph");
+
+    /**
      * Keep the FFN's intermediates in FP16 only ({@code -Dtirex.tornado.ffnHalf}, on by default):
      * the up-projection writes FP16 (FP32 accumulation), SwiGLU reads and writes FP16, and the
      * down-projection reads that directly. The wide FP32 buffers then no longer hold the FFN, so
@@ -903,6 +911,14 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         final java.util.Set<Object> graphWeights = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
 
         TaskGraph begin(String graph) {
+            if (singleGraph) {
+                // every stage goes into the one graph opened by the first begin()
+                if (g == null) {
+                    name = G;
+                    g = new TaskGraph(name);
+                }
+                return g;
+            }
             name = G + "_" + graph;
             g = new TaskGraph(name);
             graphWeights.clear();
@@ -913,6 +929,9 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         }
 
         void end(boolean last) {
+            if (singleGraph && !last) {
+                return;
+            }
             if (!last) {
                 g.persistOnDevice(shared);
             }
