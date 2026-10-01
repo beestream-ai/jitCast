@@ -26,16 +26,18 @@ pipeline is in Java, and the model's forward pass runs on the GPU through Tornad
   task graph can be replayed as a CUDA graph.
 - **Validated against NXAI.** On fev-bench and GIFT-Eval, jitrex gives the same scores as NXAI's
   FP32 reference to about 1e-6.
-- **Fast.** On an RTX 5070 Ti it is 2.0–4.1× faster than NXAI's PyTorch engine end to end, and it
-  starts 5.8× faster.
+- **Fast.** On an RTX 5070 Ti it is 2.0–6.8× faster than NXAI's PyTorch engine end to end, and it
+  starts 4.0× faster. On an Apple M4 Pro it is up to 3.2× faster than NXAI on MPS (6.2× at long
+  context), and on par at the largest multivariate batches.
 
 ## Where it runs
 
 | Platform | Backend | Status | Recommended flags |
 |---|---|---|---|
 | NVIDIA GPU | CUDA | validated, benchmarked (RTX 5070 Ti) | `-Dtirex.tornado.gemm=cublas-auto` |
-| Apple Silicon | Metal or OpenCL | validated (M4 Pro) | `-Dtirex.tornado.gemm=half` |
-| Other OpenCL GPUs | OpenCL | expected to work, not tested | `-Dtirex.tornado.gemm=half` |
+| NVIDIA GPU | OpenCL | validated, benchmarked (RTX 5070 Ti); slower than CUDA | `-Dtirex.tornado.gemm=half` |
+| Apple Silicon | Metal or OpenCL | validated, benchmarked (M4 Pro) | `-Dtirex.tornado.gemm=half` |
+| Other OpenCL GPUs (Intel, AMD) | OpenCL | expected to work, not tested | `-Dtirex.tornado.gemm=half` |
 | Any CPU | plain JVM | FP32 reference, for validation | — |
 
 Every option, the GEMM modes and the hybrid APIs are in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).

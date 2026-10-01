@@ -39,21 +39,22 @@ TornadoVM properties used alongside: `tornado.device.memory` (device heap, e.g. 
 
 | Platform | Recommended flags | Why |
 |---|---|---|
-| **NVIDIA** (tested: RTX 5070 Ti) | `-Dtirex.tornado.gemm=cublas-auto` (FP16 sLSTM weights in registers and CUDA graphs are the defaults), plus the cuBLAS 13 shim on machines that also have CUDA 12 cuBLAS | Fastest at every batch size: 2.41 ms at batch 1, ~4,850 series/s at batch 512. Error 1.5e-4 / 4.7e-5 |
+| **NVIDIA** (tested: RTX 5070 Ti) | `-Dtirex.tornado.gemm=cublas-auto` (FP16 sLSTM weights in registers and CUDA graphs are the defaults), plus the cuBLAS 13 shim on machines that also have CUDA 12 cuBLAS | Fastest at every batch size: 1.42 ms at batch 1, ~4,700 series/s at batch 512 (3.3–6.8× NXAI). Error 1.0e-3 / 5.7e-4 |
 | NVIDIA, closest to FP32 | `-Dtirex.tornado.gemm=cublas -Dtirex.tornado.slstmR=fp32` | FP32 GEMMs, error 2.7e-6 / 1.4e-6; slower than `cublas-auto` at large batches, where the FP16 tensor-core GEMMs pay off |
-| NVIDIA, no vendor libraries | `-Dtirex.tornado.gemm=cutile` (toolkit 13.3+), otherwise `half` | `cutile`: 3.1 ms at batch 1, ~1,630 series/s at batch 256. `half`: 7.5 ms, ~1,100 series/s |
-| **Apple Silicon** (tested: M4 Pro), Metal or OpenCL | `-Dtirex.tornado.gemm=half`, on either backend | `half` is 1.9–2.5× faster than `tiled` from batch 8 up; Metal and OpenCL are within ~5% of each other; see [PERFORMANCE.md](PERFORMANCE.md#apple-silicon) |
+| NVIDIA, no vendor libraries | `-Dtirex.tornado.gemm=cutile` (toolkit 13.3+), otherwise `half` | `cutile`: 2.62 ms at batch 1, ~1,640 series/s at batch 512. `half`: 7.12 ms, ~1,180 series/s |
+| **Apple Silicon** (tested: M4 Pro), Metal or OpenCL | `-Dtirex.tornado.gemm=half`, on either backend | `half` is 1.9–2.6× faster than `tiled` from batch 8 up; Metal and OpenCL are within ~5% of each other; see [PERFORMANCE.md](PERFORMANCE.md#apple-m4-pro) |
+| NVIDIA with OpenCL | `-Dtirex.tornado.gemm=half` | Works, but use CUDA where you can: OpenCL `half` is 1.2–1.6× slower than CUDA `half` and has no vendor libraries or CUDA graphs (8.83 ms at batch 1, ~760 series/s at batch 512) |
 | Other OpenCL devices | `-Dtirex.tornado.gemm=half` (or `tiled` for FP32) | Portable; not tuned |
-| Long contexts (GIFT-Eval checkpoints, 285 patches) | the platform's flags (the chunkwise mLSTM is the default), plus `-Dtirex.tornado.cudaGraph=false`, and batches of at most 128 series on a 16 GB GPU | `cublas-auto` is 1.8–2.5× faster than NXAI there ([PERFORMANCE.md](PERFORMANCE.md#long-context-gift-eval-checkpoints)). Device memory grows with rows × patches, and CUDA graphs can fail after many plan rebuilds (a TornadoVM issue under investigation) |
+| Long contexts (GIFT-Eval checkpoints, 285 patches) | the platform's flags (the chunkwise mLSTM is the default), plus `-Dtirex.tornado.cudaGraph=false`, and batches of at most 128 series on a 16 GB GPU | `cublas-auto` is 1.9–3.4× faster than NXAI there, Metal `half` 1.1–6.2× ([PERFORMANCE.md](PERFORMANCE.md#nvidia-rtx-5070-ti)). Device memory grows with rows × patches, and CUDA graphs can fail after many plan rebuilds (a TornadoVM issue under investigation) |
 
 ## Hardware and backends
 
 | Hardware | TornadoVM backend | GEMM modes | Status |
 |---|---|---|---|
 | NVIDIA GPU | CUDA | `tiled`, `half`, `cublas`, `cublas-tf32`, `cublas-fp16`, `cublas-auto`, `cutile` | **Validated and benchmarked** on an RTX 5070 Ti (sm_120, Blackwell), driver 580, CUDA 13.0 |
-| Apple Silicon GPU | Metal | `tiled`, `half` | **Validated** on an M4 Pro |
-| Apple Silicon GPU | OpenCL | `tiled`, `half` | **Validated** on an M4 Pro |
-| NVIDIA GPU | OpenCL | `tiled`, `half` | Expected to work (portable kernels), not tested |
+| Apple Silicon GPU | Metal | `tiled`, `half` | **Validated and benchmarked** on an M4 Pro |
+| Apple Silicon GPU | OpenCL | `tiled`, `half` | **Validated and benchmarked** on an M4 Pro |
+| NVIDIA GPU | OpenCL | `tiled`, `half` | **Validated and benchmarked** on an RTX 5070 Ti (goldens, fev-bench mini 20/20) |
 | Intel / AMD GPUs, OpenCL CPU runtimes | OpenCL | `tiled`, `half` | Expected to work, not tested |
 | Any CPU | none (plain JVM) | — | `CpuTiRex2Engine`: the FP32 reference, for validation and not for speed |
 
