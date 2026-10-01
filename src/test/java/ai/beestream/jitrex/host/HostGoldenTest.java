@@ -73,6 +73,35 @@ public class HostGoldenTest {
     }
 
     @Test
+    public void forecastsDoNotDependOnHowABatchIsSplit() throws IOException {
+        try (CpuTiRex2Engine engine = CpuTiRex2Engine.load(GoldenData.weights())) {
+            int checked = 0;
+            for (String testCase : GoldenData.cases()) {
+                int h = ((Number) GoldenData.caseInfo(testCase).get("H")).intValue();
+                try (SafeTensors g = GoldenData.open(testCase)) {
+                    List<TimeSeries> in = GoldenData.inputs(g);
+                    if (in.size() < 2) {
+                        continue;
+                    }
+                    List<Forecast> whole = engine.pipeline().forecast(in, h);
+                    // a budget of one token runs every series in a forward pass of its own
+                    List<Forecast> split = engine.pipeline().withMaxTokens(1).forecast(in, h);
+                    for (int s = 0; s < in.size(); s++) {
+                        float[][][] a = whole.get(s).values(), b = split.get(s).values();
+                        for (int t = 0; t < a.length; t++) {
+                            for (int q = 0; q < a[t].length; q++) {
+                                assertArrayEquals(testCase + " series " + s, a[t][q], b[t][q], 0f);
+                            }
+                        }
+                    }
+                    checked++;
+                }
+            }
+            assertTrue("no multi-series golden case", checked > 0);
+        }
+    }
+
+    @Test
     public void forecastsMatchTheReference() throws IOException {
         List<String> failures = new ArrayList<>();
         try (CpuTiRex2Engine engine = CpuTiRex2Engine.load(GoldenData.weights())) {

@@ -27,7 +27,8 @@ import ai.beestream.jitrex.model.TiRex2Config;
 
 /**
  * {@code ForecastModel.forecast()} around any {@link ForwardPass}: windows of at most
- * {@code batchSize} series, batch assembly ({@code PostProcessor.transform_input} and the padding
+ * {@code batchSize} series and {@code maxTokens} tokens (rows × patches; a series with covariates
+ * has one row per target and covariate), batch assembly ({@code PostProcessor.transform_input} and the padding
  * of {@code TiRex2._predict}), the forward pass, slicing out the horizon, calibration
  * ({@code transform_output}) and the optional sign-flip test-time augmentation.
  *
@@ -38,9 +39,19 @@ public final class ForecastPipeline {
     /** The default {@code batch_size} of {@code ForecastModel.forecast}. */
     public static final int DEFAULT_BATCH_SIZE = 512;
 
+    /**
+     * The most tokens one forward pass takes ({@code -Dtirex.maxTokens}, default 131,072): an
+     * engine sizes its buffers by tokens, so this bounds its memory whatever the series' covariate
+     * counts (about 4 GB per plan for the TornadoVM engine). A series with more tokens runs alone.
+     * Splitting a batch does not change the forecasts: a row's position in the model input does
+     * not depend on the other series of its batch.
+     */
+    public static final long DEFAULT_MAX_TOKENS = Long.getLong("tirex.maxTokens", 131_072L);
+
     private final TiRex2Config config;
     private final ForwardPass forward;
     private final int batchSize;
+    private final long maxTokens;
     private final boolean ttaDiff;
     private final boolean ttaSignFlip;
 
@@ -49,12 +60,21 @@ public final class ForecastPipeline {
     }
 
     public ForecastPipeline(TiRex2Config config, ForwardPass forward, int batchSize, boolean ttaDiff, boolean ttaSignFlip) {
+        this(config, forward, batchSize, DEFAULT_MAX_TOKENS, ttaDiff, ttaSignFlip);
+    }
+
+    public ForecastPipeline(TiRex2Config config, ForwardPass forward, int batchSize, long maxTokens, boolean ttaDiff,
+            boolean ttaSignFlip) {
         if (batchSize < 1) {
             throw new IllegalArgumentException("batchSize must be >= 1");
+        }
+        if (maxTokens < 1) {
+            throw new IllegalArgumentException("maxTokens must be >= 1");
         }
         this.config = config;
         this.forward = forward;
         this.batchSize = batchSize;
+        this.maxTokens = maxTokens;
         this.ttaDiff = ttaDiff;
         this.ttaSignFlip = ttaSignFlip;
     }
@@ -71,7 +91,38 @@ public final class ForecastPipeline {
 
     /** The same pipeline with sign-flip TTA on or off (the {@code tta_sign_flip} argument of predict). */
     public ForecastPipeline withSignFlip(boolean signFlip) {
-        return new ForecastPipeline(config, forward, batchSize, ttaDiff, signFlip);
+        return new ForecastPipeline(config, forward, batchSize, maxTokens, ttaDiff, signFlip);
+    }
+
+    /** The same pipeline with a different token budget per forward pass. */
+    public ForecastPipeline withMaxTokens(long tokens) {
+        return new ForecastPipeline(config, forward, batchSize, tokens, ttaDiff, ttaSignFlip);
+    }
+
+    /**
+     * The {@code [start, end)} windows a forecast call runs: consecutive series, at most
+     * {@code batchSize} of them and at most {@code maxTokens} tokens ({@code patches} per row), but
+     * always at least one series, so a series over the budget runs alone.
+     */
+    static List<int[]> windows(List<TimeSeries> series, int batchSize, long maxTokens, int patches) {
+        List<int[]> out = new ArrayList<>();
+        int n = series.size();
+        for (int start = 0; start < n;) {
+            int end = start;
+            long tokens = 0;
+            while (end < n && end - start < batchSize) {
+                TimeSeries ts = series.get(end);
+                long t = (long) (ts.targets() + ts.pastCount() + ts.futureCount()) * patches;
+                if (end > start && tokens + t > maxTokens) {
+                    break;
+                }
+                tokens += t;
+                end++;
+            }
+            out.add(new int[] {start, end});
+            start = end;
+        }
+        return out;
     }
 
     public List<Forecast> forecast(List<TimeSeries> series, int horizon) {
@@ -81,8 +132,8 @@ public final class ForecastPipeline {
         // like TiRex2._predict_once, a horizon beyond futureLen is truncated to it
         int h = Math.min(horizon, config.futureLen());
         List<Forecast> out = new ArrayList<>(series.size());
-        for (int start = 0; start < series.size(); start += batchSize) {
-            out.addAll(predict(series.subList(start, Math.min(series.size(), start + batchSize)), h));
+        for (int[] w : windows(series, batchSize, maxTokens, config.numPatches())) {
+            out.addAll(predict(series.subList(w[0], w[1]), h));
         }
         return out;
     }
