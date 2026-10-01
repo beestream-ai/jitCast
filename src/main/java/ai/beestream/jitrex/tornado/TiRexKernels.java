@@ -44,6 +44,8 @@ public final class TiRexKernels {
     public static final int BIAS = 1;
     public static final int ACCUMULATE = 2;
     public static final int SILU = 4;
+    /** {@link #gemmHalf}: write only the FP16 twin of C, not C (no bias, SiLU or accumulation). */
+    public static final int TWIN_ONLY = 8;
 
     /** Work-group width of {@link #rmsNorm}. */
     public static final int NORM_THREADS = 256;
@@ -280,7 +282,9 @@ public final class TiRexKernels {
     /** One output element of {@link #gemmHalf}: bias, SiLU, accumulate, store, FP16 twin. */
     private static void gemmStore(FloatArray c, FloatArray w, int bOff, int row, int col, int m, int n, int flags, float acc,
             HalfFloatArray th, int twin) {
-        if (row < m && col < n) {
+        if (row < m && col < n && (flags & TWIN_ONLY) != 0) {
+            th.set(row * n + col, new HalfFloat(acc));
+        } else if (row < m && col < n) {
             float v = acc;
             if ((flags & BIAS) != 0) {
                 v += w.get(bOff + col);
@@ -1056,6 +1060,18 @@ public final class TiRexKernels {
             if (twin == 1) {
                 th.set(id, new HalfFloat(v));
             }
+        }
+    }
+
+    /** {@link #swiGlu} on FP16: {@code out[i] = SiLU(up[r·2f + j]) · up[r·2f + f + j]}, computed in FP32. */
+    public static void swiGluHalf(KernelContext ctx, HalfFloatArray up, HalfFloatArray out, int n, int ffn) {
+        int id = ctx.globalIdx;
+        if (id < n * ffn) {
+            int r = id / ffn;
+            int j = id - r * ffn;
+            float g = up.get(r * 2 * ffn + j).getFloat32();
+            float u = up.get(r * 2 * ffn + ffn + j).getFloat32();
+            out.set(id, new HalfFloat(g / (1f + TornadoMath.exp(-g)) * u));
         }
     }
 
