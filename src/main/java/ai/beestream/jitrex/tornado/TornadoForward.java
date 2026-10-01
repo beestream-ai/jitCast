@@ -318,16 +318,6 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         return (rows + GEMM_ROW_ALIGN - 1) / GEMM_ROW_ALIGN * GEMM_ROW_ALIGN;
     }
 
-    /** The widest GEMM input (K) of the model, which sizes the FP16 activation scratch. */
-    private int maxGemmInput() {
-        int k = Math.max(weights.inputEmbedding().output().in(), weights.outputEmbedding().output().in());
-        for (PackedWeights.Block blk : weights.blocks()) {
-            k = Math.max(k, Math.max(blk.down().in(), blk.combination().in()));
-            k = Math.max(k, blk.variate().ffnOut().in());
-        }
-        return k;
-    }
-
     /** The widest GEMM output (N) of the model, which sizes the FP16 result scratch. */
     private int maxGemmOutput() {
         int n = Math.max(weights.inputEmbedding().hidden().out(), weights.outputEmbedding().hidden().out());
@@ -420,7 +410,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         final Shape shape;
         final FloatArray x, present, tok, stats, h, n, cell, proj, big, y, out;
         final FloatArray yc, revIn, revOut, xk;
-        final uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray aHalf, cHalf;
+        final uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray cHalf;
         /** FP16 twins of the GEMM-input buffers, written by their producers (FP16 GEMM plans only). */
         final java.util.Map<FloatArray, uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray> twins =
                 new java.util.IdentityHashMap<>();
@@ -465,9 +455,8 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             revIn = nKnown > 0 ? new FloatArray(pad(nKnown * seq) * d) : null;
             revOut = nKnown > 0 ? new FloatArray(pad(nKnown * seq) * d) : null;
             xk = nKept > 0 ? new FloatArray(pad(nKept * seq) * d) : null;
-            aHalf = halfGemm(tokens)
-                    ? new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(tokensP * maxGemmInput()) : null;
-            cHalf = halfGemm(tokens) && gemmMode.cublas() && fp16Kernel != Fp16Kernel.GEMMEX_MIXED
+            boolean half = halfGemm(tokens);
+            cHalf = half && gemmMode.cublas() && fp16Kernel != Fp16Kernel.GEMMEX_MIXED
                     ? new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(tokensP * maxGemmOutput()) : null;
             known = nKnown > 0 ? new IntArray(nKnown) : null;
             kept = nKept > 0 ? new IntArray(nKept) : null;
@@ -479,8 +468,9 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             KernelContext ctx = new KernelContext();
             GridScheduler grid = new GridScheduler();
             List<Object> sharedList = new ArrayList<>(List.of(w, x, present, tok, stats, h, n, cell, proj, big, y, out));
-            if (aHalf != null) {
-                // every buffer a GEMM reads as A gets an FP16 twin its producer fills
+            if (half) {
+                // every buffer a GEMM reads as A gets an FP16 twin its producer fills, so no GEMM
+                // input needs a conversion pass (see Builder.halfInput)
                 for (FloatArray f : new FloatArray[] {tok, n, proj, big, cell, revIn}) {
                     if (f != null) {
                         twins.put(f, new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(f.getSize()));
@@ -489,12 +479,16 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             }
             sharedList.add(noTwin);
             sharedList.addAll(twins.values());
-            for (Object o : new Object[] {yc, revIn, revOut, xk, aHalf, cHalf, known, kept, groupStart, groupEnd, keptTarget}) {
+            for (Object o : new Object[] {yc, revIn, revOut, xk, cHalf, known, kept, groupStart, groupEnd, keptTarget}) {
                 if (o != null) {
                     sharedList.add(o);
                 }
             }
             Object[] shared = sharedList.toArray();
+            if (Boolean.getBoolean("tirex.tornado.memReport")) {
+                memoryReport(tokens, new Object[] {"x", x, "present", present, "tok", tok, "stats", stats, "h", h, "n", n, "cell", cell,
+                        "proj", proj, "big", big, "y", y, "out", out, "yc", yc, "revIn", revIn, "revOut", revOut, "xk", xk, "cHalf", cHalf});
+            }
             List<Object> perCall = new ArrayList<>(List.of(x, present));
             for (Object o : new Object[] {known, kept, groupStart, groupEnd, keptTarget}) {
                 if (o != null) {
@@ -502,7 +496,6 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 }
             }
             Builder b = new Builder(grid, ctx, w, shared);
-            b.aHalf = aHalf;
             b.twins = twins;
             b.noTwin = noTwin;
             b.cHalf = cHalf;
@@ -587,6 +580,31 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 // per-task kernel times on stdout after every execution (analysis only; slows every call)
                 exec.withProfiler(uk.ac.manchester.tornado.api.enums.ProfilerMode.CONSOLE);
             }
+        }
+
+        /**
+         * Prints the activation buffers of this plan ({@code -Dtirex.tornado.memReport=true}): each
+         * buffer's size, the FP16 twins, and the total per token. Each buffer has a host copy of the
+         * same size; the weights are not included.
+         */
+        private void memoryReport(int tokens, Object[] named) {
+            StringBuilder sb = new StringBuilder("[jitrex] plan " + shape + ", " + tokens + " tokens:");
+            long total = 0;
+            for (int i = 0; i < named.length; i += 2) {
+                if (named[i + 1] instanceof uk.ac.manchester.tornado.api.types.arrays.TornadoNativeArray a) {
+                    long bytes = a.getNumBytesOfSegment();
+                    total += bytes;
+                    sb.append(String.format(" %s=%.1fMB", named[i], bytes / 1e6));
+                }
+            }
+            long twinBytes = 0;
+            for (var e : twins.values()) {
+                twinBytes += e.getNumBytesOfSegment();
+            }
+            total += twinBytes;
+            sb.append(String.format(" twins=%.1fMB | total %.1f MB, %.1f KB per token", twinBytes / 1e6, total / 1e6,
+                    total / 1024.0 / tokens));
+            System.err.println(sb);
         }
 
         /**
@@ -770,7 +788,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         final KernelContext ctx;
         final FloatArray w;
         final Object[] shared;
-        uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray aHalf, cHalf, noTwin;
+        uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray cHalf, noTwin;
         java.util.Map<FloatArray, uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray> twins;
 
         /** The FP16 twin of {@code f}, or the unused placeholder when it has none. */
@@ -927,18 +945,13 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             }
         }
 
-        /**
-         * The FP16 A operand of a GEMM: {@code a}'s twin, which its producer has just written, or
-         * (for a buffer without one) a conversion into the shared scratch.
-         */
+        /** The FP16 A operand of a GEMM: {@code a}'s twin, which its producer has just written. */
         private uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray halfInput(String name, FloatArray a, int m, int k) {
             uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray t = twins.get(a);
-            if (t != null) {
-                return t;
+            if (t == null) {
+                throw new IllegalStateException("GEMM " + name + " reads a buffer without an FP16 twin");
             }
-            items(name + "_half", m * k);
-            g.task(name + "_half", TiRexKernels::toHalf, ctx, a, aHalf, m * k);
-            return aHalf;
+            return t;
         }
 
         private uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray halfWeight(PackedWeights.Lin l) {
