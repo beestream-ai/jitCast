@@ -17,6 +17,10 @@
 | `tirex.tornado.profile` | `false`, `true` | Print TornadoVM's per-task kernel times after every execution (analysis only: it slows every call) |
 | `tirex.tornado.fuse` | `true`, `false` | Fused epilogues: bias + SiLU after the GEMM, residual + RMSNorm, sLSTM head norm + residual + RMSNorm |
 | `tirex.tornado.cudaGraph` | `true` for `cublas*` / `cutile`, `false` otherwise | Capture and replay each task graph as a CUDA graph |
+| `tirex.tornado.ffnHalf` | `true` | FP16 GEMM modes (`cublas-auto`, `cublas-fp16`, `half`): keep the FFN's intermediates in FP16 only, which cuts a plan's memory by about 15% and is up to 7% faster; `false` keeps them in FP32 |
+| `tirex.tornado.memReport` | `false` | Print each plan's activation buffers and its memory per token when the plan is built |
+| `tirex.maxTokens` | `131072` | The most tokens (rows × patches) one forward pass takes; a forecast call is split into passes by this and by the batch size, which bounds a plan's memory (about 4 GB at the default) whatever the series' covariate counts. Forecasts do not depend on the split. `TiRexBench` ignores it unless set |
+| `tornado.cuda.host.pinning` (TornadoVM) | `True`; `False` in `TiRexServer` | Pinned host buffers for transfers. Applications that keep several plans alive and evict them often (such as `TiRexServer`) should turn it off: on TornadoVM's CUDA backend that churn can make device allocations fail, and it gave no speed-up on fev-bench |
 
 TornadoVM properties used alongside: `tornado.device.memory` (device heap, e.g. `15GB`), `tornado.cuda.nvcc` (for `cutile`).
 
@@ -45,7 +49,7 @@ TornadoVM properties used alongside: `tornado.device.memory` (device heap, e.g. 
 | **Apple Silicon** (tested: M4 Pro), Metal or OpenCL | `-Dtirex.tornado.gemm=half`, on either backend | `half` is 1.9–2.6× faster than `tiled` from batch 8 up; Metal and OpenCL are within ~5% of each other; see [PERFORMANCE.md](PERFORMANCE.md#apple-m4-pro) |
 | NVIDIA with OpenCL | `-Dtirex.tornado.gemm=half` | Works, but use CUDA where you can: OpenCL `half` is 1.2–1.6× slower than CUDA `half` and has no vendor libraries or CUDA graphs (8.83 ms at batch 1, ~760 series/s at batch 512) |
 | Other OpenCL devices | `-Dtirex.tornado.gemm=half` (or `tiled` for FP32) | Portable; not tuned |
-| Long contexts (GIFT-Eval checkpoints, 285 patches) | the platform's flags (the chunkwise mLSTM is the default), plus `-Dtirex.tornado.cudaGraph=false`, and batches of at most 128 series on a 16 GB GPU | `cublas-auto` is 1.9–3.4× faster than NXAI there, Metal `half` 1.1–6.2× ([PERFORMANCE.md](PERFORMANCE.md#nvidia-rtx-5070-ti)). Device memory grows with rows × patches, and CUDA graphs can fail after many plan rebuilds (a TornadoVM issue under investigation) |
+| Long contexts (GIFT-Eval checkpoints, 285 patches) | the platform's flags (the chunkwise mLSTM is the default), plus `-Dtirex.tornado.cudaGraph=false`, and batches of at most 128 series on a 16 GB GPU | `cublas-auto` is 1.9–3.4× faster than NXAI there, Metal `half` 1.1–6.2× ([PERFORMANCE.md](PERFORMANCE.md#nvidia-rtx-5070-ti)). Device memory grows with rows × patches; `tirex.maxTokens` bounds it per forward pass. With several cached plans and CUDA graphs, closing one plan could crash the others on TornadoVM's CUDA backend (fixed by [beehive-lab/TornadoVM#1160](https://github.com/beehive-lab/TornadoVM/pull/1160)); with an older TornadoVM keep one cached plan or turn CUDA graphs off |
 
 ## Hardware and backends
 

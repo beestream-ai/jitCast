@@ -70,6 +70,12 @@ import ai.beestream.jitrex.tornado.TornadoForward;
 public final class TiRexServer {
 
     public static void main(String[] args) throws IOException {
+        // The server keeps several plans alive and evicts them as batch shapes change. With
+        // pinned host buffers that churn makes TornadoVM's CUDA backend fail device
+        // allocations, and pinning does not speed up these workloads; so it is off unless set.
+        if (System.getProperty("tornado.cuda.host.pinning") == null) {
+            System.setProperty("tornado.cuda.host.pinning", "False");
+        }
         Map<String, String> a = TiRexBench.parse(args);
         TiRex2Weights weights = TiRex2Weights.load(Path.of(a.get("weights")));
         String engine = a.getOrDefault("engine", "tornado");

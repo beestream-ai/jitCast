@@ -107,7 +107,9 @@ public final class TiRexBench {
         };
         double loadMs = (System.nanoTime() - t0) / 1e6;
         Capturing cap = new Capturing(fp);
-        ForecastPipeline pipeline = new ForecastPipeline(weights.config(), cap);
+        // each benchmark point is one forward pass unless -Dtirex.maxTokens is given explicitly
+        ForecastPipeline pipeline = new ForecastPipeline(weights.config(), cap)
+                .withMaxTokens(Long.getLong("tirex.maxTokens", Long.MAX_VALUE));
 
         List<Map<String, Object>> records = new ArrayList<>();
         try (SafeTensors w = SafeTensors.open(Path.of(a.get("workloads")))) {

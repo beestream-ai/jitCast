@@ -82,6 +82,15 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
     private final boolean fuse = !"false".equalsIgnoreCase(System.getProperty("tirex.tornado.fuse", "true"));
 
     /**
+     * Keep the FFN's intermediates in FP16 only ({@code -Dtirex.tornado.ffnHalf}, on by default):
+     * the up-projection writes FP16 (FP32 accumulation), SwiGLU reads and writes FP16, and the
+     * down-projection reads that directly. The wide FP32 buffers then no longer hold the FFN, so
+     * {@code proj} and {@code big} become one buffer. Applies to the FP16 cuBLAS modes and
+     * {@code half}; CUDA Tile and the FP32 modes keep the FP32 FFN.
+     */
+    private final boolean ffnHalfEnabled = !"false".equalsIgnoreCase(System.getProperty("tirex.tornado.ffnHalf", "true"));
+
+    /**
      * Capture and replay each task graph as a CUDA graph ({@code -Dtirex.tornado.cudaGraph}). On
      * by default with the cuBLAS (CUDA-only) GEMM modes: −11% at batch 1 on an RTX 5070 Ti, with
      * identical results; off with the portable tiled GEMMs, which also run on OpenCL and Metal.
@@ -318,16 +327,6 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         return (rows + GEMM_ROW_ALIGN - 1) / GEMM_ROW_ALIGN * GEMM_ROW_ALIGN;
     }
 
-    /** The widest GEMM input (K) of the model, which sizes the FP16 activation scratch. */
-    private int maxGemmInput() {
-        int k = Math.max(weights.inputEmbedding().output().in(), weights.outputEmbedding().output().in());
-        for (PackedWeights.Block blk : weights.blocks()) {
-            k = Math.max(k, Math.max(blk.down().in(), blk.combination().in()));
-            k = Math.max(k, blk.variate().ffnOut().in());
-        }
-        return k;
-    }
-
     /** The widest GEMM output (N) of the model, which sizes the FP16 result scratch. */
     private int maxGemmOutput() {
         int n = Math.max(weights.inputEmbedding().hidden().out(), weights.outputEmbedding().hidden().out());
@@ -420,7 +419,9 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         final Shape shape;
         final FloatArray x, present, tok, stats, h, n, cell, proj, big, y, out;
         final FloatArray yc, revIn, revOut, xk;
-        final uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray aHalf, cHalf;
+        final uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray cHalf, ffnUp, ffnSw;
+        /** Stands in for C when a GEMM writes only its FP16 twin; never read or written. */
+        final FloatArray noOut = new FloatArray(1);
         /** FP16 twins of the GEMM-input buffers, written by their producers (FP16 GEMM plans only). */
         final java.util.Map<FloatArray, uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray> twins =
                 new java.util.IdentityHashMap<>();
@@ -444,8 +445,11 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             int ffn = c.ffnDim();
             int mlstmProj = weights.blocks().stream().filter(PackedWeights.Block::mlstm).findFirst()
                     .map(b -> b.mlstmProj().out()).orElse(0);
-            int projWidth = Math.max(Math.max(mlstmProj, ffn), 3 * d);
-            int bigWidth = Math.max(Math.max(2 * ffn, 4 * d),
+            boolean half = halfGemm(tokens);
+            boolean ffnHalf = half && ffnHalfEnabled && (gemmMode.cublas() || gemmMode == GemmMode.HALF)
+                    && weights.blocks().stream().allMatch(b -> b.upGateUp().b() < 0);
+            int projWidth = Math.max(Math.max(mlstmProj, ffnHalf ? 0 : ffn), 3 * d);
+            int bigWidth = Math.max(Math.max(ffnHalf ? 0 : 2 * ffn, 4 * d),
                     Math.max(Math.max(c.inputFfDim(), c.outputFfDim()), TiRex2Config.ATTENTION_FFN_FACTOR * d));
 
             x = new FloatArray(rows * len);
@@ -457,17 +461,24 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             h = new FloatArray(tokensP * d);
             n = new FloatArray(tokensP * d);
             cell = new FloatArray(tokensP * d);
-            proj = new FloatArray(tokensP * projWidth);
-            big = new FloatArray(tokensP * bigWidth);
+            if (ffnHalf) {
+                // without the FFN, no stage uses proj and big at the same time: one buffer serves both
+                big = new FloatArray(tokensP * Math.max(projWidth, bigWidth));
+                proj = big;
+            } else {
+                proj = new FloatArray(tokensP * projWidth);
+                big = new FloatArray(tokensP * bigWidth);
+            }
+            int maxFfn = weights.blocks().stream().mapToInt(PackedWeights.Block::ffnDim).max().orElse(ffn);
+            ffnUp = ffnHalf ? new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(tokensP * 2 * maxFfn) : null;
+            ffnSw = ffnHalf ? new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(tokensP * maxFfn) : null;
             y = new FloatArray(tokensP * nq * p);
             out = new FloatArray(rows * nq * len);
             yc = nKnown > 0 ? new FloatArray(tokensP * d) : null;
             revIn = nKnown > 0 ? new FloatArray(pad(nKnown * seq) * d) : null;
             revOut = nKnown > 0 ? new FloatArray(pad(nKnown * seq) * d) : null;
             xk = nKept > 0 ? new FloatArray(pad(nKept * seq) * d) : null;
-            aHalf = halfGemm(tokens)
-                    ? new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(tokensP * maxGemmInput()) : null;
-            cHalf = halfGemm(tokens) && gemmMode.cublas() && fp16Kernel != Fp16Kernel.GEMMEX_MIXED
+            cHalf = half && gemmMode.cublas() && fp16Kernel != Fp16Kernel.GEMMEX_MIXED
                     ? new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(tokensP * maxGemmOutput()) : null;
             known = nKnown > 0 ? new IntArray(nKnown) : null;
             kept = nKept > 0 ? new IntArray(nKept) : null;
@@ -478,23 +489,35 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
 
             KernelContext ctx = new KernelContext();
             GridScheduler grid = new GridScheduler();
-            List<Object> sharedList = new ArrayList<>(List.of(w, x, present, tok, stats, h, n, cell, proj, big, y, out));
-            if (aHalf != null) {
-                // every buffer a GEMM reads as A gets an FP16 twin its producer fills
+            List<Object> sharedList = new ArrayList<>();
+            java.util.Set<Object> listed = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+            for (Object o : new Object[] {w, x, present, tok, stats, h, n, cell, proj, big, y, out, noOut}) {
+                if (listed.add(o)) {
+                    sharedList.add(o);
+                }
+            }
+            if (half) {
+                // every buffer a GEMM reads as A gets an FP16 twin its producer fills, so no GEMM
+                // input needs a conversion pass (see Builder.halfInput)
                 for (FloatArray f : new FloatArray[] {tok, n, proj, big, cell, revIn}) {
-                    if (f != null) {
+                    if (f != null && !twins.containsKey(f)) {
                         twins.put(f, new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(f.getSize()));
                     }
                 }
             }
             sharedList.add(noTwin);
             sharedList.addAll(twins.values());
-            for (Object o : new Object[] {yc, revIn, revOut, xk, aHalf, cHalf, known, kept, groupStart, groupEnd, keptTarget}) {
+            for (Object o : new Object[] {yc, revIn, revOut, xk, cHalf, ffnUp, ffnSw, known, kept, groupStart, groupEnd, keptTarget}) {
                 if (o != null) {
                     sharedList.add(o);
                 }
             }
             Object[] shared = sharedList.toArray();
+            if (Boolean.getBoolean("tirex.tornado.memReport")) {
+                memoryReport(tokens, new Object[] {"x", x, "present", present, "tok", tok, "stats", stats, "h", h, "n", n, "cell", cell,
+                        "proj", proj, "big", big, "y", y, "out", out, "yc", yc, "revIn", revIn, "revOut", revOut, "xk", xk, "cHalf", cHalf,
+                        "ffnUp", ffnUp, "ffnSw", ffnSw});
+            }
             List<Object> perCall = new ArrayList<>(List.of(x, present));
             for (Object o : new Object[] {known, kept, groupStart, groupEnd, keptTarget}) {
                 if (o != null) {
@@ -502,10 +525,10 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 }
             }
             Builder b = new Builder(grid, ctx, w, shared);
-            b.aHalf = aHalf;
             b.twins = twins;
             b.noTwin = noTwin;
             b.cHalf = cHalf;
+            b.noOut = noOut;
 
             // TornadoVM caps a task graph at 256 tasks and an 8 KiB bytecode buffer, so the forward
             // pass is a chain of graphs (input, one per block, output) sharing device buffers.
@@ -552,10 +575,17 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 } else if (!cell(b, s, blk, n, h, rows, true, blk.normFfn())) {
                     b.rms(s + "fnorm", h, n, blk.normFfn(), tokens, d, TiRex2Config.NORM_EPS);
                 }
-                b.gemm(s + "up", n, blk.upGateUp(), big, tokens, 0);
-                b.items(s + "swiglu", tokens * blk.ffnDim());
-                g.task(s + "swiglu", TiRexKernels::swiGlu, ctx, big, proj, tokens, blk.ffnDim(), b.twin(proj), b.hasTwin(proj));
-                b.gemm(s + "down", proj, blk.down(), h, tokens, TiRexKernels.ACCUMULATE);
+                if (ffnUp != null) {
+                    b.gemmToHalf(s + "up", n, blk.upGateUp(), ffnUp, tokens);
+                    b.items(s + "swiglu", tokens * blk.ffnDim());
+                    g.task(s + "swiglu", TiRexKernels::swiGluHalf, ctx, ffnUp, ffnSw, tokens, blk.ffnDim());
+                    b.gemmFromHalf(s + "down", ffnSw, blk.down(), h, tokens, TiRexKernels.ACCUMULATE);
+                } else {
+                    b.gemm(s + "up", n, blk.upGateUp(), big, tokens, 0);
+                    b.items(s + "swiglu", tokens * blk.ffnDim());
+                    g.task(s + "swiglu", TiRexKernels::swiGlu, ctx, big, proj, tokens, blk.ffnDim(), b.twin(proj), b.hasTwin(proj));
+                    b.gemm(s + "down", proj, blk.down(), h, tokens, TiRexKernels.ACCUMULATE);
+                }
                 if (nKept > 0) {
                     variate(b, s, blk.variate(), nKept);
                 }
@@ -587,6 +617,32 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 // per-task kernel times on stdout after every execution (analysis only; slows every call)
                 exec.withProfiler(uk.ac.manchester.tornado.api.enums.ProfilerMode.CONSOLE);
             }
+        }
+
+        /**
+         * Prints the activation buffers of this plan ({@code -Dtirex.tornado.memReport=true}): each
+         * buffer's size, the FP16 twins, and the total per token. Each buffer has a host copy of the
+         * same size; the weights are not included.
+         */
+        private void memoryReport(int tokens, Object[] named) {
+            StringBuilder sb = new StringBuilder("[jitrex] plan " + shape + ", " + tokens + " tokens:");
+            long total = 0;
+            java.util.Set<Object> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+            for (int i = 0; i < named.length; i += 2) {
+                if (named[i + 1] instanceof uk.ac.manchester.tornado.api.types.arrays.TornadoNativeArray a && seen.add(a)) {
+                    long bytes = a.getNumBytesOfSegment();
+                    total += bytes;
+                    sb.append(String.format(" %s=%.1fMB", named[i], bytes / 1e6));
+                }
+            }
+            long twinBytes = 0;
+            for (var e : twins.values()) {
+                twinBytes += e.getNumBytesOfSegment();
+            }
+            total += twinBytes;
+            sb.append(String.format(" twins=%.1fMB | total %.1f MB, %.1f KB per token", twinBytes / 1e6, total / 1e6,
+                    total / 1024.0 / tokens));
+            System.err.println(sb);
         }
 
         /**
@@ -770,7 +826,8 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         final KernelContext ctx;
         final FloatArray w;
         final Object[] shared;
-        uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray aHalf, cHalf, noTwin;
+        uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray cHalf, noTwin;
+        FloatArray noOut;
         java.util.Map<FloatArray, uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray> twins;
 
         /** The FP16 twin of {@code f}, or the unused placeholder when it has none. */
@@ -821,11 +878,11 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
 
         void gemm(String name, FloatArray a, PackedWeights.Lin l, FloatArray c, int m, int flags) {
             if (gemmMode.cublas()) {
-                cublasGemm(name, a, l, c, m, flags);
+                cublasGemm(name, a, null, l, c, m, flags);
                 return;
             }
             if (gemmMode == GemmMode.HALF || gemmMode == GemmMode.CUTILE) {
-                tornadoHalfGemm(name, a, l, c, m, flags);
+                tornadoHalfGemm(name, a, null, l, c, m, flags);
                 return;
             }
             int tile = TiRexKernels.TILE;
@@ -836,14 +893,42 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             g.task(name, TiRexKernels::gemm, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, 0, m, l.out(), l.in(), f);
         }
 
+        /** {@code H = A·Wᵀ} into an FP16-only buffer (FP32 accumulation, no bias or activation). */
+        void gemmToHalf(String name, FloatArray a, PackedWeights.Lin l, uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray out, int m) {
+            uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray wh = halfWeight(l);
+            uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray ah = halfInput(name, a, m, l.in());
+            int n = l.out(), k = l.in();
+            if (gemmMode.cublas()) {
+                // the padding rows of the FP16 input hold finite stale values; their outputs are never read
+                g.libraryTask(name, uk.ac.manchester.tornado.cublas.CuBlas::cublasGemmExFP16, 1, 0, n, pad(m), k, 1f, wh, k, ah, k,
+                        0f, out, n);
+                return;
+            }
+            int t = TiRexKernels.HGEMM_TILE, threads = TiRexKernels.HGEMM_THREADS;
+            WorkerGrid wg = new WorkerGrid2D((n + t - 1) / t * threads, (m + t - 1) / t * threads);
+            wg.setLocalWork(threads, threads, 1);
+            g.task(name, TiRexKernels::gemmHalf, ctx, ah, wh, noOut, w, 0, m, n, k, TiRexKernels.TWIN_ONLY, out, 1);
+            grid.addWorkerGrid(this.name + "." + name, wg);
+        }
+
+        /** {@code C = act(A·Wᵀ + b) (+ C)} from an FP16-only A, such as the FFN's SwiGLU output. */
+        void gemmFromHalf(String name, uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray ah, PackedWeights.Lin l, FloatArray c, int m, int flags) {
+            if (gemmMode.cublas()) {
+                cublasGemm(name, null, ah, l, c, m, flags);
+            } else {
+                tornadoHalfGemm(name, null, ah, l, c, m, flags);
+            }
+        }
+
         /**
          * {@code C = act(A·Wᵀ + b) (+ C)} with a TornadoVM FP16 GEMM: FP16 A (the producer's twin)
          * and W, FP32 accumulation and C, with the bias, SiLU, residual and C's own twin in the
          * kernel's epilogue, so no other task is needed.
          */
-        private void tornadoHalfGemm(String name, FloatArray a, PackedWeights.Lin l, FloatArray c, int m, int flags) {
+        private void tornadoHalfGemm(String name, FloatArray a, uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray a16, PackedWeights.Lin l, FloatArray c, int m,
+                int flags) {
             uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray wh = halfWeight(l);
-            uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray ah = halfInput(name, a, m, l.in());
+            uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray ah = a16 != null ? a16 : halfInput(name, a, m, l.in());
             int n = l.out(), k = l.in();
             boolean bias = l.b() >= 0;
             int bOff = Math.max(l.b(), 0);
@@ -869,8 +954,11 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
          * is the column-major {@code Cᵀ = op_T(W_cm)·A_cm}, i.e. {@code sgemm(T, N, n, m, k, W, k, A,
          * k, C, n)}. The bias is written into C first (then β = 1); SiLU runs afterwards.
          */
-        private void cublasGemm(String name, FloatArray a, PackedWeights.Lin l, FloatArray c, int m, int flags) {
+        private void cublasGemm(String name, FloatArray a, uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray a16, PackedWeights.Lin l, FloatArray c, int m, int flags) {
             boolean half = halfGemm(m);
+            if (a16 != null && !half) {
+                throw new IllegalStateException("GEMM " + name + " has only an FP16 input but runs in FP32");
+            }
             boolean bias = l.b() >= 0;
             boolean acc = (flags & TiRexKernels.ACCUMULATE) != 0;
             int n = l.out(), k = l.in();
@@ -878,7 +966,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 // FP16 A, B and C on tensor cores, then one kernel back to FP32 with bias, SiLU and
                 // the residual add fused (the residual stream stays FP32)
                 uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray wh = halfWeight(l);
-                uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray ah = halfInput(name, a, m, k);
+                uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray ah = a16 != null ? a16 : halfInput(name, a, m, k);
                 if (fp16Kernel == Fp16Kernel.LT_H16) {
                     g.libraryTask(name, uk.ac.manchester.tornado.cublas.CuBlasLt::ltMatmulFP16, 1, 0, n, pad(m), k, 1f, wh, k,
                             ah, k, 0f, cHalf, n);
@@ -906,7 +994,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             float beta = (bias && !siluEpilogue) || acc ? 1f : 0f;
             if (half) {
                 uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray wh = halfWeight(l);
-                uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray ah = halfInput(name, a, m, k);
+                uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray ah = a16 != null ? a16 : halfInput(name, a, m, k);
                 // the row count is padded to a multiple of 8; the padding rows of the FP16 input
                 // hold finite stale values and their outputs are never read
                 g.libraryTask(name, uk.ac.manchester.tornado.cublas.CuBlas::cublasGemmExFP16FP32, 1, 0, n, pad(m), k, 1f, wh,
@@ -927,18 +1015,13 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             }
         }
 
-        /**
-         * The FP16 A operand of a GEMM: {@code a}'s twin, which its producer has just written, or
-         * (for a buffer without one) a conversion into the shared scratch.
-         */
+        /** The FP16 A operand of a GEMM: {@code a}'s twin, which its producer has just written. */
         private uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray halfInput(String name, FloatArray a, int m, int k) {
             uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray t = twins.get(a);
-            if (t != null) {
-                return t;
+            if (t == null) {
+                throw new IllegalStateException("GEMM " + name + " reads a buffer without an FP16 twin");
             }
-            items(name + "_half", m * k);
-            g.task(name + "_half", TiRexKernels::toHalf, ctx, a, aHalf, m * k);
-            return aHalf;
+            return t;
         }
 
         private uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray halfWeight(PackedWeights.Lin l) {
