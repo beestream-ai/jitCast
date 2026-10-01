@@ -150,8 +150,8 @@ public final class TiRexServer {
             if (forward instanceof AutoCloseable c) {
                 try {
                     c.close();
-                } catch (Exception e) {
-                    // exiting anyway
+                } catch (Exception | Error e) {
+                    // exiting anyway (after a device OOM TornadoVM can fail to free buffers: TornadoInternalError)
                 }
             }
             weights.close();
