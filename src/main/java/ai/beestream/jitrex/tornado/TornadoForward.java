@@ -46,6 +46,23 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  */
 public final class TornadoForward implements ForwardPass, AutoCloseable {
 
+    static {
+        tornadoDefaults();
+    }
+
+    /**
+     * Sets jitrex's TornadoVM defaults, unless already set. TornadoVM reads them when its backends
+     * start, so code that calls TornadoVM before creating a {@code TornadoForward} calls this first.
+     * TornadoVM's Metal backend spin-waits up to 1 ms on each dispatch before it blocks; a forward
+     * pass runs dozens of kernels per task graph, so its waits outlast the spin and jitrex runs up
+     * to 2× slower on Metal. The spin is off.
+     */
+    public static void tornadoDefaults() {
+        if (System.getProperty("tornado.metal.dispatch.spinWait") == null) {
+            System.setProperty("tornado.metal.dispatch.spinWait", "False");
+        }
+    }
+
     private static final String G = "tirex";
 
     /** Work-group size of the element-wise kernels. */
