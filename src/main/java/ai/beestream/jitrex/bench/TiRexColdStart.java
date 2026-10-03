@@ -55,6 +55,7 @@ public final class TiRexColdStart {
         Map<String, String> a = TiRexBench.parse(args);
         long jvmStart = ManagementFactory.getRuntimeMXBean().getStartTime();
 
+        TornadoForward.tornadoDefaults();
         long t0 = System.nanoTime();
         uk.ac.manchester.tornado.api.runtime.TornadoRuntimeProvider.getTornadoRuntime().getDefaultDevice().getDeviceName();
         long t1 = System.nanoTime();
