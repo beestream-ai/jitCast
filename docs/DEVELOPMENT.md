@@ -45,11 +45,11 @@ base model (`NX-AI/TiRex-2`) and the benchmark checkpoints (`-fevbench`, `-gifte
 | `spec_forward.py` | An explicit PyTorch spec of `forward()` (basic ops only, no xlstm/flashrnn) checked stage by stage against the goldens; the Java reference is a port of it |
 | `dump_golden.py` | Runs the NXAI model on 13 cases and saves the inputs, the batch passed to `forward()`, the activations of every stage, the raw model output and the final forecasts |
 | `bench_nxai.py` | NXAI baseline: `workloads` (shared inputs), `run` (latency/throughput, e2e + forward-only), `coldstart` |
-| `cyclone_p0.sh` | The whole reference setup on a CUDA box: venv, CUDA-kernel check, conversion, CPU + CUDA goldens, NXAI baseline, cold start |
+| `setup_reference.sh` | The whole reference setup on a CUDA machine, in a work directory: venv, CUDA-kernel check, conversion, CPU + CUDA goldens, NXAI baseline, cold start |
 | `tirex_tornado.py`, `run_with_tornado.py` | Run an unmodified NXAI harness with `TiRex2.predict` served by `TiRexServer` |
 | `gift_resumable.py` | GIFT-Eval one configuration at a time: results appended as they land, resumable, server restart and retry on failure |
-| `cyclone/` | The benchmark and experiment runners used on the RTX 5070 Ti: `matrix.sh` + `summarize_matrix.py` ([PERFORMANCE.md](PERFORMANCE.md)), `acc_setup.sh` / `acc_run.sh` / `acc_compare.py` ([VALIDATION.md](VALIDATION.md)), `profile.sh` + `kern_sum.py` (nsys), A/B scripts |
+| `eval/` | The evaluation matrix: `eval_nvidia.sh` / `eval_mac.sh` + `summarize_eval.py` / `plot_eval.py` ([PERFORMANCE.md](PERFORMANCE.md)); accuracy parity: `acc_setup.sh` / `acc_run.sh` / `acc_compare.py` ([VALIDATION.md](VALIDATION.md)); `tornado_run.sh` (run a jitrex main class on a TornadoVM SDK), `nxai.sh` (NXAI's benchmark in its venv), `profile.sh` + `kern_sum.py` (nsys), `cublas13_shim.sh` ([INSTALL.md](INSTALL.md#nvidia-extras)), `waitfree.sh` (wait for a shared machine to be free). Each script's header lists its arguments and environment |
 
 ```bash
-./scripts/cyclone_p0.sh ~/tirex2
+./scripts/setup_reference.sh ~/tirex2-work
 ```
