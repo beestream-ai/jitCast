@@ -27,20 +27,22 @@ pipeline is in Java, and the model's forward pass runs on the GPU through Tornad
 - **Validated against NXAI.** On fev-bench and GIFT-Eval, jitrex gives the same scores as NXAI's
   FP32 reference to about 1e-6.
 - **Fast.** On an RTX 5070 Ti it is 2.0–6.8× faster than NXAI's PyTorch engine end to end, and it
-  starts 4.0× faster. On an Apple M4 Pro it is up to 3.2× faster than NXAI on MPS (6.2× at long
-  context), and on par at the largest multivariate batches.
+  starts 4.0× faster; on an A100 it is 3.3–13.1× faster and starts 2.8× faster. On an Apple M4 Pro
+  it is up to 3.3× faster than NXAI on MPS (6.4× at long context), and on par at the largest
+  multivariate batches.
 
 ## Where it runs
 
 | Platform | Backend | Status | Recommended flags |
 |---|---|---|---|
-| NVIDIA GPU | CUDA | validated, benchmarked (RTX 5070 Ti) | `-Dtirex.tornado.gemm=cublas-auto` |
-| NVIDIA GPU | OpenCL | validated, benchmarked (RTX 5070 Ti); slower than CUDA | `-Dtirex.tornado.gemm=half` |
+| NVIDIA GPU | CUDA | validated, benchmarked (RTX 5070 Ti, A100) | `-Dtirex.tornado.gemm=cublas-auto` |
+| NVIDIA GPU | OpenCL | validated, benchmarked (RTX 5070 Ti, A100); slower than CUDA | `-Dtirex.tornado.gemm=half` |
 | Apple Silicon | Metal or OpenCL | validated, benchmarked (M4 Pro) | `-Dtirex.tornado.gemm=half` |
 | Other OpenCL GPUs (Intel, AMD) | OpenCL | expected to work, not tested | `-Dtirex.tornado.gemm=half` |
 | Any CPU | plain JVM | FP32 reference, for validation | — |
 
-Every option, the GEMM modes and the hybrid APIs are in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+On an A100 (and other sm_80 GPUs) also set `-Dtirex.tornado.slstmR=fp16`: the default sLSTM kernel needs
+more registers per work-group than the GPU has. Every option, the GEMM modes and the hybrid APIs are in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ## Quick start
 
@@ -83,22 +85,26 @@ Covariates, the benchmark and cold-start tools, the harness server and the tests
 ## Performance
 
 End-to-end `forecast()`, jitrex's best configuration against NXAI's best on the same GPU
-(NVIDIA: `cublas-auto` against the best of eager, `torch.compile` and FlexAttention; Apple: Metal `half` against eager MPS):
+(NVIDIA: `cublas-auto` against the best of eager, `torch.compile` and FlexAttention; Apple: Metal `half` against eager MPS).
+The RTX 5070 Ti ran a TornadoVM 7.0.2 development build (2026-10-01); the A100 and the M4 Pro ran TornadoVM
+develop (2026-10-03).
 
-| Workload | RTX 5070 Ti: NXAI | jitrex | Speed-up | M4 Pro: NXAI | jitrex | Speed-up |
-|---|---|---|---|---|---|---|
-| 1 series | 9.63 ms | **1.42 ms** | 6.8× | 88.1 ms | **27.5 ms** | 3.2× |
-| 64 series | 48.6 ms | **13.7 ms** | 3.6× | 357.5 ms | **277.7 ms** | 1.3× |
-| 512 series | 1,419 series/s | **4,716 series/s** | 3.3× | 223 series/s | **246 series/s** | 1.1× |
-| 1 series × 15 covariates | 30.7 ms | **7.83 ms** | 3.9× | 293.9 ms | **196.9 ms** | 1.5× |
-| 32 series × 63 covariates | 1,870 ms | **936.5 ms** | 2.0× | 15,968 ms | 17,941 ms | 0.9× |
-| 1 series, GIFT-Eval checkpoint (285 patches) | 30.4 ms | **9.05 ms** | 3.4× | 522.1 ms | **84.1 ms** | 6.2× |
-| 32 series, GIFT-Eval checkpoint | 130.4 ms | **63.3 ms** | 2.1× | 1,181 ms | **1,085 ms** | 1.1× |
-| Cold start: process → first forecast | 6.65 s | **1.66 s** | 4.0× | 2.04 s | **1.98 s** | 1.0× |
+| Workload | RTX 5070 Ti: NXAI | jitrex | Speed-up | A100: NXAI | jitrex | Speed-up | M4 Pro: NXAI | jitrex | Speed-up |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 series | 9.63 ms | **1.42 ms** | 6.8× | 36.5 ms | **2.78 ms** | 13.1× | 88.1 ms | **27.1 ms** | 3.3× |
+| 64 series | 48.6 ms | **13.7 ms** | 3.6× | 127.9 ms | **15.4 ms** | 8.3× | 357.5 ms | **277.4 ms** | 1.3× |
+| 512 series | 1,419 series/s | **4,716 series/s** | 3.3× | 606 series/s | **4,320 series/s** | 7.1× | 223 series/s | **248 series/s** | 1.1× |
+| 1 series × 15 covariates | 30.7 ms | **7.83 ms** | 3.9× | 75.1 ms | **9.66 ms** | 7.8× | 293.9 ms | **198.0 ms** | 1.5× |
+| 32 series × 63 covariates | 1,870 ms | **936.5 ms** | 2.0× | 3,236 ms | **913.2 ms** | 3.5× | 15,968 ms | 17,433 ms | 0.9× |
+| 1 series, GIFT-Eval checkpoint (285 patches) | 30.4 ms | **9.05 ms** | 3.4× | 102.5 ms | **18.0 ms** | 5.7× | 522.1 ms | **82.0 ms** | 6.4× |
+| 32 series, GIFT-Eval checkpoint | 130.4 ms | **63.3 ms** | 2.1× | 197.1 ms | **60.6 ms** | 3.3× | 1,181 ms | **1,071 ms** | 1.1× |
+| Cold start: process → first forecast | 6.65 s | **1.66 s** | 4.0× | 10.39 s | **3.76 s** | 2.8× | 2.04 s | 2.07 s | 1.0× |
 
 ![jitrex speed-up over NXAI on the RTX 5070 Ti](docs/images/eval-nvidia.svg)
 
-The full eight-row matrix (CUDA without hybrid, CUDA Tile, cuBLAS, OpenCL on both GPUs), the long-context
+![jitrex speed-up over NXAI on the A100](docs/images/eval-a100.svg)
+
+The full matrix (CUDA without hybrid, CUDA Tile, cuBLAS, OpenCL on each GPU), the long-context
 and cold-start tables and the method are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 
 ## Documentation

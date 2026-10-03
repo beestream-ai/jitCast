@@ -25,7 +25,14 @@ tornado --devices                               # lists the backends and devices
 - **cuBLAS 13 on Blackwell.** TornadoVM's cuBLAS provider loads `libcublas.so.12` first. If a CUDA 12.0 cuBLAS is installed next to CUDA 13, it silently runs generic, non-tensor-core kernels on sm_120. Point `LD_LIBRARY_PATH` at a directory where `lib{cublas,cublasLt,cudart}.so.12` link to the CUDA 13 libraries; `scripts/cyclone/exp_shim.sh` builds such a shim.
 - **CUDA Tile (`cutile`)** needs toolkit 13.3+. A user-space install is enough: `pip install 'cuda-tile[tileiras]'` into a venv, then pass `-Dtornado.cuda.nvcc=<venv>/lib/python3.*/site-packages/nvidia/cu13/bin/nvcc`. The first run compiles each GEMM task with `tileiras`, which takes 2–3 minutes per plan layout; after that the CUDA code cache serves it.
 
-The CUDA results in these documents were measured on a TornadoVM 7.0.2 development build (`develop` at a86db1ace).
+- **NXAI's reference engine on a newer CUDA toolkit than the driver.** NXAI's TiRex-2 runs its sLSTM layers through FlashRNN, which compiles its CUDA kernels on first use with the toolkit `CUDA_HOME` points to, and only as PTX (`-gencode arch=compute_80,code=compute_80` in `flashrnn/cuda_init.py`). The driver then compiles that PTX at load time, and a driver cannot compile PTX from a newer toolkit than its own: with CUDA 13.4 on a driver that supports CUDA 13.3, every NXAI forecast fails with `RuntimeError: Errors during CUDA kernel calls forward` (the CUDA error underneath is 222, "the provided PTX was compiled with an unsupported toolchain"). Point FlashRNN at a toolkit no newer than the driver, for example the one PyTorch was built for, and clear its build cache:
+  ```bash
+  export CUDA_HOME=/usr/local/cuda-13.0 CUDA_PATH=/usr/local/cuda-13.0 PATH=/usr/local/cuda-13.0/bin:$PATH
+  rm -rf ~/.cache/torch_extensions/py*_cu*
+  ```
+  This only concerns NXAI's engine, not jitrex. The fix belongs in FlashRNN: compile native code for the GPU next to the PTX (`code=[sm_XY,compute_XY]` from `torch.cuda.get_device_capability()`, or `TORCH_CUDA_ARCH_LIST`), which a newer 13.x toolkit can build for an older 13.x driver, and report the CUDA error string instead of the generic message. Upgrading the driver also avoids it.
+
+The CUDA results in these documents were measured on TornadoVM 7.0.2 development builds: `develop` at a86db1ace (RTX 5070 Ti) and at 85eb7bed2 (A100, M4 Pro).
 
 ## Build jitrex
 

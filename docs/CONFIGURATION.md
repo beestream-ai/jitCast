@@ -17,6 +17,7 @@
 | `tirex.tornado.profile` | `false`, `true` | Print TornadoVM's per-task kernel times after every execution (analysis only: it slows every call) |
 | `tirex.tornado.fuse` | `true`, `false` | Fused epilogues: bias + SiLU after the GEMM, residual + RMSNorm, sLSTM head norm + residual + RMSNorm |
 | `tirex.tornado.cudaGraph` | `true` for `cublas*` / `cutile`, `false` otherwise | Capture and replay each task graph as a CUDA graph |
+| `tornado.metal.dispatch.spinWait` (TornadoVM) | `False` (set by jitrex unless given) | TornadoVM develop's Metal backend spin-waits up to 1 ms on each dispatch before it blocks. A forward pass runs dozens of kernels per task graph, so the waits outlast the spin and jitrex runs up to 2× slower on Metal; jitrex turns it off. Code that calls TornadoVM before creating a `TornadoForward` should call `TornadoForward.tornadoDefaults()` first |
 | `tirex.tornado.ffnHalf` | `true` | FP16 GEMM modes (`cublas-auto`, `cublas-fp16`, `half`): keep the FFN's intermediates in FP16 only, which cuts a plan's memory by about 15% and is up to 7% faster; `false` keeps them in FP32 |
 | `tirex.tornado.memReport` | `false` | Print each plan's activation buffers and its memory per token when the plan is built |
 | `tirex.maxTokens` | `131072` | The most tokens (rows × patches) one forward pass takes; a forecast call is split into passes by this and by the batch size, which bounds a plan's memory (about 4 GB at the default) whatever the series' covariate counts. Forecasts do not depend on the split. `TiRexBench` ignores it unless set |
@@ -55,12 +56,14 @@ TornadoVM properties used alongside: `tornado.device.memory` (device heap, e.g. 
 
 | Hardware | TornadoVM backend | GEMM modes | Status |
 |---|---|---|---|
-| NVIDIA GPU | CUDA | `tiled`, `half`, `cublas`, `cublas-tf32`, `cublas-fp16`, `cublas-auto`, `cutile` | **Validated and benchmarked** on an RTX 5070 Ti (sm_120, Blackwell), driver 580, CUDA 13.0 |
+| NVIDIA GPU | CUDA | `tiled`, `half`, `cublas`, `cublas-tf32`, `cublas-fp16`, `cublas-auto`, `cutile` | **Validated and benchmarked** on an RTX 5070 Ti (sm_120, Blackwell), driver 580, CUDA 13.0, and on an A100 80GB (sm_80, aarch64), driver 610, CUDA 13.4, with `slstmR=fp16` and without `cutile` |
 | Apple Silicon GPU | Metal | `tiled`, `half` | **Validated and benchmarked** on an M4 Pro |
 | Apple Silicon GPU | OpenCL | `tiled`, `half` | **Validated and benchmarked** on an M4 Pro |
-| NVIDIA GPU | OpenCL | `tiled`, `half` | **Validated and benchmarked** on an RTX 5070 Ti (goldens, fev-bench mini 20/20) |
+| NVIDIA GPU | OpenCL | `tiled`, `half` | **Validated and benchmarked** on an RTX 5070 Ti and an A100 (goldens, fev-bench mini 20/20); `half` on the A100 needs `slstmR=fp16` |
 | Intel / AMD GPUs, OpenCL CPU runtimes | OpenCL | `tiled`, `half` | Expected to work, not tested |
 | Any CPU | none (plain JVM) | — | `CpuTiRex2Engine`: the FP32 reference, for validation and not for speed |
+
+On sm_80 GPUs such as the A100, the default `slstmR=fp16-reg` kernel needs more registers per work-group than the GPU has: CUDA refuses to launch it (`CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES`) and OpenCL returns wrong results without an error. Use `-Dtirex.tornado.slstmR=fp16` there; it is about as fast as the register-resident kernel limited to 128 registers per thread. `cutile` does not run on the A100 with TornadoVM develop at 85eb7bed2: TornadoVM fails to parse `TileContext.checkShape` ("Unable to build sketch for method: gemmHalfTile").
 
 Some kernels adapt to the device's maximum work-group size (for example 256 on OpenCL on macOS, 1024 on Metal and CUDA). The fused sLSTM norm kernel needs 512 threads and is skipped on smaller devices.
 
