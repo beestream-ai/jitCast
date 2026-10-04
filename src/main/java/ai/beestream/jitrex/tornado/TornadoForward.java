@@ -157,15 +157,47 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         };
     }
 
-    /** {@code -Dtirex.tornado.slstmR=fp16}: read the sLSTM recurrent kernels from an FP16 copy. */
     /**
-     * {@code -Dtirex.tornado.slstmR=fp16-reg|fp16|fp32}: the precision of the sLSTM recurrent
-     * weights, and where they live. {@code fp16-reg} (default) is FP16 with half of each thread's
-     * R values held in registers where it pays (see {@link #registerRecurrent}); {@code fp16}
-     * streams FP16 R every step; {@code fp32} streams FP32 R, for results closest to FP32.
+     * {@code -Dtirex.tornado.slstmR=auto|fp16-reg|fp16|fp32}: the precision of the sLSTM recurrent
+     * weights, and where they live. {@code fp16-reg} is FP16 with half of each thread's R values
+     * held in registers where it pays (see {@link #registerRecurrent}); {@code fp16} streams FP16 R
+     * every step; {@code fp32} streams FP32 R, for results closest to FP32. {@code auto} (default)
+     * is {@code fp16-reg} on the devices where that kernel is known to fit
+     * ({@link #registerKernelFits}), else {@code fp16}.
      */
-    private final String slstmR = System.getProperty("tirex.tornado.slstmR", "fp16-reg").trim().toLowerCase();
-    private final boolean halfRecurrent = slstmR.startsWith("fp16");
+    private final String slstmRProperty = System.getProperty("tirex.tornado.slstmR", "auto").trim().toLowerCase();
+    private final boolean halfRecurrent = !"fp32".equals(slstmRProperty);
+    private String slstmR;
+
+    private String slstmR() {
+        if (slstmR == null) {
+            slstmR = "auto".equals(slstmRProperty) ? (registerKernelFits(device()) ? "fp16-reg" : "fp16") : slstmRProperty;
+        }
+        return slstmR;
+    }
+
+    /**
+     * Whether the register-resident sLSTM kernel fits the device: it needs 512 threads per work-group
+     * with up to 128 registers each, and whether the compiler gets it under that depends on the
+     * target. It does on CUDA compute capability 12 (RTX 5070 Ti) and on Apple GPUs (Metal and
+     * OpenCL); on an A100 (8.0) CUDA refuses to launch it and NVIDIA's OpenCL returns wrong results
+     * without an error. OpenCL does not report the compute capability, so only Apple's is trusted.
+     */
+    static boolean registerKernelFits(uk.ac.manchester.tornado.api.common.TornadoDevice d) {
+        return switch (d.getTornadoVMBackend()) {
+            case METAL -> true;
+            case OPENCL -> d.getPlatformName() != null && d.getPlatformName().toLowerCase().contains("apple");
+            case CUDA -> cudaComputeCapabilityMajor(d) >= 12;
+            default -> false;
+        };
+    }
+
+    /** The CUDA device's compute capability major version, from its device version ("CUDA 8.0"); 0 if unknown. */
+    static int cudaComputeCapabilityMajor(uk.ac.manchester.tornado.api.common.TornadoDevice d) {
+        String info = String.valueOf(d.getPhysicalDevice().getDeviceInfo());
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("Device version\\s*:\\s*CUDA (\\d+)\\.").matcher(info);
+        return m.find() ? Integer.parseInt(m.group(1)) : 0;
+    }
 
     /**
      * Whether the configuration computes anything below FP32 (FP16 or TF32 GEMM inputs, FP16 sLSTM
@@ -173,8 +205,8 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
      */
     public static boolean reducedPrecision() {
         String gemm = System.getProperty("tirex.tornado.gemm", "tiled").trim().toLowerCase();
-        String r = System.getProperty("tirex.tornado.slstmR", "fp16-reg").trim().toLowerCase();
-        return !(gemm.equals("tiled") || gemm.equals("cublas")) || r.startsWith("fp16");
+        String r = System.getProperty("tirex.tornado.slstmR", "auto").trim().toLowerCase();
+        return !(gemm.equals("tiled") || gemm.equals("cublas")) || !r.equals("fp32");
     }
 
     /**
@@ -183,7 +215,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
      * 512-thread work-groups, and falls back to {@code fp16} on devices that cap them lower.
      */
     private boolean registerRecurrent(int dh, int streamedRowsPerGroup) {
-        return "fp16-reg".equals(slstmR) && dh == 128 && slstmGatesPerThread(dh) == 1
+        return "fp16-reg".equals(slstmR()) && dh == 128 && slstmGatesPerThread(dh) == 1
                 && streamedRowsPerGroup < TiRexKernels.SLSTM_MAX_ROWS;
     }
 
