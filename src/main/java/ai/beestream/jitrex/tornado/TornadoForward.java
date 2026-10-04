@@ -99,14 +99,6 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
     private final boolean fuse = !"false".equalsIgnoreCase(System.getProperty("tirex.tornado.fuse", "true"));
 
     /**
-     * Build the forward pass as one task graph instead of a chain of graphs (input, one per
-     * block, output) sharing device buffers ({@code -Dtirex.tornado.singleGraph}, off by
-     * default). Needs a TornadoVM whose task graphs can exceed 256 tasks and 8 KiB of bytecode
-     * (beehive-lab/TornadoVM#1142, in TornadoVM 7.1.0); without it the graph build fails.
-     */
-    private final boolean singleGraph = Boolean.getBoolean("tirex.tornado.singleGraph");
-
-    /**
      * Keep the FFN's intermediates in FP16 only ({@code -Dtirex.tornado.ffnHalf}, on by default):
      * the up-projection writes FP16 (FP32 accumulation), SwiGLU reads and writes FP16, and the
      * down-projection reads that directly. The wide FP32 buffers then no longer hold the FFN, so
@@ -116,7 +108,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
     private final boolean ffnHalfEnabled = !"false".equalsIgnoreCase(System.getProperty("tirex.tornado.ffnHalf", "true"));
 
     /**
-     * Capture and replay each task graph as a CUDA graph ({@code -Dtirex.tornado.cudaGraph}). On
+     * Capture and replay the plan's task graph as a CUDA graph ({@code -Dtirex.tornado.cudaGraph}). On
      * by default with the cuBLAS (CUDA-only) GEMM modes: −11% at batch 1 on an RTX 5070 Ti, with
      * identical results; off with the portable tiled GEMMs, which also run on OpenCL and Metal.
      */
@@ -487,7 +479,6 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         final IntArray known, kept, groupStart, groupEnd, keptTarget;
         final TornadoExecutionPlan exec;
         final GridScheduler grid;
-        final int graphCount;
 
         Plan(Shape shape) {
             this.shape = shape;
@@ -581,20 +572,17 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                     perCall.add(o);
                 }
             }
-            Builder b = new Builder(grid, ctx, w, shared);
+            Builder b = new Builder(grid, ctx, w);
             b.twins = twins;
             b.noTwin = noTwin;
             b.cHalf = cHalf;
             b.noOut = noOut;
 
-            // TornadoVM caps a task graph at 256 tasks and an 8 KiB bytecode buffer, so the forward
-            // pass is a chain of graphs (input, one per block, output) sharing device buffers.
+            // The whole forward pass is one task graph (input stage, the blocks, output stage). It has
+            // more than 256 tasks and 8 KiB of bytecode, which needs TornadoVM 7.1.0 or newer.
             TaskGraph g = b.begin("in");
             g.transferToDevice(DataTransferMode.FIRST_EXECUTION, shared);
             g.transferToDevice(DataTransferMode.EVERY_EXECUTION, perCall.toArray());
-            // scale always has a worker grid, so every graph registers one: TornadoVM 7.0.x's
-            // isGridRegistered() dereferences a null scheduler for a graph with none (the input
-            // graph under cuBLAS).
             grid.addWorkerGrid(b.name + ".scale", group(rows * TiRexKernels.NORM_THREADS, TiRexKernels.NORM_THREADS));
             g.task("scale", TiRexKernels::scalePatch, ctx, x, present, tok, stats, rows, len, p, c.useArcsinh() ? 1 : 0,
                     c.binaryAware() ? 1 : 0, TiRex2Config.SCALER_EPS, b.twin(tok), b.hasTwin(tok));
@@ -658,17 +646,16 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             g.transferToHost(DataTransferMode.EVERY_EXECUTION, out);
             b.end(true);
 
-            graphCount = b.graphs.size();
             this.grid = grid;
-            exec = new TornadoExecutionPlan(b.graphs.toArray(new ImmutableTaskGraph[0]));
+            exec = new TornadoExecutionPlan(b.graph);
             String device = System.getProperty("tirex.tornado.device");
             if (device != null && !device.isBlank()) {
                 String[] dd = device.split(":");
                 exec.withDevice(TornadoExecutionPlan.getDevice(Integer.parseInt(dd[0]), Integer.parseInt(dd[1])));
             }
             if (cudaGraph) {
-                // CUDA backend only: each task graph is captured once and replayed as a CUDA graph
-                exec.withAllGraphs().withCUDAGraph();
+                // CUDA backend only: the task graph is captured once and replayed as a CUDA graph
+                exec.withCUDAGraph();
             }
             if (Boolean.getBoolean("tirex.tornado.profile")) {
                 // per-task kernel times on stdout after every execution (analysis only; slows every call)
@@ -837,9 +824,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             copy(s.groupStart(), groupStart);
             copy(s.groupEnd(), groupEnd);
             copy(s.keptTarget(), keptTarget);
-            for (int i = 0; i < graphCount; i++) {
-                exec.withGraph(i).withGridScheduler(grid).execute();
-            }
+            exec.withGridScheduler(grid).execute();
             int nq = config.numQuantiles();
             MemorySegment os = out.getSegment();
             float[][][] result = new float[rows][nq][len];
@@ -874,15 +859,13 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
     }
 
     /**
-     * Builds the chain of task graphs: {@link #begin} opens graph {@code tirex_<name>} consuming the
-     * shared buffers from the previous graph, {@link #end} persists them for the next one. Also adds
-     * the recurring task shapes (GEMM, norms, residual blocks) with their worker grids.
+     * Builds the plan's task graph stage by stage ({@link #begin}, {@link #end}), and adds the recurring
+     * task shapes (GEMM, norms, residual blocks) with their worker grids.
      */
     private final class Builder {
         final GridScheduler grid;
         final KernelContext ctx;
         final FloatArray w;
-        final Object[] shared;
         uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray cHalf, noTwin;
         FloatArray noOut;
         java.util.Map<FloatArray, uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray> twins;
@@ -896,47 +879,32 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         int hasTwin(FloatArray f) {
             return twins.containsKey(f) ? 1 : 0;
         }
-        final List<ImmutableTaskGraph> graphs = new ArrayList<>();
+        /** The task graph every stage adds to, and its snapshot once the last stage ends. */
         TaskGraph g;
-        String name;
-        String previous;
+        ImmutableTaskGraph graph;
+        final String name = G;
 
-        Builder(GridScheduler grid, KernelContext ctx, FloatArray w, Object[] shared) {
+        Builder(GridScheduler grid, KernelContext ctx, FloatArray w) {
             this.grid = grid;
             this.ctx = ctx;
             this.w = w;
-            this.shared = shared;
         }
 
         final java.util.Set<Object> graphWeights = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
 
-        TaskGraph begin(String graph) {
-            if (singleGraph) {
-                // every stage goes into the one graph opened by the first begin()
-                if (g == null) {
-                    name = G;
-                    g = new TaskGraph(name);
-                }
-                return g;
-            }
-            name = G + "_" + graph;
-            g = new TaskGraph(name);
-            graphWeights.clear();
-            if (previous != null) {
-                g.consumeFromDevice(previous, shared);
+        /** Starts a stage (the input stage, a block, the output stage) of the plan's one task graph. */
+        TaskGraph begin(String stage) {
+            if (g == null) {
+                g = new TaskGraph(name);
             }
             return g;
         }
 
+        /** Ends a stage; after the last one the graph is complete. */
         void end(boolean last) {
-            if (singleGraph && !last) {
-                return;
+            if (last) {
+                graph = g.snapshot();
             }
-            if (!last) {
-                g.persistOnDevice(shared);
-            }
-            graphs.add(g.snapshot());
-            previous = name;
         }
 
         /** The worker grid of an element-wise kernel: one thread per item, in groups of {@link #ITEM_GROUP}. */

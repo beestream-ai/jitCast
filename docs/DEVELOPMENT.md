@@ -11,8 +11,8 @@ univariate series, multi-target series, and series with past or future covariate
 jitrex reproduces NXAI's `ForecastModel.forecast()` end to end:
 - **Host side, in Java:** batch assembly and padding, the scaler, the postprocessor (trend
   detection, differencing, band calibration) and sign-flip test-time augmentation.
-- **Model forward pass:** on a TornadoVM device. It runs as a chain of task graphs, one per
-  block, with the activations kept on the device.
+- **Model forward pass:** on a TornadoVM device. It runs as one task graph per batch shape, with
+  the activations kept on the device.
 
 Every kernel is a TornadoVM **KernelContext** kernel, so the whole model runs on any TornadoVM
 backend: CUDA, OpenCL and Metal. On NVIDIA GPUs the GEMMs can instead use TornadoVM's hybrid
@@ -35,7 +35,7 @@ base model (`NX-AI/TiRex-2`) and the benchmark checkpoints (`-fevbench`, `-gifte
 | `bench` | `TiRexBench` (latency/throughput), `TiRexColdStart`, `TiRexServer` (socket server for NXAI's Python harnesses) |
 | `util` | `Json` |
 | `host` | `ForecastPipeline` (`ForecastModel.forecast`: 512-series windows, batch assembly and padding, horizon slicing, sign-flip TTA) and `PostProcessor` (trend detection, differencing, band calibration) — shared by every engine |
-| `tornado` | `TiRexKernels` (every device kernel, see [KERNELS.md](KERNELS.md)), `PackedWeights` (one device buffer plus per-matrix FP32/FP16 copies for the library GEMMs; fused q\|k\|v\|o\|i\|f, up_gate\|up and the block-diagonal sLSTM gates), `TornadoForward` (a plan per batch shape — rows, known covariates, kept rows — built as a chain of task graphs: input, one per block, output; the GEMM modes; CUDA graphs), `TornadoTiRex2Engine` |
+| `tornado` | `TiRexKernels` (every device kernel, see [KERNELS.md](KERNELS.md)), `PackedWeights` (one device buffer plus per-matrix FP32/FP16 copies for the library GEMMs; fused q\|k\|v\|o\|i\|f, up_gate\|up and the block-diagonal sLSTM gates), `TornadoForward` (a plan per batch shape — rows, known covariates, kept rows — built as one task graph: the input stage, the blocks and the output stage; the GEMM modes; CUDA graphs), `TornadoTiRex2Engine` |
 
 ## Scripts (`scripts/`)
 
