@@ -32,9 +32,12 @@
         <tornadovm.version>7.1.0${jdk.version.suffix}</tornadovm.version>
         <maven.compiler.release>22</maven.compiler.release>
         <!-- Golden-data tests skip unless both are set: the converted weights
-             (scripts/convert_ckpt.py) and a golden directory (scripts/dump_golden.py). -->
+             (scripts/convert_ckpt.py) and a golden directory (scripts/dump_golden.py). The device tests
+             of reduced-precision configurations also need NXAI's CUDA goldens (dump_golden.py with device cuda),
+             whose distance from the FP32 goldens sets their limits. -->
         <tirex.weights></tirex.weights>
         <tirex.golden></tirex.golden>
+        <tirex.golden.gpu></tirex.golden.gpu>
     </properties>
 
     <dependencies>
@@ -86,6 +89,7 @@
                     <systemPropertyVariables>
                         <tirex.weights>${tirex.weights}</tirex.weights>
                         <tirex.golden>${tirex.golden}</tirex.golden>
+                        <tirex.golden.gpu>${tirex.golden.gpu}</tirex.golden.gpu>
                     </systemPropertyVariables>
                 </configuration>
             </plugin>

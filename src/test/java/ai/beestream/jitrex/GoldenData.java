@@ -31,8 +31,9 @@ import ai.beestream.jitrex.model.ModelBatch;
 
 /**
  * Locates the converted weights ({@code -Dtirex.weights}) and a golden directory
- * ({@code -Dtirex.golden}) written by {@code scripts/dump_golden.py}. Tests that need them are
- * skipped, not failed, when they are not configured.
+ * ({@code -Dtirex.golden}) written by {@code scripts/dump_golden.py}, and optionally NXAI's CUDA
+ * goldens ({@code -Dtirex.golden.gpu}, {@code dump_golden.py --device cuda}). Tests that need them
+ * are skipped, not failed, when they are not configured.
  */
 public final class GoldenData {
 
@@ -44,6 +45,36 @@ public final class GoldenData {
 
     public static Path goldenDir() {
         return required("tirex.golden");
+    }
+
+    /** NXAI's CUDA goldens: the same cases as {@link #goldenDir()}, run on NXAI's own GPU path. */
+    public static Path gpuGoldenDir() {
+        return required("tirex.golden.gpu");
+    }
+
+    /**
+     * How far NXAI's own GPU path is from its FP32 reference on a case, as {@code {model output,
+     * forecasts}} in {@link #relativeMaxError}: the limits for jitrex's reduced-precision
+     * configurations, which may be no further from FP32 than NXAI is. Both golden sets must come from
+     * the same inputs.
+     */
+    public static double[] nxaiGpuError(String testCase) throws IOException {
+        try (SafeTensors cpu = open(testCase); SafeTensors gpu = SafeTensors.open(gpuGoldenDir().resolve(testCase + ".safetensors"))) {
+            for (int i = 0; cpu.contains("in." + i + ".target"); i++) {
+                for (String part : List.of("target", "past_covariates", "future_covariates")) {
+                    String name = "in." + i + "." + part;
+                    if (cpu.contains(name) && !java.util.Arrays.equals(cpu.get(name).toFloatArray(), gpu.get(name).toFloatArray())) {
+                        throw new AssertionError(testCase + ": the CPU and GPU goldens have different inputs (" + name + ")");
+                    }
+                }
+            }
+            double model = relativeMaxError(gpu.get("pass0.model.out").toFloatArray(), cpu.get("pass0.model.out").toFloatArray());
+            double forecast = 0;
+            for (int i = 0; cpu.contains("forecast." + i); i++) {
+                forecast = Math.max(forecast, relativeMaxError(gpu.get("forecast." + i).toFloatArray(), cpu.get("forecast." + i).toFloatArray()));
+            }
+            return new double[] {model, forecast};
+        }
     }
 
     /** Case names from {@code manifest.json}, in dump order. */

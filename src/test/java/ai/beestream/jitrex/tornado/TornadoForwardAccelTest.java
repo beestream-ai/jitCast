@@ -36,14 +36,20 @@ import org.junit.Test;
  */
 public class TornadoForwardAccelTest {
 
-    // FP32 throughout: ~1e-5 from the reference; FP16/TF32 anywhere: up to ~2e-3 (model output)
-    private static final double TOLERANCE = ai.beestream.jitrex.tornado.TornadoForward.reducedPrecision() ? 3e-3 : 1e-4;
-    private static final double FORECAST_TOLERANCE = ai.beestream.jitrex.tornado.TornadoForward.reducedPrecision() ? 1e-3 : 1e-4;
+    // FP32 configurations: within 1e-4 of the FP32 reference (they are ~1e-5 from it). Configurations
+    // with FP16/TF32 anywhere: per case, no further from the reference than NXAI's own GPU path is
+    // (GoldenData.nxaiGpuError), since NXAI accepts its GPU path by its benchmark scores, not by an
+    // error bound.
+    private static final double FP32_TOLERANCE = 1e-4;
 
     @Test
     public void forwardAndForecastMatchTheReference() throws IOException {
         List<String> failures = new ArrayList<>();
         int checked = 0;
+        boolean reduced = ai.beestream.jitrex.tornado.TornadoForward.reducedPrecision();
+        if (reduced) {
+            GoldenData.gpuGoldenDir();
+        }
         try (TornadoTiRex2Engine engine = TornadoTiRex2Engine.load(GoldenData.weights())) {
             for (String testCase : GoldenData.cases()) {
                 try (SafeTensors g = GoldenData.open(testCase)) {
@@ -70,9 +76,10 @@ public class TornadoForwardAccelTest {
                         ferr = Math.max(ferr, GoldenData.relativeMaxError(flatten(f.get(s).values()),
                                 g.get("forecast." + s).toFloatArray()));
                     }
-                    System.out.printf("%-26s rows=%2d  first %6d ms  again %8.2f ms  model.out %.2e  forecast %.2e%n",
-                            testCase, batch.rows(), first, again, err, ferr);
-                    if (err > TOLERANCE || ferr > FORECAST_TOLERANCE) {
+                    double[] limit = reduced ? GoldenData.nxaiGpuError(testCase) : new double[] {FP32_TOLERANCE, FP32_TOLERANCE};
+                    System.out.printf("%-26s rows=%2d  first %6d ms  again %8.2f ms  model.out %.2e  forecast %.2e  (limits %.2e %.2e)%n",
+                            testCase, batch.rows(), first, again, err, ferr, limit[0], limit[1]);
+                    if (err > limit[0] || ferr > limit[1]) {
                         failures.add(testCase + ": model.out " + err + ", forecast " + ferr);
                     }
                 }

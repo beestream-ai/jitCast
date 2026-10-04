@@ -46,7 +46,8 @@ public class PlanReuseAccelTest {
                         double err = GoldenData.relativeMaxError(TornadoForwardAccelTest.flatten(tf.forward(b)),
                                 TornadoForwardAccelTest.flatten(cpu.forward(b)));
                         System.out.printf("%-18s plans=%d rel %.2e%n", c, tf.cachedShapes().size(), err);
-                        if (err > (TornadoForward.reducedPrecision() ? 3e-3 : 1e-4)) {
+                        // the limits of TornadoForwardAccelTest: 1e-4 in FP32, NXAI's GPU error otherwise
+                        if (err > (TornadoForward.reducedPrecision() ? GoldenData.nxaiGpuError(c)[0] : 1e-4)) {
                             failures.add(c + ": " + err);
                         }
                     }
