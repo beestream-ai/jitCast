@@ -44,13 +44,13 @@ TornadoVM properties used alongside: `tornado.device.memory` (device heap, e.g. 
 
 | Platform | Recommended flags | Why |
 |---|---|---|
-| **NVIDIA** (tested: A100) | `-Dtirex.tornado.gemm=cublas-auto` (CUDA graphs are the default), plus `-Dtirex.tornado.slstmR=fp16` on sm_80 GPUs such as the A100, and the cuBLAS 13 shim on machines that also have CUDA 12 cuBLAS | Fastest at every batch size: 2.78 ms at batch 1, ~4,300 series/s at batch 512 on the A100 (3.5–13.1× NXAI). Error 1.3e-3 / 1.0e-3 |
-| NVIDIA, closest to FP32 | `-Dtirex.tornado.gemm=cublas -Dtirex.tornado.slstmR=fp32` | FP32 GEMMs, error 2.4e-6 / 1.7e-6; slower than `cublas-auto` at large batches, where the FP16 tensor-core GEMMs pay off |
-| NVIDIA, no vendor libraries | `-Dtirex.tornado.gemm=half`, or `cutile` (toolkit 13.3+; it does not run on the A100 with TornadoVM develop yet) | `half` on the A100: 12.3 ms at batch 1, ~770 series/s at batch 512 |
-| **Apple Silicon** (tested: M4 Pro), Metal or OpenCL | `-Dtirex.tornado.gemm=half`, on either backend | `half` is 1.9–2.6× faster than `tiled` from batch 8 up; Metal and OpenCL are within 10% of each other; see [PERFORMANCE.md](PERFORMANCE.md#apple-m4-pro) |
-| NVIDIA with OpenCL | `-Dtirex.tornado.gemm=half` | Works, but use CUDA where you can: OpenCL `half` is 1.3–1.5× slower than CUDA `half` on the A100 and has no vendor libraries or CUDA graphs (15.9 ms at batch 1, ~560 series/s at batch 512) |
+| **NVIDIA** (tested: A100) | `-Dtirex.tornado.gemm=cublas-auto` (CUDA graphs are the default), plus `-Dtirex.tornado.slstmR=fp16` on sm_80 GPUs such as the A100, and the cuBLAS 13 shim on machines that also have CUDA 12 cuBLAS | The fastest configuration: cuBLAS FP16 tensor-core GEMMs |
+| NVIDIA, closest to FP32 | `-Dtirex.tornado.gemm=cublas -Dtirex.tornado.slstmR=fp32` | FP32 GEMMs; slower than `cublas-auto` at large batches, where the FP16 tensor-core GEMMs pay off |
+| NVIDIA, no vendor libraries | `-Dtirex.tornado.gemm=half`, or `cutile` (toolkit 13.3+; it does not run on the A100 with TornadoVM develop yet) | TornadoVM's own FP16 GEMM |
+| **Apple Silicon** (tested: M4 Pro), Metal or OpenCL | `-Dtirex.tornado.gemm=half`, on either backend | `half` is faster than `tiled` from small batches up; Metal and OpenCL run the same kernels |
+| NVIDIA with OpenCL | `-Dtirex.tornado.gemm=half` | Works, but use CUDA where you can: OpenCL `half` is slower than CUDA `half` and has no vendor libraries or CUDA graphs |
 | Other OpenCL devices | `-Dtirex.tornado.gemm=half` (or `tiled` for FP32) | Portable; not tuned |
-| Long contexts (GIFT-Eval checkpoints, 285 patches) | the platform's flags (the chunkwise mLSTM is the default), plus `-Dtirex.tornado.cudaGraph=false`, and batch sizes that fit the device | `cublas-auto` is 3.3–5.7× faster than NXAI there on the A100, Metal `half` 1.1–6.4× on the M4 Pro ([PERFORMANCE.md](PERFORMANCE.md#nvidia-a100-80gb)). Device memory grows with rows × patches; `tirex.maxTokens` bounds it per forward pass. With several cached plans and CUDA graphs, closing one plan could crash the others on TornadoVM's CUDA backend (fixed by [beehive-lab/TornadoVM#1160](https://github.com/beehive-lab/TornadoVM/pull/1160)); with an older TornadoVM keep one cached plan or turn CUDA graphs off |
+| Long contexts (GIFT-Eval checkpoints, 285 patches) | the platform's flags (the chunkwise mLSTM is the default), plus `-Dtirex.tornado.cudaGraph=false`, and batch sizes that fit the device | Device memory grows with rows × patches; `tirex.maxTokens` bounds it per forward pass. With several cached plans and CUDA graphs, closing one plan could crash the others on TornadoVM's CUDA backend (fixed by [beehive-lab/TornadoVM#1160](https://github.com/beehive-lab/TornadoVM/pull/1160)); with an older TornadoVM keep one cached plan or turn CUDA graphs off |
 
 ## Hardware and backends
 

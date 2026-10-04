@@ -34,8 +34,6 @@ There is no prebuilt SDK for Linux on AArch64 (for example NVIDIA Grace or Amper
   ```
   This only concerns NXAI's engine, not jitrex. The fix belongs in FlashRNN: compile native code for the GPU next to the PTX (`code=[sm_XY,compute_XY]` from `torch.cuda.get_device_capability()`, or `TORCH_CUDA_ARCH_LIST`), which a newer 13.x toolkit can build for an older 13.x driver, and report the CUDA error string instead of the generic message. Upgrading the driver also avoids it.
 
-The results in these documents were measured on TornadoVM `develop` at 85eb7bed2.
-
 ## Build jitrex
 
 ```bash

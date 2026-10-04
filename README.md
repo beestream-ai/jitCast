@@ -26,9 +26,6 @@ pipeline is in Java, and the model's forward pass runs on the GPU through Tornad
   task graph can be replayed as a CUDA graph.
 - **Validated against NXAI.** On fev-bench and GIFT-Eval, jitrex gives the same scores as NXAI's
   FP32 reference to about 1e-6.
-- **Fast.** On an NVIDIA A100 it is 3.3–13.1× faster than NXAI's PyTorch engine end to end, and it
-  starts 2.8× faster. On an Apple M4 Pro it is up to 3.3× faster than NXAI on MPS (6.4× at long
-  context), and on par at the largest multivariate batches.
 
 ## Where it runs
 
@@ -82,26 +79,6 @@ Covariates, the benchmark and cold-start tools, the harness server and the tests
 [docs/USAGE.md](docs/USAGE.md).
 
 ## Performance
-
-End-to-end `forecast()`, jitrex's best configuration against NXAI's best on the same GPU
-(NVIDIA: `cublas-auto` against the best of eager, `torch.compile` and FlexAttention; Apple: Metal `half` against eager MPS).
-Both ran TornadoVM develop (2026-10-03).
-
-| Workload | A100: NXAI | jitrex | Speed-up | M4 Pro: NXAI | jitrex | Speed-up |
-|---|---|---|---|---|---|---|
-| 1 series | 36.5 ms | **2.78 ms** | 13.1× | 88.1 ms | **27.1 ms** | 3.3× |
-| 64 series | 127.9 ms | **15.4 ms** | 8.3× | 357.5 ms | **277.4 ms** | 1.3× |
-| 512 series | 606 series/s | **4,320 series/s** | 7.1× | 223 series/s | **248 series/s** | 1.1× |
-| 1 series × 15 covariates | 75.1 ms | **9.66 ms** | 7.8× | 293.9 ms | **198.0 ms** | 1.5× |
-| 32 series × 63 covariates | 3,236 ms | **913.2 ms** | 3.5× | 15,968 ms | 17,433 ms | 0.9× |
-| 1 series, GIFT-Eval checkpoint (285 patches) | 102.5 ms | **18.0 ms** | 5.7× | 522.1 ms | **82.0 ms** | 6.4× |
-| 32 series, GIFT-Eval checkpoint | 197.1 ms | **60.6 ms** | 3.3× | 1,181 ms | **1,071 ms** | 1.1× |
-| Cold start: process → first forecast | 10.39 s | **3.76 s** | 2.8× | 2.04 s | 2.07 s | 1.0× |
-
-![jitrex speed-up over NXAI on the A100](docs/images/eval-a100.svg)
-
-The full matrix (CUDA without hybrid, cuBLAS, OpenCL, Metal), the long-context
-and cold-start tables and the method are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 
 ## Documentation
 
