@@ -56,7 +56,8 @@ public final class GoldenData {
      * How far NXAI's own GPU path is from its FP32 reference on a case, as {@code {model output,
      * forecasts}} in {@link #relativeMaxError}: the limits for jitrex's reduced-precision
      * configurations, which may be no further from FP32 than NXAI is. Both golden sets must come from
-     * the same inputs.
+     * the same inputs, so record them on the same machine: the generated inputs differ in their last
+     * bits between CPU architectures.
      */
     public static double[] nxaiGpuError(String testCase) throws IOException {
         try (SafeTensors cpu = open(testCase); SafeTensors gpu = SafeTensors.open(gpuGoldenDir().resolve(testCase + ".safetensors"))) {

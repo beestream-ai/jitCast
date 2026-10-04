@@ -57,6 +57,6 @@ $JITREX ai.beestream.jitrex.bench.TiRexServer --weights tirex2.safetensors --por
     -Dtirex.weights=tirex2.safetensors -Dtirex.golden=golden-cpu -Dtirex.golden.gpu=golden-cuda
 ```
 
-FP32 configurations must stay within 1e-4 of the FP32 goldens. Configurations that use FP16 or TF32 anywhere may be, per case, no further from them than NXAI's own GPU path is: `-Dtirex.golden.gpu` points at NXAI's CUDA goldens (`dump_golden.py --device cuda`, recorded on the GPU under test), and without it those checks are skipped.
+FP32 configurations must stay within 1e-4 of the FP32 goldens. Configurations that use FP16 or TF32 anywhere may be, per case, no further from them than NXAI's own GPU path is: `-Dtirex.golden.gpu` points at NXAI's CUDA goldens (`dump_golden.py --device cuda`, recorded on the GPU under test), and without it those checks are skipped. Record both golden sets on the same machine: `dump_golden.py` generates the inputs on the host, and their last bits differ between CPU architectures; the tests check that the two sets have identical inputs.
 
 The goldens come from `scripts/dump_golden.py`, (see [VALIDATION.md](VALIDATION.md)), which needs NXAI's package: `git clone https://github.com/NX-AI/tirex-2 && pip install -e ./tirex-2`.
