@@ -8,7 +8,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg"></a>
   <img alt="Java 22+" src="https://img.shields.io/badge/java-22%2B-orange.svg">
-  <img alt="TornadoVM" src="https://img.shields.io/badge/TornadoVM-7.0.1%2B-0B1F33.svg">
+  <img alt="TornadoVM" src="https://img.shields.io/badge/TornadoVM-7.1.0%2B-0B1F33.svg">
 </p>
 
 # jitrex
@@ -45,12 +45,12 @@ more registers per work-group than the GPU has. Every option, the GEMM modes and
 
 ## Quick start
 
-You need JDK 22+, a TornadoVM SDK (7.0.1 or newer, `jdk22plus` family) and, once, Python with
+You need JDK 22+, a TornadoVM SDK (7.1.0 or newer, `jdk22plus` family) and, once, Python with
 PyTorch to convert the weights. The full guide is in [docs/INSTALL.md](docs/INSTALL.md).
 
 ```bash
 # 1. TornadoVM (or download an SDK from tornadovm.org/downloads)
-sdk install tornadovm 7.0.1-jdk22plus-cuda      # or ...-metal / ...-opencl
+sdk install tornadovm 7.1.0-jdk22plus-cuda      # or ...-metal / ...-opencl
 tornado --devices                               # device ids, as <backend>:<device>
 
 # 2. jitrex

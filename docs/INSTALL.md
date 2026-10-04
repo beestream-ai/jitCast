@@ -4,7 +4,7 @@
 
 ## Requirements
 - **JDK 22 or newer.** It is tested with JDK 25. It builds with `--release 22` and uses TornadoVM's `jdk22plus` SDK family.
-- **A TornadoVM SDK**, version 7.0.1 or newer, for the backend you want.
+- **A TornadoVM SDK**, version 7.1.0 or newer, for the backend you want.
 - **Python 3.11+ with PyTorch**, once, to convert NXAI's checkpoints. It is also needed for the NXAI baselines and the accuracy benchmarks.
 
 ## Install TornadoVM
@@ -13,11 +13,13 @@ Prebuilt SDKs for OpenCL, CUDA, Metal, or all of them are at [tornadovm.org/down
 
 ```bash
 sdk list tornadovm                              # the available <version>-<jdk>-<backend> combinations
-sdk install tornadovm 7.0.1-jdk22plus-metal     # macOS (Apple Silicon); or ...-opencl
-sdk install tornadovm 7.0.1-jdk22plus-cuda      # NVIDIA
+sdk install tornadovm 7.1.0-jdk22plus-metal     # macOS (Apple Silicon); or ...-opencl
+sdk install tornadovm 7.1.0-jdk22plus-cuda      # NVIDIA (x86-64)
 export TORNADOVM_HOME=<the SDK directory>       # SDKMAN! sets this for you
 tornado --devices                               # lists the backends and devices, numbered <backend>:<device>
 ```
+
+There is no prebuilt SDK for Linux on AArch64 (for example NVIDIA Grace or Ampere hosts); build that one from the release tag, `git checkout v7.1.0 && make jdk22plus BACKEND=opencl,cuda`, as the TornadoVM installation guide below describes.
 
 `tornado --generate-argfile` regenerates `$TORNADOVM_HOME/tornado-argfile` (the JVM flags jitrex is launched with) after switching JDK. To build TornadoVM from source, for example for its `develop` branch, see the [TornadoVM installation guide](https://tornadovm.readthedocs.io/en/latest/installation.html).
 
@@ -38,7 +40,7 @@ The results in these documents were measured on TornadoVM `develop` at 85eb7bed2
 
 ```bash
 git clone https://github.com/beestream-ai/jitcast && cd jitrex
-./mvnw -q package -DskipTests                                     # TornadoVM 7.0.1 API from Maven Central
+./mvnw -q package -DskipTests                                     # TornadoVM 7.1.0 API from Maven Central
 ./mvnw -q package -DskipTests -Dtornadovm.version=7.0.2-jdk22plus-dev   # or another installed version
 ```
 
