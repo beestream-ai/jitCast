@@ -37,8 +37,7 @@ pipeline is in Java, and the model's forward pass runs on the GPU through Tornad
 | Other OpenCL GPUs (Intel, AMD) | OpenCL | expected to work, not tested | `-Dtirex.tornado.gemm=half` |
 | Any CPU | plain JVM | FP32 reference, for validation | — |
 
-On an A100 (and other sm_80 GPUs) also set `-Dtirex.tornado.slstmR=fp16`: the default sLSTM kernel needs
-more registers per work-group than the GPU has. Every option, the GEMM modes and the hybrid APIs are in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+Every option, the GEMM modes and the hybrid APIs are in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ## Quick start
 
