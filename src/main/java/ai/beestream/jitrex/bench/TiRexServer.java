@@ -55,13 +55,13 @@ import ai.beestream.jitrex.tornado.TornadoForward;
  *           int vt, int nq, int h and the floats [vt·nq·h], then int restart
  * </pre>
  *
- * <p>A plan is built per batch shape and cuBLAS handles leak across plans (bug T4), so a long
+ * <p>A plan is built per batch shape and cuBLAS handles leak across plans, so a long
  * benchmark would eventually fail {@code cublasCreate}. Two mitigations: a batch of plain
  * univariate series is padded to a power-of-two size with copies of its first series (their
  * forecasts are dropped), and once {@code --max-shapes} distinct shapes, or {@code --max-builds}
  * plan builds in all, have happened the response asks the client to start a fresh server
  * ({@code restart = 1}). The second limit exists because closing an evicted plan does not give
- * back all of its device memory, so rebuilding the same few shapes eventually runs out (O5).
+ * back all of its device memory, so rebuilding the same few shapes eventually runs out.
  *
  * <pre>
  * java … TiRexServer --weights model.safetensors --port-file port.txt [--engine tornado|cpu] [--batch-size 512]

@@ -1266,7 +1266,7 @@ public final class TiRexKernels {
                     dot += part[q * 8 + l];
                 }
                 int qi = q0 + q;
-                // an int mask, not a short-circuit condition (TornadoVM codegen bug T1)
+                // an int mask, not a short-circuit condition (works around a TornadoVM codegen issue)
                 int inGroup = (k >= groupStart.get(qi) ? 1 : 0) * (k < groupEnd.get(qi) ? 1 : 0);
                 int allowed = inGroup * (isTarget.get(qi) | (1 - isTarget.get(k)));
                 if (allowed != 0) {
