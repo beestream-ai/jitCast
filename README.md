@@ -110,6 +110,7 @@ and benchmark-suite tables and the method are in [docs/PERFORMANCE.md](docs/PERF
 | [PERFORMANCE.md](docs/PERFORMANCE.md) | The comparison with NXAI's engine on an NVIDIA A100: method, results, charts |
 | [KERNELS.md](docs/KERNELS.md) | All 26 kernels, with source links and their hybrid alternatives |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Architecture, code layout and scripts |
+| [ROADMAP.md](docs/ROADMAP.md) | Planned work, and the TornadoVM issues that limit jitrex today |
 
 ## License
 
