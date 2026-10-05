@@ -24,16 +24,16 @@ pipeline is in Java, and the model's forward pass runs on the GPU through Tornad
   OpenCL and Metal.
 - **Hybrid on NVIDIA.** The GEMMs can run on cuBLAS / cuBLASLt or on a CUDA Tile kernel, and each
   task graph can be replayed as a CUDA graph.
-- **Validated against NXAI.** On fev-bench and GIFT-Eval, jitrex gives the same scores as NXAI's
-  FP32 reference to about 1e-6.
+- **Validated against NXAI.** On fev-bench (100 tasks) and GIFT-Eval (97 configurations), jitrex's
+  aggregate scores are within 0.03% and 0.08% of NXAI's on the same GPU.
 
 ## Where it runs
 
 | Platform | Backend | Status | Recommended flags |
 |---|---|---|---|
 | NVIDIA GPU | CUDA | validated, benchmarked (A100) | `-Dtirex.tornado.gemm=cublas-auto` |
-| NVIDIA GPU | OpenCL | validated, benchmarked (A100); slower than CUDA | `-Dtirex.tornado.gemm=half` |
-| Apple Silicon | Metal or OpenCL | validated, benchmarked (M4 Pro) | `-Dtirex.tornado.gemm=half` |
+| NVIDIA GPU | OpenCL | validated (A100); slower than CUDA | `-Dtirex.tornado.gemm=half` |
+| Apple Silicon | Metal or OpenCL | validated (M4 Pro) | `-Dtirex.tornado.gemm=half` |
 | Other OpenCL GPUs (Intel, AMD) | OpenCL | expected to work, not tested | `-Dtirex.tornado.gemm=half` |
 | Any CPU | plain JVM | FP32 reference, for validation | — |
 
@@ -79,6 +79,26 @@ Covariates, the benchmark and cold-start tools, the harness server and the tests
 
 ## Performance
 
+End-to-end `forecast()` on an NVIDIA A100 80GB, jitrex's best configuration (`cublas-auto`) against
+NXAI's best of eager, `torch.compile` and FlexAttention on the same GPU, on TornadoVM 7.1.0 (2026-10-05).
+
+| Workload | NXAI | jitrex | Speed-up |
+|---|---|---|---|
+| 1 series | 35.1 ms | **2.25 ms** | 15.6× |
+| 64 series | 123.7 ms | **14.8 ms** | 8.3× |
+| 512 series | 620 series/s | **4,863 series/s** | 7.8× |
+| 1 series × 15 covariates | 72.1 ms | **8.88 ms** | 8.1× |
+| 32 series × 63 covariates | 3,404 ms | **837.3 ms** | 4.1× |
+| 1 series, GIFT-Eval checkpoint (285 patches) | 98.8 ms | **16.3 ms** | 6.1× |
+| 32 series, GIFT-Eval checkpoint | 191.6 ms | **58.6 ms** | 3.3× |
+| Cold start: process → first forecast (warm caches) | 13.85 s | **3.75 s** | 3.7× |
+| fev-bench, 100 tasks: inference time | 2,897 s | **919 s** | 3.2× |
+
+![jitrex speed-up over NXAI on the A100](docs/images/eval-a100.svg)
+
+The other configurations (cuBLAS FP32, TornadoVM's own FP16 GEMMs), the long-context, cold-start
+and benchmark-suite tables and the method are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+
 ## Documentation
 
 | Document | Contents |
@@ -87,7 +107,7 @@ Covariates, the benchmark and cold-start tools, the harness server and the tests
 | [USAGE.md](docs/USAGE.md) | The Java API, benchmark, cold start, harness server, tests |
 | [CONFIGURATION.md](docs/CONFIGURATION.md) | Every engine option, GEMM modes, hybrid APIs, per-platform recommendations |
 | [VALIDATION.md](docs/VALIDATION.md) | How the implementation was checked, from an executable spec to GIFT-Eval and fev-bench |
-| [PERFORMANCE.md](docs/PERFORMANCE.md) | The eight-row comparison with NXAI's engine on NVIDIA and Apple GPUs: method, results, charts |
+| [PERFORMANCE.md](docs/PERFORMANCE.md) | The comparison with NXAI's engine on an NVIDIA A100: method, results, charts |
 | [KERNELS.md](docs/KERNELS.md) | All 26 kernels, with source links and their hybrid alternatives |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Architecture, code layout and scripts |
 
