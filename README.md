@@ -41,11 +41,12 @@ Every option, the GEMM modes and the hybrid APIs are in [docs/CONFIGURATION.md](
 
 ## Quick start
 
-You need JDK 22+, a TornadoVM SDK (7.1.0 or newer, `jdk22plus` family) and, once, Python with
-PyTorch to convert the weights. The full guide is in [docs/INSTALL.md](docs/INSTALL.md).
+You need JDK 22+, a TornadoVM SDK (7.1.0 or newer, `jdk22plus` family) and, once, Python 3.11+
+with PyTorch to convert the weights. The full guide is in [docs/INSTALL.md](docs/INSTALL.md).
 
 ```bash
-# 1. TornadoVM (or download an SDK from tornadovm.org/downloads)
+# 1. a JDK and TornadoVM (or download an SDK from tornadovm.org/downloads)
+sdk install java 25.0.4-tem                     # any JDK 22+; the TornadoVM SDK does not include one
 sdk install tornadovm 7.1.0-jdk22plus-cuda      # or ...-metal / ...-opencl
 tornado --devices                               # device ids, as <backend>:<device>
 
@@ -54,7 +55,8 @@ git clone https://github.com/beestream-ai/jitcast && cd jitrex
 ./mvnw -q package -DskipTests
 
 # 3. weights: NXAI's checkpoint from Hugging Face, converted to safetensors
-pip install torch safetensors huggingface_hub pyyaml
+python3.11 -m venv venv && . venv/bin/activate   # Python 3.11 or newer
+pip install torch safetensors numpy huggingface_hub pyyaml
 python scripts/convert_ckpt.py --ckpt NX-AI/TiRex-2 --out tirex2.safetensors
 ```
 

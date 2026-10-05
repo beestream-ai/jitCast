@@ -5,13 +5,14 @@
 ## Requirements
 - **JDK 22 or newer.** It is tested with JDK 25. It builds with `--release 22` and uses TornadoVM's `jdk22plus` SDK family.
 - **A TornadoVM SDK**, version 7.1.0 or newer, for the backend you want.
-- **Python 3.11+ with PyTorch**, once, to convert NXAI's checkpoints. It is also needed for the NXAI baselines and the accuracy benchmarks.
+- **Python 3.11+ with PyTorch**, once, to convert NXAI's checkpoints. Create the venv with that interpreter (`python3.11 -m venv`): a plain `python3` can be older. It is also needed for the NXAI baselines and the accuracy benchmarks.
 
 ## Install TornadoVM
 
 Prebuilt SDKs for OpenCL, CUDA, Metal, or all of them are at [tornadovm.org/downloads](https://www.tornadovm.org/downloads) and on SDKMAN!. Pick the `jdk22plus` family:
 
 ```bash
+sdk install java 25.0.4-tem                     # a JDK 22+ (the SDK does not include one); sets JAVA_HOME
 sdk list tornadovm                              # the available <version>-<jdk>-<backend> combinations
 sdk install tornadovm 7.1.0-jdk22plus-metal     # macOS (Apple Silicon); or ...-opencl
 sdk install tornadovm 7.1.0-jdk22plus-cuda      # NVIDIA (x86-64)
@@ -19,7 +20,18 @@ export TORNADOVM_HOME=<the SDK directory>       # SDKMAN! sets this for you
 tornado --devices                               # lists the backends and devices, numbered <backend>:<device>
 ```
 
-There is no prebuilt SDK for Linux on AArch64 (for example NVIDIA Grace or Ampere hosts); build that one from the release tag, `git checkout v7.1.0 && make jdk22plus BACKEND=opencl,cuda`, as the TornadoVM installation guide below describes.
+The first `tornado` command also writes `$TORNADOVM_HOME/tornado-argfile`, the JVM flags jitrex is launched with.
+
+There is no prebuilt SDK for Linux on AArch64 (for example NVIDIA Grace or Ampere hosts); build that one from the release tag with TornadoVM's installer, which downloads the JDK it builds with. Run it inside a Python venv (its build scripts pip-install their helpers and import them straight away), and point `JVMCI_SOURCE_JDK` at a JDK 21: the `jdk22plus` SDK bundles a `jdk.internal.vm.ci` module built from a JDK 21 image.
+
+```bash
+git clone https://github.com/beehive-lab/TornadoVM && cd TornadoVM && git checkout v7.1.0
+python3 -m venv .venv && . .venv/bin/activate
+export JVMCI_SOURCE_JDK=<a JDK 21 home>         # e.g. Temurin 21
+./bin/tornadovm-installer --jdk jdk25 --backend opencl,cuda --auto-deps
+source setvars.sh                               # sets JAVA_HOME (the JDK 25 it downloaded) and TORNADOVM_HOME
+tornado --devices
+```
 
 `tornado --generate-argfile` regenerates `$TORNADOVM_HOME/tornado-argfile` (the JVM flags jitrex is launched with) after switching JDK. To build TornadoVM from source, for example for its `develop` branch, see the [TornadoVM installation guide](https://tornadovm.readthedocs.io/en/latest/installation.html).
 
@@ -47,8 +59,8 @@ git clone https://github.com/beestream-ai/jitcast && cd jitrex
 jitrex reads one safetensors file per checkpoint. `convert_ckpt.py` downloads a checkpoint from Hugging Face and writes that file, with aliases removed and the model config embedded:
 
 ```bash
-python3 -m venv venv && . venv/bin/activate
-pip install torch safetensors huggingface_hub pyyaml   # what convert_ckpt.py needs
+python3.11 -m venv venv && . venv/bin/activate        # Python 3.11 or newer
+pip install torch safetensors numpy huggingface_hub pyyaml   # what convert_ckpt.py needs
 python scripts/convert_ckpt.py --ckpt NX-AI/TiRex-2 --out tirex2.safetensors
 python scripts/convert_ckpt.py --ckpt NX-AI/TiRex-2-gifteval-zs --out TiRex-2-gifteval-zs.safetensors
 ```
