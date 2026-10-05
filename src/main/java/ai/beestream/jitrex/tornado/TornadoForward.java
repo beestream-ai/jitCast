@@ -74,7 +74,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
      * output, so the residual stream stays FP32). {@code CUBLAS_AUTO} picks per GEMM: FP16 once the
      * row count reaches {@code -Dtirex.tornado.fp16MinTokens}, FP32 below it. The default, 0, is
      * FP16 everywhere: with CUDA 13 cuBLAS the FP16 tensor-core GEMM is faster at every row count
-     * (−30% at 1 series, −44% at 8 on an RTX 5070 Ti). The threshold dates from CUDA 12.0 cuBLAS,
+     * (−30% at 1 series, −44% at 8 on a compute capability 12 GPU). The threshold dates from CUDA 12.0 cuBLAS,
      * whose FP16→FP32 GEMM fell back to a non-tensor-core kernel at small row counts.
      * {@code HALF} and {@code CUTILE} are the same FP16 GEMM written in TornadoVM, for every row
      * count: {@code HALF} with KernelContext ({@link TiRexKernels#gemmHalf}, any backend) and
@@ -109,7 +109,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
 
     /**
      * Capture and replay the plan's task graph as a CUDA graph ({@code -Dtirex.tornado.cudaGraph}). On
-     * by default with the cuBLAS (CUDA-only) GEMM modes: −11% at batch 1 on an RTX 5070 Ti, with
+     * by default with the cuBLAS (CUDA-only) GEMM modes: −11% at batch 1 on a compute capability 12 GPU, with
      * identical results; off with the portable tiled GEMMs, which also run on OpenCL and Metal.
      */
     private final boolean cudaGraph = Boolean.parseBoolean(
@@ -140,7 +140,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
      * {@code -Dtirex.tornado.mlstm=auto|chunk|step}: the chunkwise mLSTM kernel (blocks of query
      * steps share each staged key; {@link TiRexKernels#mlstmChunk}) or the one-step-per-work-group
      * one ({@link TiRexKernels#mlstmCell}). {@code auto} (default) takes the chunkwise kernel unless
-     * its grid would be smaller than {@link #MLSTM_CHUNK_MIN_GROUPS} work-groups: on an RTX 5070 Ti
+     * its grid would be smaller than {@link #MLSTM_CHUNK_MIN_GROUPS} work-groups: on a compute capability 12 GPU
      * it is 26–35% faster at 285 patches from 8 series up and 4–5% faster at 74 patches from 64
      * series, but 5% slower for a single 74-patch series, whose 20 work-groups leave the GPU idle.
      */
@@ -179,7 +179,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
     /**
      * Whether the register-resident sLSTM kernel fits the device: it needs 512 threads per work-group
      * with up to 128 registers each, and whether the compiler gets it under that depends on the
-     * target. It does on CUDA compute capability 12 (RTX 5070 Ti) and on Apple GPUs (Metal and
+     * target. It does on CUDA compute capability 12 and on Apple GPUs (Metal and
      * OpenCL); on an A100 (8.0) CUDA refuses to launch it and NVIDIA's OpenCL returns wrong results
      * without an error. OpenCL does not report the compute capability, so only Apple's is trusted.
      */
@@ -221,9 +221,9 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
 
     /**
      * Rows per work-group the register-resident sLSTM kernel can take: with 4 or more, its 512 threads ask
-     * for more registers than an SM has (CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES on an RTX 5070 Ti, and
+     * for more registers than an SM has (CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES on a compute capability 12 GPU, and
      * CL_OUT_OF_RESOURCES on NVIDIA's OpenCL). So it only replaces the streamed kernel where that
-     * one would take fewer than {@link TiRexKernels#SLSTM_MAX_ROWS} rows per group: on an RTX 5070 Ti
+     * one would take fewer than {@link TiRexKernels#SLSTM_MAX_ROWS} rows per group: on a compute capability 12 GPU
      * it is 14–23% faster end to end up to about 64 rows, and 3% slower where the streamed kernel
      * shares each R read between 8 rows (the largest batches).
      */
@@ -286,7 +286,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         return device;
     }
 
-    /** Work-groups the sLSTM recurrence aims for (tuned on an RTX 5070 Ti: 4 rows per group at batch 64, 8 at 512). */
+    /** Work-groups the sLSTM recurrence aims for (tuned on a compute capability 12 GPU: 4 rows per group at batch 64, 8 at 512). */
     private static final int SLSTM_TARGET_GROUPS = 64;
 
     /**
@@ -312,8 +312,8 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
      * to a power of two, so batch sizes share a handful of plans instead of building one per size
      * (a new plan costs 0.2–0.6 s with cuBLAS, 0.5–1.3 s with the portable GEMMs). The extra rows are
      * copies of row 0, each alone in its group, and their outputs are dropped. Off by default: the
-     * padding rows are real work, 20–60% on every call of a size that is not a power of two (RTX
-     * 5070 Ti, cublas-auto), so it only pays for workloads with many sizes each seen a few times.
+     * padding rows are real work, 20–60% on every call of a size that is not a power of two (compute
+     * capability 12 GPU, cublas-auto), so it only pays for workloads with many sizes each seen a few times.
      */
     private final boolean rowBuckets = "pow2".equalsIgnoreCase(System.getProperty("tirex.tornado.rowBuckets", "off"));
 
