@@ -26,16 +26,19 @@ base model (`NX-AI/TiRex-2`) and the benchmark checkpoints (`-fevbench`, `-gifte
 
 ## Java layout (`ai.beestream.jitrex`)
 
+The packages at the top are shared by every model family; each family lives in its own package
+(`tirex2` for TiRex-2) with its config, weights, host pipeline, CPU reference and TornadoVM engine.
+
 | Package | Contents |
 |---|---|
-| `api` | `TimeSeries`, `Forecast`, `TiRex2Engine` |
+| `api` | `TimeSeries`, `Forecast`, `ForecastEngine` (implemented by every engine of every family) |
 | `io` | `SafeTensors` (memory-mapped reader), `Tensor` |
-| `model` | `TiRex2Config` (from the embedded model config), `TiRex2Weights` (binds every tensor by name and shape; unknown or missing tensors fail the load) |
-| `cpu` | FP32 CPU reference, the oracle for the device kernels: `Ops`, `InputStage`, `Cells` (mLSTM, sLSTM), `CpuReference` (the full forward pass), `CpuTiRex2Engine` |
-| `bench` | `TiRexBench` (latency/throughput), `TiRexColdStart`, `TiRexServer` (socket server for NXAI's Python harnesses) |
+| `host` | Model-agnostic host pieces: `SeriesWindows` (splits a forecast call into forward passes by series count and token budget) and `SignFlip` (sign-flip test-time augmentation) |
 | `util` | `Json` |
-| `host` | `ForecastPipeline` (`ForecastModel.forecast`: 512-series windows, batch assembly and padding, horizon slicing, sign-flip TTA) and `PostProcessor` (trend detection, differencing, band calibration) — shared by every engine |
-| `tornado` | `TiRexKernels` (every device kernel, see [KERNELS.md](KERNELS.md)), `PackedWeights` (one device buffer plus per-matrix FP32/FP16 copies for the library GEMMs; fused q\|k\|v\|o\|i\|f, up_gate\|up and the block-diagonal sLSTM gates), `TornadoForward` (a plan per batch shape — rows, known covariates, kept rows — built as one task graph: the input stage, the blocks and the output stage; the GEMM modes; CUDA graphs), `TornadoTiRex2Engine` |
+| `bench` | `TiRexBench` (latency/throughput), `TiRexColdStart`, `TiRexServer` (socket server for NXAI's Python harnesses), `PlanMemoryProbe` |
+| `tirex2` | `TiRex2Config` (from the embedded model config), `TiRex2Weights` (binds every tensor by name and shape; unknown or missing tensors fail the load), `ForecastPipeline` (`ForecastModel.forecast`: batch assembly and padding, horizon slicing, calibration) and `PostProcessor` (trend detection, differencing, band calibration) — shared by both TiRex-2 engines |
+| `tirex2.cpu` | FP32 CPU reference, the oracle for the device kernels: `Ops`, `InputStage`, `Cells` (mLSTM, sLSTM), `CpuReference` (the full forward pass), `CpuTiRex2Engine` |
+| `tirex2.tornado` | `TiRexKernels` (every device kernel, see [KERNELS.md](KERNELS.md)), `PackedWeights` (one device buffer plus per-matrix FP32/FP16 copies for the library GEMMs; fused q\|k\|v\|o\|i\|f, up_gate\|up and the block-diagonal sLSTM gates), `TornadoForward` (a plan per batch shape — rows, known covariates, kept rows — built as one task graph: the input stage, the blocks and the output stage; the GEMM modes; CUDA graphs), `TornadoTiRex2Engine` |
 
 ## Scripts (`scripts/`)
 

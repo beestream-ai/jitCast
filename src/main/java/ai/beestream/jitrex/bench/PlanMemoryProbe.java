@@ -20,10 +20,10 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Map;
 
-import ai.beestream.jitrex.model.ModelBatch;
-import ai.beestream.jitrex.model.TiRex2Weights;
-import ai.beestream.jitrex.tornado.PackedWeights;
-import ai.beestream.jitrex.tornado.TornadoForward;
+import ai.beestream.jitrex.tirex2.ModelBatch;
+import ai.beestream.jitrex.tirex2.TiRex2Weights;
+import ai.beestream.jitrex.tirex2.tornado.PackedWeights;
+import ai.beestream.jitrex.tirex2.tornado.TornadoForward;
 
 /**
  * Builds and evicts plans of the given batch sizes and prints, after each forward pass, this

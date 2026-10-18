@@ -63,7 +63,7 @@ python scripts/convert_ckpt.py --ckpt NX-AI/TiRex-2 --out tirex2.safetensors
 Forecasting from Java:
 
 ```java
-try (TiRex2Engine engine = TornadoTiRex2Engine.load(Path.of("tirex2.safetensors"))) {
+try (ForecastEngine engine = TornadoTiRex2Engine.load(Path.of("tirex2.safetensors"))) {
     List<Forecast> forecasts = engine.forecast(List.of(TimeSeries.univariate(history)), 64);
     float[] median = forecasts.get(0).median(0);        // values[target][quantile][step]
 }

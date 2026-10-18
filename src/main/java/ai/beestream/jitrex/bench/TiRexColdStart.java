@@ -24,13 +24,13 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import ai.beestream.jitrex.util.Json;
 import ai.beestream.jitrex.api.TimeSeries;
-import ai.beestream.jitrex.host.ForecastPipeline;
 import ai.beestream.jitrex.io.SafeTensors;
-import ai.beestream.jitrex.model.TiRex2Weights;
-import ai.beestream.jitrex.tornado.PackedWeights;
-import ai.beestream.jitrex.tornado.TornadoForward;
+import ai.beestream.jitrex.tirex2.ForecastPipeline;
+import ai.beestream.jitrex.tirex2.TiRex2Weights;
+import ai.beestream.jitrex.tirex2.tornado.PackedWeights;
+import ai.beestream.jitrex.tirex2.tornado.TornadoForward;
+import ai.beestream.jitrex.util.Json;
 
 /**
  * One cold-start measurement of the TornadoVM engine, the counterpart of

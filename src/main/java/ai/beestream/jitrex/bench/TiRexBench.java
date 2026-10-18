@@ -24,17 +24,17 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import ai.beestream.jitrex.util.Json;
 import ai.beestream.jitrex.api.TimeSeries;
-import ai.beestream.jitrex.cpu.CpuReference;
-import ai.beestream.jitrex.host.ForecastPipeline;
 import ai.beestream.jitrex.io.SafeTensors;
 import ai.beestream.jitrex.io.Tensor;
-import ai.beestream.jitrex.model.ForwardPass;
-import ai.beestream.jitrex.model.ModelBatch;
-import ai.beestream.jitrex.model.TiRex2Weights;
-import ai.beestream.jitrex.tornado.PackedWeights;
-import ai.beestream.jitrex.tornado.TornadoForward;
+import ai.beestream.jitrex.tirex2.ForecastPipeline;
+import ai.beestream.jitrex.tirex2.ForwardPass;
+import ai.beestream.jitrex.tirex2.ModelBatch;
+import ai.beestream.jitrex.tirex2.TiRex2Weights;
+import ai.beestream.jitrex.tirex2.cpu.CpuReference;
+import ai.beestream.jitrex.tirex2.tornado.PackedWeights;
+import ai.beestream.jitrex.tirex2.tornado.TornadoForward;
+import ai.beestream.jitrex.util.Json;
 
 /**
  * The TornadoVM (or CPU) side of the NXAI comparison: the same workload file, scenarios and

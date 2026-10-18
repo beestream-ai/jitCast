@@ -11,7 +11,7 @@ JITREX="java @$TORNADOVM_HOME/tornado-argfile --add-modules jdk.incubator.vector
 ## From Java
 
 ```java
-try (TiRex2Engine engine = TornadoTiRex2Engine.load(Path.of("tirex2.safetensors"))) {
+try (ForecastEngine engine = TornadoTiRex2Engine.load(Path.of("tirex2.safetensors"))) {
     List<TimeSeries> series = List.of(
             TimeSeries.univariate(values),                        // float[] history, NaN = missing
             new TimeSeries(targets, pastCovariates, futureCovariates));  // [V][T], [Vp][T], [Vf][T+H]

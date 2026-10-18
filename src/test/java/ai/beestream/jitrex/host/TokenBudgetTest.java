@@ -47,7 +47,7 @@ public class TokenBudgetTest {
         for (int i = 0; i < 1000; i++) {
             s.add(series(1, 0));
         }
-        List<int[]> w = ForecastPipeline.windows(s, 512, 131_072, PATCHES);
+        List<int[]> w = SeriesWindows.split(s, 512, 131_072, PATCHES);
         assertEquals(2, w.size());
         assertArrayEquals(new int[] {0, 512}, w.get(0));
         assertArrayEquals(new int[] {512, 1000}, w.get(1));
@@ -60,7 +60,7 @@ public class TokenBudgetTest {
             s.add(series(1, 15)); // 16 rows, 1,184 tokens each
         }
         long budget = 131_072;
-        List<int[]> w = ForecastPipeline.windows(s, 512, budget, PATCHES);
+        List<int[]> w = SeriesWindows.split(s, 512, budget, PATCHES);
         int next = 0;
         for (int[] win : w) {
             assertEquals("windows are consecutive", next, win[0]);
@@ -78,7 +78,7 @@ public class TokenBudgetTest {
     @Test
     public void aSeriesOverTheBudgetRunsAlone() {
         List<TimeSeries> s = List.of(series(1, 0), series(1, 63), series(1, 0));
-        List<int[]> w = ForecastPipeline.windows(s, 512, 64L * PATCHES, PATCHES);
+        List<int[]> w = SeriesWindows.split(s, 512, 64L * PATCHES, PATCHES);
         assertEquals(3, w.size());
         assertArrayEquals(new int[] {1, 2}, w.get(1));
     }

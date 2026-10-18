@@ -34,12 +34,12 @@ import java.util.Map;
 
 import ai.beestream.jitrex.api.Forecast;
 import ai.beestream.jitrex.api.TimeSeries;
-import ai.beestream.jitrex.cpu.CpuReference;
-import ai.beestream.jitrex.host.ForecastPipeline;
-import ai.beestream.jitrex.model.ForwardPass;
-import ai.beestream.jitrex.model.TiRex2Weights;
-import ai.beestream.jitrex.tornado.PackedWeights;
-import ai.beestream.jitrex.tornado.TornadoForward;
+import ai.beestream.jitrex.tirex2.ForecastPipeline;
+import ai.beestream.jitrex.tirex2.ForwardPass;
+import ai.beestream.jitrex.tirex2.TiRex2Weights;
+import ai.beestream.jitrex.tirex2.cpu.CpuReference;
+import ai.beestream.jitrex.tirex2.tornado.PackedWeights;
+import ai.beestream.jitrex.tirex2.tornado.TornadoForward;
 
 /**
  * Serves {@code forecast()} to Python over a local socket, so NXAI's own benchmark harnesses
