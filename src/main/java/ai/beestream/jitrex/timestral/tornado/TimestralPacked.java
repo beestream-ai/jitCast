@@ -16,17 +16,23 @@
 package ai.beestream.jitrex.timestral.tornado;
 
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 
 import ai.beestream.jitrex.timestral.TimestralConfig;
 import ai.beestream.jitrex.timestral.TimestralWeights;
 
+import uk.ac.manchester.tornado.api.types.HalfFloat;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
+import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 
 /**
  * Every Timestral weight in one device buffer, addressed by element offsets: the q|k|v projections
  * in heads-major order and the MLP input with its SiLU half first ({@link TimestralWeights#qkv},
- * {@link TimestralWeights#mlpUp}), everything else as stored.
+ * {@link TimestralWeights#mlpUp}), everything else as stored. The library GEMMs (cuBLAS) cannot
+ * address an offset into that buffer, so each matrix also has its own FP32 or FP16 copy, made on
+ * first use ({@link #matrix}, {@link #halfMatrix}).
  */
 public final class TimestralPacked {
 
@@ -45,6 +51,8 @@ public final class TimestralPacked {
     private final List<Layer> layers;
     private final int outNorm;
     private final Residual head;
+    private final Map<Lin, FloatArray> matrices = new IdentityHashMap<>();
+    private final Map<Lin, HalfFloatArray> halfMatrices = new IdentityHashMap<>();
 
     private TimestralPacked(FloatArray data, Residual embedding, int forecastQuery, List<Layer> layers, int outNorm,
             Residual head) {
@@ -102,6 +110,28 @@ public final class TimestralPacked {
 
     public Residual head() {
         return head;
+    }
+
+    /** The weight matrix {@code [out, in]} of {@code l} in a buffer of its own, for library GEMMs. */
+    public synchronized FloatArray matrix(Lin l) {
+        return matrices.computeIfAbsent(l, x -> {
+            FloatArray m = new FloatArray(x.out() * x.in());
+            for (int i = 0; i < m.getSize(); i++) {
+                m.set(i, data.get(x.w() + i));
+            }
+            return m;
+        });
+    }
+
+    /** The weight matrix {@code [out, in]} of {@code l} in FP16, for the FP16 GEMMs. */
+    public synchronized HalfFloatArray halfMatrix(Lin l) {
+        return halfMatrices.computeIfAbsent(l, x -> {
+            HalfFloatArray m = new HalfFloatArray(x.out() * x.in());
+            for (int i = 0; i < m.getSize(); i++) {
+                m.set(i, new HalfFloat(data.get(x.w() + i)));
+            }
+            return m;
+        });
     }
 
     /** Appends arrays and records their offsets. */

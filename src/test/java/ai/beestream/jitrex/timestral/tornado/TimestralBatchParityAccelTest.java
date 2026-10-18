@@ -38,6 +38,12 @@ import org.junit.Test;
 public class TimestralBatchParityAccelTest {
 
     private static final double TOLERANCE = 1e-4;
+    /**
+     * With FP16 or TF32 GEMM inputs ({@code -Dtimestral.tornado.gemm=half|cublas-fp16|cublas-tf32}): a
+     * bound for a smoke check, not parity. Measured on Timestral-5M with FP16 GEMMs, the long
+     * multi-block horizons are within 4e-2 of the reference's range and the rest within 1e-2.
+     */
+    private static final double REDUCED_TOLERANCE = 5e-2;
 
     @Test
     public void mixedBatchMatchesTheCpuReference() throws IOException {
@@ -52,12 +58,13 @@ public class TimestralBatchParityAccelTest {
             });
             pipeline.forecast(batch(new Random(11), 37, horizon), horizon);
             List<String> failures = new ArrayList<>();
+            double limit = fwd.gemmMode().reducedPrecision() ? REDUCED_TOLERANCE : TOLERANCE;
             for (int k = 0; k < calls.size(); k++) {
                 BlockInput b = calls.get(k);
                 double err = TimestralGolden.relativeMaxError(flat(fwd.predictBlock(b)), flat(cpu.predictBlock(b)));
                 System.out.printf("mixed batch call%d rows=%d length=%d horizon patches=%d covariates=%b  rel max err %.2e%n", k,
                         b.rows(), b.length(), b.horizonPatches(), b.role() != null, err);
-                if (!(err <= TOLERANCE)) {
+                if (!(err <= limit)) {
                     failures.add("call" + k + ": " + err);
                 }
             }

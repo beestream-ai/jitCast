@@ -40,6 +40,12 @@ import org.junit.Test;
 public class TimestralForwardAccelTest {
 
     private static final double TOLERANCE = 1e-4;
+    /**
+     * With FP16 or TF32 GEMM inputs ({@code -Dtimestral.tornado.gemm=half|cublas-fp16|cublas-tf32}): a
+     * bound for a smoke check, not parity. Measured on Timestral-5M with FP16 GEMMs, the long
+     * multi-block horizons are within 4e-2 of the reference's range and the rest within 1e-2.
+     */
+    private static final double REDUCED_TOLERANCE = 5e-2;
 
     @Test
     public void everyBlockMatchesTheReference() throws IOException {
@@ -48,6 +54,7 @@ public class TimestralForwardAccelTest {
                 TimestralForward fwd = new TimestralForward(weights.config(), TimestralPacked.pack(weights))) {
             TimestralConfig c = weights.config();
             int ps = c.patchSize(), q = c.numQuantiles();
+            double base = fwd.gemmMode().reducedPrecision() ? REDUCED_TOLERANCE : TOLERANCE;
             for (String testCase : TimestralGolden.cases()) {
                 try (SafeTensors g = TimestralGolden.open(testCase)) {
                     for (int k = 0; k < TimestralGolden.calls(g); k++) {
@@ -65,7 +72,7 @@ public class TimestralForwardAccelTest {
                             }
                         }
                         String key = "call" + k + ".fp32err.out";
-                        double limit = Math.max(TOLERANCE, 4 * (g.contains(key) ? g.get(key).getFloat(0) : 0));
+                        double limit = Math.max(base, 4 * (g.contains(key) ? g.get(key).getFloat(0) : 0));
                         double err = TimestralGolden.relativeMaxError(flat, g.get("call" + k + ".out").toFloatArray());
                         System.out.printf("%-24s call%d rows=%3d %8.2f ms  out rel max err %.2e%n", testCase, k, block.rows(), ms, err);
                         if (!(err <= limit)) {
@@ -83,6 +90,7 @@ public class TimestralForwardAccelTest {
         List<String> failures = new ArrayList<>();
         try (TornadoTimestralEngine engine = TornadoTimestralEngine.load(TimestralGolden.checkpoint())) {
             TimestralConfig c = engine.config();
+            double limit = engine.forwardPass().gemmMode().reducedPrecision() ? REDUCED_TOLERANCE : TOLERANCE;
             for (String testCase : TimestralGolden.cases()) {
                 Map<String, Object> info = TimestralGolden.caseInfo(testCase);
                 int h = ((Number) info.get("H")).intValue();
@@ -91,7 +99,7 @@ public class TimestralForwardAccelTest {
                     List<Forecast> fc = p.forecast(PipelineGoldenTest.series(g, false), h);
                     double err = PipelineGoldenTest.forecastError(fc, g.get("forecast"));
                     System.out.printf("%-24s H=%5d forecast rel max err %.2e%n", testCase, h, err);
-                    if (!(err <= TOLERANCE)) {
+                    if (!(err <= limit)) {
                         failures.add(testCase + " forecast: " + err);
                     }
                 }

@@ -15,7 +15,9 @@
  */
 package ai.beestream.jitrex.timestral.tornado;
 
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,6 +30,7 @@ import ai.beestream.jitrex.timestral.BlockPrep;
 import ai.beestream.jitrex.timestral.Quantiles;
 import ai.beestream.jitrex.timestral.TimestralConfig;
 import ai.beestream.jitrex.timestral.cpu.CpuTimestral;
+import ai.beestream.jitrex.tornado.GemmMode;
 import ai.beestream.jitrex.tornado.Kernels;
 
 import uk.ac.manchester.tornado.api.GridScheduler;
@@ -43,6 +46,7 @@ import uk.ac.manchester.tornado.api.runtime.TornadoRuntimeProvider;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
+import uk.ac.manchester.tornado.cublas.CuBlas;
 
 /**
  * {@code TimestralModel.predict_block} on a TornadoVM device: the scaler and the patch tokens, and
@@ -51,9 +55,12 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * shape (rows, encoder tokens, horizon patches, covariates), compiled once and cached.
  *
  * <p>The device is {@code -Dtirex.tornado.device=<driver>:<device>}, or the default one. GEMMs run
- * in FP32: on the shared register-blocked kernel from {@code -Dtimestral.tornado.blockedMinRows}
- * rows (128 by default; its 64-row tiles waste most of their work below that) and on the shared
- * tiled one under it, or on the tiled one only with {@code -Dtimestral.tornado.gemm=tiled}.
+ * as {@code -Dtimestral.tornado.gemm} says ({@link GemmMode}; {@code auto} by default: cuBLAS in
+ * FP32 on CUDA, the register-blocked FP32 kernel elsewhere). The blocked kernel takes GEMMs from
+ * {@code -Dtimestral.tornado.blockedMinRows} rows (128 by default; its 64-row tiles waste most of
+ * their work below that) and the tiled kernel the smaller ones. With cuBLAS the task graph is
+ * captured and replayed as a CUDA graph ({@code -Dtimestral.tornado.cudaGraph}, on by default with
+ * cuBLAS).
  */
 public final class TimestralForward implements BlockForward, AutoCloseable {
 
@@ -62,8 +69,6 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
     /** Work-group size of the element-wise kernels. */
     private static final int ITEM_GROUP = 128;
 
-    /** Whether GEMMs may use {@link Kernels#gemmBlocked} rather than {@link Kernels#gemm}. */
-    private final boolean blockedGemm = !"tiled".equalsIgnoreCase(System.getProperty("timestral.tornado.gemm", "blocked"));
     /** The fewest rows a GEMM needs to run on {@link Kernels#gemmBlocked}. */
     private final int blockedMinRows = Integer.getInteger("timestral.tornado.blockedMinRows", 128);
 
@@ -77,6 +82,8 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
     private final int maxCachedPlans;
     private final Map<Shape, Plan> plans = new LinkedHashMap<>(16, 0.75f, true);
     private TornadoDevice device;
+    private final GemmMode gemmMode;
+    private final boolean cudaGraph;
 
     public TimestralForward(TimestralConfig config, TimestralPacked weights) {
         this(config, weights, Integer.getInteger("timestral.tornado.plans", 8));
@@ -92,6 +99,13 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
         this.quantiles = new Quantiles(config);
         this.invFreq = CpuTimestral.inverseFrequencies(config);
         this.maxCachedPlans = Math.max(1, maxCachedPlans);
+        this.gemmMode = GemmMode.parse(System.getProperty("timestral.tornado.gemm", "auto")).resolve(device());
+        this.cudaGraph = Boolean.parseBoolean(System.getProperty("timestral.tornado.cudaGraph", String.valueOf(gemmMode.cublas())));
+    }
+
+    /** The GEMM mode in use, {@code AUTO} resolved for the device. */
+    public GemmMode gemmMode() {
+        return gemmMode;
     }
 
     private TornadoDevice device() {
@@ -154,6 +168,11 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
         final KernelContext ctx = new KernelContext();
         final FloatArray w = weights.data();
         TaskGraph g;
+        /** FP16 copies of GEMM inputs, and the ones whose copy is current (no task has written the source since). */
+        final Map<FloatArray, HalfFloatArray> halves = new IdentityHashMap<>();
+        final Set<FloatArray> fresh = Collections.newSetFromMap(new IdentityHashMap<>());
+        /** The per-matrix weight copies already added to the graph. */
+        final Set<Object> graphWeights = Collections.newSetFromMap(new IdentityHashMap<>());
 
         Plan(Shape shape) {
             this.shape = shape;
@@ -187,6 +206,7 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
             residual("emb", tok, big, emb, encTokens, weights.embedding());
             items("assemble", tokens * d);
             g.task("assemble", TimestralKernels::assembleTokens, ctx, emb, w, weights.forecastQuery(), x, rows, enc, n, d);
+            written(x);
 
             int heads = c.numHeads(), dh = c.headDim();
             int qTiles = (n + TimestralKernels.ATTN_QUERIES - 1) / TimestralKernels.ATTN_QUERIES;
@@ -201,6 +221,7 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
                     if (a.time()) {
                         items(s + "rope", tokens * heads * (dh / 2));
                         g.task(s + "rope", TimestralKernels::rope, ctx, big, pos, table, tokens, heads, dh, d);
+                        written(big);
                         grid.addWorkerGrid(G + "." + s + "attn", group(rows * heads * qTiles * TimestralKernels.ATTN_THREADS,
                                 TimestralKernels.ATTN_THREADS));
                         g.task(s + "attn", TimestralKernels::timeAttention, ctx, big, att, keyValid, known, rows, enc,
@@ -211,10 +232,12 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
                         g.task(s + "attn", TimestralKernels::variateAttention, ctx, big, att, keyValid, groupStart, groupEnd,
                                 role, shape.covariates() ? 1 : 0, rows, enc, n, heads, dh, d);
                     }
+                    written(att);
                     if (a.gate() != null) {
                         gemm(s + "gproj", hn, a.gate(), gate, tokens, 0);
                         items(s + "gate", tokens * d);
                         g.task(s + "gate", TimestralKernels::gate, ctx, att, gate, tokens * d);
+                        written(att);
                     }
                     gemm(s + "wo", att, a.wo(), x, tokens, Kernels.ACCUMULATE);
                 }
@@ -223,17 +246,23 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
                 gemm(s + "up", hn, layer.up(), big, tokens, 0);
                 items(s + "swiglu", tokens * f);
                 g.task(s + "swiglu", Kernels::swiGlu, ctx, big, act, tokens, f, noTwin, 0);
+                written(act);
                 gemm(s + "down", act, layer.down(), x, tokens, Kernels.ACCUMULATE);
             }
             rms("onorm", x, y, weights.outNorm(), tokens, c.normEps());
             items("gather", decTokens * d);
             g.task("gather", TimestralKernels::gatherDecoder, ctx, y, dec, rows, enc, n, h, d);
+            written(dec);
             residual("head", dec, big, raw, decTokens, weights.head());
             g.transferToHost(DataTransferMode.EVERY_EXECUTION, raw);
 
             exec = new TornadoExecutionPlan(g.snapshot());
             exec.withGridScheduler(grid);
             exec.withDevice(device());
+            if (cudaGraph) {
+                // CUDA backend only: the task graph is captured once and replayed as a CUDA graph
+                exec.withCUDAGraph();
+            }
             if (Boolean.getBoolean("timestral.tornado.profile")) {
                 exec.withProfiler(uk.ac.manchester.tornado.api.enums.ProfilerMode.CONSOLE);
             }
@@ -246,10 +275,23 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
             gemm(name + "_r", a, r.residual(), out, m, Kernels.ACCUMULATE);
         }
 
+        /** {@code C = act(A·Wᵀ + b) (+ C)}, with the flags of {@link Kernels#gemm}, in the plan's GEMM mode. */
         void gemm(String name, FloatArray a, TimestralPacked.Lin l, FloatArray c, int m, int flags) {
+            if (gemmMode.cublas()) {
+                cublas(name, a, l, c, m, flags);
+                written(c);
+                return;
+            }
             int f = flags | (l.b() >= 0 ? Kernels.BIAS : 0);
             WorkerGrid wg;
-            if (blockedGemm && m >= blockedMinRows) {
+            if (gemmMode == GemmMode.HALF) {
+                HalfFloatArray ah = half(name, a, m * l.in());
+                HalfFloatArray wh = halfWeight(l);
+                int t = Kernels.HGEMM_TILE, threads = Kernels.HGEMM_THREADS;
+                wg = new WorkerGrid2D((l.out() + t - 1) / t * threads, (m + t - 1) / t * threads);
+                wg.setLocalWork(threads, threads, 1);
+                g.task(name, Kernels::gemmHalf, ctx, ah, wh, c, w, Math.max(l.b(), 0), m, l.out(), l.in(), f, noTwin, 0);
+            } else if (gemmMode == GemmMode.BLOCKED && m >= blockedMinRows) {
                 int t = Kernels.HGEMM_TILE, threads = Kernels.HGEMM_THREADS;
                 wg = new WorkerGrid2D((l.out() + t - 1) / t * threads, (m + t - 1) / t * threads);
                 wg.setLocalWork(threads, threads, 1);
@@ -261,11 +303,81 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
                 g.task(name, Kernels::gemm, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, 0, m, l.out(), l.in(), f);
             }
             grid.addWorkerGrid(G + "." + name, wg);
+            written(c);
+        }
+
+        /**
+         * The GEMM in cuBLAS. Row-major {@code C[m, n] = A[m, k]·W[n, k]ᵀ} is the column-major
+         * {@code Cᵀ = op_T(W)·A}, i.e. {@code gemm(T, N, n, m, k, W, k, A, k, C, n)}. A bias is written
+         * into C first (then β = 1), except before a SiLU, where one epilogue adds the bias and
+         * applies the SiLU after the GEMM.
+         */
+        private void cublas(String name, FloatArray a, TimestralPacked.Lin l, FloatArray c, int m, int flags) {
+            int n = l.out(), k = l.in();
+            boolean bias = l.b() >= 0;
+            boolean acc = (flags & Kernels.ACCUMULATE) != 0;
+            boolean silu = (flags & Kernels.SILU) != 0;
+            if (silu && acc) {
+                throw new IllegalStateException("GEMM " + name + ": SiLU after accumulation is not supported");
+            }
+            if (bias && !silu) {
+                items(name + "_bias", m * n);
+                g.task(name + "_bias", Kernels::biasFill, ctx, c, w, l.b(), m, n, acc ? 1 : 0);
+            }
+            float beta = (bias && !silu) || acc ? 1f : 0f;
+            if (gemmMode == GemmMode.CUBLAS_FP16) {
+                HalfFloatArray ah = half(name, a, m * k);
+                HalfFloatArray wh = halfWeight(l);
+                g.libraryTask(name, CuBlas::cublasGemmExFP16FP32, 1, 0, n, m, k, 1f, wh, k, ah, k, beta, c, n);
+            } else {
+                FloatArray wm = weights.matrix(l);
+                if (graphWeights.add(wm)) {
+                    g.transferToDevice(DataTransferMode.FIRST_EXECUTION, wm);
+                }
+                if (gemmMode == GemmMode.CUBLAS_TF32) {
+                    g.libraryTask(name, CuBlas::cublasSgemmTF32, 1, 0, n, m, k, 1f, wm, k, a, k, beta, c, n);
+                } else {
+                    g.libraryTask(name, CuBlas::cublasSgemm, 1, 0, n, m, k, 1f, wm, k, a, k, beta, c, n);
+                }
+            }
+            if (silu) {
+                items(name + "_silu", m * n);
+                g.task(name + "_silu", Kernels::biasSilu, ctx, c, w, bias ? l.b() : -1, m, n, noTwin, 0);
+            }
+        }
+
+        /** The FP16 copy of a GEMM input, converted once after each task that writes the source. */
+        private HalfFloatArray half(String name, FloatArray a, int count) {
+            HalfFloatArray h = halves.get(a);
+            if (h == null) {
+                h = new HalfFloatArray(a.getSize());
+                halves.put(a, h);
+                g.transferToDevice(DataTransferMode.FIRST_EXECUTION, h);
+            }
+            if (fresh.add(a)) {
+                items(name + "_h", count);
+                g.task(name + "_h", Kernels::toHalf, ctx, a, h, count);
+            }
+            return h;
+        }
+
+        private HalfFloatArray halfWeight(TimestralPacked.Lin l) {
+            HalfFloatArray wh = weights.halfMatrix(l);
+            if (graphWeights.add(wh)) {
+                g.transferToDevice(DataTransferMode.FIRST_EXECUTION, wh);
+            }
+            return wh;
+        }
+
+        /** A task has written {@code buf}: its FP16 copy is stale. */
+        private void written(FloatArray buf) {
+            fresh.remove(buf);
         }
 
         void rms(String name, FloatArray in, FloatArray out, int wOff, int rows, float eps) {
             grid.addWorkerGrid(G + "." + name, group(rows * Kernels.NORM_THREADS, Kernels.NORM_THREADS));
             g.task(name, Kernels::rmsNorm, ctx, in, out, w, wOff, config.dModel(), eps, noTwin, 0);
+            written(out);
         }
 
         void items(String task, int count) {
