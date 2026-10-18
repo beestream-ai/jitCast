@@ -83,6 +83,32 @@ public class KernelsAccelTest {
         }
     }
 
+    @Test
+    public void gemmBlockedWithEveryFlag() {
+        int m = 150, n = 200, k = 88; // ragged in every dimension against 64 × 64 × 16 tiles
+        int aOff = 5, wOff = 7, cOff = 3;
+        float[] a = random(aOff + m * k, 1f), w = random(wOff + n * k + n, 0.2f), c0 = random(cOff + m * n, 1f);
+        for (int flags : new int[] {0, Kernels.BIAS | Kernels.SILU, Kernels.BIAS | Kernels.ACCUMULATE, Kernels.ACCUMULATE}) {
+            FloatArray fa = FloatArray.fromArray(a), fw = FloatArray.fromArray(w), fc = FloatArray.fromArray(c0);
+            WorkerGrid wg = new WorkerGrid2D((n + 63) / 64 * 16, (m + 63) / 64 * 16);
+            wg.setLocalWork(16, 16, 1);
+            KernelContext ctx = new KernelContext();
+            int f = flags;
+            run("t", wg, g -> g.task("t", Kernels::gemmBlocked, ctx, fa, aOff, fw, wOff, wOff + n * k, fc, cOff, m, n, k, f), fc,
+                    fa, fw);
+            float[] bias = Arrays.copyOfRange(w, wOff + n * k, wOff + n * k + n);
+            float[] exp = Ops.linear(Arrays.copyOfRange(a, aOff, aOff + m * k), m, Arrays.copyOfRange(w, wOff, wOff + n * k),
+                    (f & Kernels.BIAS) != 0 ? bias : null, k, n);
+            if ((f & Kernels.SILU) != 0) {
+                Ops.siluInPlace(exp);
+            }
+            if ((f & Kernels.ACCUMULATE) != 0) {
+                Ops.addInPlace(exp, Arrays.copyOfRange(c0, cOff, cOff + m * n));
+            }
+            check("gemmBlocked flags=" + f, Arrays.copyOfRange(fc.toHeapArray(), cOff, cOff + m * n), exp);
+        }
+    }
+
     /** The FP16 GEMMs: FP16-rounded A and W, FP32 bias, accumulation and C, plus C's FP16 twin. */
     private void checkHalfGemm(boolean tile) {
         int m = 150, n = 200, k = 88; // ragged in every dimension against 64 × 64 × 16/32 tiles

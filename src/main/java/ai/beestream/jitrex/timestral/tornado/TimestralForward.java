@@ -51,7 +51,9 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * shape (rows, encoder tokens, horizon patches, covariates), compiled once and cached.
  *
  * <p>The device is {@code -Dtirex.tornado.device=<driver>:<device>}, or the default one. GEMMs run
- * on the shared tiled FP32 kernel.
+ * in FP32: on the shared register-blocked kernel from {@code -Dtimestral.tornado.blockedMinRows}
+ * rows (128 by default; its 64-row tiles waste most of their work below that) and on the shared
+ * tiled one under it, or on the tiled one only with {@code -Dtimestral.tornado.gemm=tiled}.
  */
 public final class TimestralForward implements BlockForward, AutoCloseable {
 
@@ -59,6 +61,11 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
 
     /** Work-group size of the element-wise kernels. */
     private static final int ITEM_GROUP = 128;
+
+    /** Whether GEMMs may use {@link Kernels#gemmBlocked} rather than {@link Kernels#gemm}. */
+    private final boolean blockedGemm = !"tiled".equalsIgnoreCase(System.getProperty("timestral.tornado.gemm", "blocked"));
+    /** The fewest rows a GEMM needs to run on {@link Kernels#gemmBlocked}. */
+    private final int blockedMinRows = Integer.getInteger("timestral.tornado.blockedMinRows", 128);
 
     /** One compiled block shape. */
     public record Shape(int rows, int encoder, int horizon, boolean covariates) {}
@@ -240,12 +247,20 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
         }
 
         void gemm(String name, FloatArray a, TimestralPacked.Lin l, FloatArray c, int m, int flags) {
-            int tile = Kernels.TILE;
-            WorkerGrid wg = new WorkerGrid2D((l.out() + tile - 1) / tile * tile, (m + tile - 1) / tile * tile);
-            wg.setLocalWork(tile, tile, 1);
-            grid.addWorkerGrid(G + "." + name, wg);
             int f = flags | (l.b() >= 0 ? Kernels.BIAS : 0);
-            g.task(name, Kernels::gemm, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, 0, m, l.out(), l.in(), f);
+            WorkerGrid wg;
+            if (blockedGemm && m >= blockedMinRows) {
+                int t = Kernels.HGEMM_TILE, threads = Kernels.HGEMM_THREADS;
+                wg = new WorkerGrid2D((l.out() + t - 1) / t * threads, (m + t - 1) / t * threads);
+                wg.setLocalWork(threads, threads, 1);
+                g.task(name, Kernels::gemmBlocked, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, 0, m, l.out(), l.in(), f);
+            } else {
+                int tile = Kernels.TILE;
+                wg = new WorkerGrid2D((l.out() + tile - 1) / tile * tile, (m + tile - 1) / tile * tile);
+                wg.setLocalWork(tile, tile, 1);
+                g.task(name, Kernels::gemm, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, 0, m, l.out(), l.in(), f);
+            }
+            grid.addWorkerGrid(G + "." + name, wg);
         }
 
         void rms(String name, FloatArray in, FloatArray out, int wOff, int rows, float eps) {

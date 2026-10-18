@@ -207,6 +207,112 @@ public final class Kernels {
             }
         }
     }
+    /**
+     * {@link #gemm} register-blocked as {@link #gemmHalf} is, in FP32 throughout: {@code C[m, n] (+)=
+     * act(A[m, :] · W[n, :] + b[n])} with {@code A} at {@code aOff}, {@code W} ({@code [N, K]}) at
+     * {@code wOff} and {@code b} at {@code bOff} in the packed weights, and {@code C} at {@code cOff}.
+     * Each work-group stages a 64 × 16 slice of A and of W in local memory, and each thread
+     * accumulates a 4 × 4 block whose rows and columns are 16 apart. Flags and epilogue order as
+     * {@link #gemm}. Global work {@code (⌈N/64⌉·16, ⌈M/64⌉·16)}, local {@code (16, 16)}.
+     */
+    public static void gemmBlocked(KernelContext ctx, FloatArray a, int aOff, FloatArray w, int wOff, int bOff, FloatArray c,
+            int cOff, int m, int n, int k, int flags) {
+        int lx = ctx.localIdx;
+        int ly = ctx.localIdy;
+        int tid = ly * HGEMM_THREADS + lx;
+        int rowBase = ctx.groupIdy * HGEMM_TILE;
+        int colBase = ctx.groupIdx * HGEMM_TILE;
+        float[] as = ctx.allocateFloatLocalArray(HGEMM_TILE * HGEMM_K);
+        float[] ws = ctx.allocateFloatLocalArray(HGEMM_TILE * HGEMM_K);
+        float c00 = 0f, c01 = 0f, c02 = 0f, c03 = 0f;
+        float c10 = 0f, c11 = 0f, c12 = 0f, c13 = 0f;
+        float c20 = 0f, c21 = 0f, c22 = 0f, c23 = 0f;
+        float c30 = 0f, c31 = 0f, c32 = 0f, c33 = 0f;
+        for (int kt = 0; kt < k; kt += HGEMM_K) {
+            // 64 × 16 elements of each operand, 4 per thread; consecutive threads read along K
+            for (int e = 0; e < 4; e++) {
+                int idx = tid + e * HGEMM_THREADS * HGEMM_THREADS;
+                int r = idx / HGEMM_K;
+                int ka = kt + idx % HGEMM_K;
+                float av = 0f;
+                if (rowBase + r < m && ka < k) {
+                    av = a.get(aOff + (rowBase + r) * k + ka);
+                }
+                as[idx] = av;
+                float wv = 0f;
+                if (colBase + r < n && ka < k) {
+                    wv = w.get(wOff + (colBase + r) * k + ka);
+                }
+                ws[idx] = wv;
+            }
+            ctx.localBarrier();
+            for (int kk = 0; kk < HGEMM_K; kk++) {
+                float a0 = as[ly * HGEMM_K + kk];
+                float a1 = as[(ly + 16) * HGEMM_K + kk];
+                float a2 = as[(ly + 32) * HGEMM_K + kk];
+                float a3 = as[(ly + 48) * HGEMM_K + kk];
+                float b0 = ws[lx * HGEMM_K + kk];
+                float b1 = ws[(lx + 16) * HGEMM_K + kk];
+                float b2 = ws[(lx + 32) * HGEMM_K + kk];
+                float b3 = ws[(lx + 48) * HGEMM_K + kk];
+                c00 += a0 * b0;
+                c01 += a0 * b1;
+                c02 += a0 * b2;
+                c03 += a0 * b3;
+                c10 += a1 * b0;
+                c11 += a1 * b1;
+                c12 += a1 * b2;
+                c13 += a1 * b3;
+                c20 += a2 * b0;
+                c21 += a2 * b1;
+                c22 += a2 * b2;
+                c23 += a2 * b3;
+                c30 += a3 * b0;
+                c31 += a3 * b1;
+                c32 += a3 * b2;
+                c33 += a3 * b3;
+            }
+            ctx.localBarrier();
+        }
+        int r0 = rowBase + ly;
+        int col0 = colBase + lx;
+        blockedStore(c, cOff, w, bOff, r0, col0, m, n, flags, c00);
+        blockedStore(c, cOff, w, bOff, r0, col0 + 16, m, n, flags, c01);
+        blockedStore(c, cOff, w, bOff, r0, col0 + 32, m, n, flags, c02);
+        blockedStore(c, cOff, w, bOff, r0, col0 + 48, m, n, flags, c03);
+        blockedStore(c, cOff, w, bOff, r0 + 16, col0, m, n, flags, c10);
+        blockedStore(c, cOff, w, bOff, r0 + 16, col0 + 16, m, n, flags, c11);
+        blockedStore(c, cOff, w, bOff, r0 + 16, col0 + 32, m, n, flags, c12);
+        blockedStore(c, cOff, w, bOff, r0 + 16, col0 + 48, m, n, flags, c13);
+        blockedStore(c, cOff, w, bOff, r0 + 32, col0, m, n, flags, c20);
+        blockedStore(c, cOff, w, bOff, r0 + 32, col0 + 16, m, n, flags, c21);
+        blockedStore(c, cOff, w, bOff, r0 + 32, col0 + 32, m, n, flags, c22);
+        blockedStore(c, cOff, w, bOff, r0 + 32, col0 + 48, m, n, flags, c23);
+        blockedStore(c, cOff, w, bOff, r0 + 48, col0, m, n, flags, c30);
+        blockedStore(c, cOff, w, bOff, r0 + 48, col0 + 16, m, n, flags, c31);
+        blockedStore(c, cOff, w, bOff, r0 + 48, col0 + 32, m, n, flags, c32);
+        blockedStore(c, cOff, w, bOff, r0 + 48, col0 + 48, m, n, flags, c33);
+    }
+
+    /** One output element of {@link #gemmBlocked}: bias, SiLU, accumulate, store. */
+    private static void blockedStore(FloatArray c, int cOff, FloatArray w, int bOff, int row, int col, int m, int n, int flags,
+            float acc) {
+        if (row < m && col < n) {
+            float v = acc;
+            if ((flags & BIAS) != 0) {
+                v += w.get(bOff + col);
+            }
+            if ((flags & SILU) != 0) {
+                v = v / (1f + TornadoMath.exp(-v));
+            }
+            int ci = cOff + row * n + col;
+            if ((flags & ACCUMULATE) != 0) {
+                v += c.get(ci);
+            }
+            c.set(ci, v);
+        }
+    }
+
     /** Tile shape of {@link #gemmHalfTile}: 64 × 64 outputs per tile block, K in steps of 32. */
     public static final int CT_M = 64;
     public static final int CT_N = 64;
