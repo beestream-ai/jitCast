@@ -83,12 +83,20 @@ float64 and records how far each float32 stage is from it: the reference's own n
 | `covariates`, `covariates_multi_block`, `multitarget_known` | past and known-future covariates, an indicator covariate over two blocks, two targets with a known covariate |
 | `no_symmetric`, `overlong_context` | one pass without sign-flip averaging; a 33,000-step context cut to 32,768 |
 
-| Test | What it checks | Result (Timestral-5M) |
-|---|---|---|
-| `timestral.cpu.BlockGoldenTest` | every stage of every call of the CPU reference | within 1e-4, or 4× the reference's float32 noise where that is larger |
-| `timestral.PipelineGoldenTest` | every call's arguments (bit for bit, fed-back medians within 1e-5) and the forecasts | forecasts within 4e-6 |
-| `timestral.tornado.TimestralForwardAccelTest` | the device engine, every call and every forecast | within 4e-5 (blocks), 6e-6 (forecasts) on Metal and OpenCL |
-| `timestral.tornado.TimestralBatchParityAccelTest` | a 76-row batch of 37 mixed series against the CPU reference | within 6e-5 |
+| Test | What it checks |
+|---|---|
+| `timestral.cpu.BlockGoldenTest` | every stage of every call of the CPU reference: within 1e-4, or 4× the reference's float32 noise where that is larger |
+| `timestral.PipelineGoldenTest` | every call's arguments (bit for bit, fed-back medians within 1e-5) and the forecasts (within 1e-4) |
+| `timestral.tornado.TimestralForwardAccelTest` | the device engine, every call and every forecast (within 1e-4) |
+| `timestral.tornado.TimestralBatchParityAccelTest` | a 76-row batch of 37 mixed series against the CPU reference (within 1e-4) |
+
+Worst relative errors, with goldens recorded from each checkpoint (TornadoVM develop `02e83b2`, Apple M4 Pro):
+
+| Checkpoint | CPU blocks | CPU forecasts | Metal blocks / forecasts | OpenCL blocks / forecasts | Mixed batch (Metal / OpenCL) |
+|---|---|---|---|---|---|
+| Timestral-5M | 4.7e-5 | 4.0e-6 | 3.0e-5 / 6.2e-6 | 3.8e-5 / 2.2e-6 | 5.3e-5 / 5.0e-5 |
+| Timestral-28M | 1.3e-5 | 2.7e-6 | 1.6e-5 / 7.5e-6 | 8.5e-6 / 2.9e-6 | 4.6e-5 / 4.1e-5 |
+| Timestral-209M | 6.4e-5 | 1.4e-6 | 6.3e-5 / 2.0e-6 | 6.5e-5 / 4.2e-6 | 1.4e-5 / — |
 
 The noise floor matters in one case: in the 1,024-patch context of `overlong_context` one token's
 activations are sensitive enough that the reference's own float32 run is 1e-4 to 4e-4 from its
@@ -149,8 +157,8 @@ cuBLAS GEMM modes of TiRex-2 are not wired to Timestral yet, and it has not been
 - Categorical covariates (target-encoded in the reference) are not supported.
 - Every checkpoint has 64-wide attention heads; the attention kernels support up to 128, in
   multiples of 8.
-- Validated on Timestral-5M. The larger checkpoints share the architecture and load with the same
-  code, but have no goldens yet.
+- Validated on Timestral-5M, 28M and 209M. Timestral-123M shares their architecture and loads with
+  the same code, but has no goldens.
 
 ## Licence
 
