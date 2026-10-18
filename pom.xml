@@ -90,6 +90,8 @@
                         <tirex.weights>${tirex.weights}</tirex.weights>
                         <tirex.golden>${tirex.golden}</tirex.golden>
                         <tirex.golden.gpu>${tirex.golden.gpu}</tirex.golden.gpu>
+                        <timestral.checkpoint>${timestral.checkpoint}</timestral.checkpoint>
+                        <timestral.golden>${timestral.golden}</timestral.golden>
                     </systemPropertyVariables>
                 </configuration>
             </plugin>
