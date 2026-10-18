@@ -98,6 +98,17 @@ Worst relative errors, with goldens recorded from each checkpoint (TornadoVM dev
 | Timestral-28M | 1.3e-5 | 2.7e-6 | 1.6e-5 / 7.5e-6 | 8.5e-6 / 2.9e-6 | 4.6e-5 / 4.1e-5 |
 | Timestral-209M | 6.4e-5 | 1.4e-6 | 6.3e-5 / 2.0e-6 | 6.5e-5 / 4.2e-6 | 1.4e-5 / — |
 
+On the A100 (CUDA and OpenCL, TornadoVM's own FP32 GEMMs, and cuBLAS FP32) every test passes on the
+three checkpoints, within 6e-5 for blocks and 1.2e-5 for forecasts. Under `-Paccel-tests` TornadoVM
+lists CUDA first (`tornado.cuda.priority`), so its CUDA device is `0:0` in the tests and `1:0` in a
+plain launch on a machine whose `tornado --devices` lists OpenCL first.
+
+### Accuracy of the FP16 modes
+
+With FP16 GEMM inputs (`half`, `cublas-fp16`) the forecasts move by up to 1e-2 of the series' range
+on Timestral-5M (4e-2 in one long two-block horizon), 2e-3 on 28M and 4e-3 on 209M; the tests
+check those modes against a 5e-2 bound only. The default GEMMs are FP32.
+
 The noise floor matters in one case: in the 1,024-patch context of `overlong_context` one token's
 activations are sensitive enough that the reference's own float32 run is 1e-4 to 4e-4 from its
 float64 run in the last layers and the final norm, and two float32 implementations differ by more than 1e-4 there while the
@@ -113,40 +124,77 @@ python scripts/timestral/dump_golden.py --src timestral/src --ckpt Timestral-5M 
     -Dtimestral.checkpoint=Timestral-5M -Dtimestral.golden=golden-5m
 ```
 
-## Performance (Apple M4 Pro, Timestral-5M)
+## Performance
 
-End-to-end `forecast()` with the reference's defaults (sign-flip averaging on), median of repeated
-calls after warm-up. jitrex runs on TornadoVM develop (`02e83b2`), Mistral's reference on PyTorch
-2.14 on the CPU: its scaler needs float64, which PyTorch's MPS backend does not support, so it
-cannot use the GPU. Contexts are 2,048 steps and the horizon 64 unless stated.
+End-to-end `forecast()` with the reference's defaults (sign-flip averaging on), the median of
+repeated calls after warm-up, on the same inputs for both engines (`bench_reference.py workloads`:
+contexts of 2,048 steps and a horizon of 64 unless stated). jitrex runs on TornadoVM develop
+(`02e83b2`), Mistral's reference on PyTorch 2.14 in eager mode. Speed-ups are over the reference.
 
-| Workload | Reference (CPU) | jitrex Metal | jitrex OpenCL |
-|---|---|---|---|
-| 1 series | 9.86 ms | **4.70 ms** | 28.97 ms |
-| 8 series | 33.87 ms | **12.24 ms** | 36.21 ms |
-| 32 series | 68.88 ms | **38.74 ms** | 69.29 ms |
-| 128 series | 174.89 ms | **139.79 ms** | 174.96 ms |
-| 1 series, H = 1,024 | 11.98 ms | **7.21 ms** | 31.81 ms |
-| 8 series, 8,192-step context | 76.48 ms | **44.04 ms** | 106.28 ms |
-| 8 series × (2 past + 2 known) covariates | 127.20 ms | **48.32 ms** | 78.43 ms |
+### NVIDIA A100 80GB PCIe
+
+jitrex with its default GEMMs on CUDA (cuBLAS FP32, CUDA graphs) and with cuBLAS FP16, against the
+reference on PyTorch CUDA (FP32), in ms:
+
+| Workload | 5M reference | 5M jitrex FP32 | 5M jitrex FP16 | 28M reference | 28M jitrex FP32 | 28M jitrex FP16 | 209M reference | 209M jitrex FP32 | 209M jitrex FP16 |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 series | 44.4 | **4.7 (9.4×)** | 4.4 (10.0×) | 57.4 | **6.4 (9.0×)** | 5.8 (9.9×) | 90.6 | **21.9 (4.1×)** | 9.3 (9.8×) |
+| 8 series | 46.3 | **12.1 (3.8×)** | 9.9 (4.7×) | 60.0 | **16.1 (3.7×)** | 12.7 (4.7×) | 94.9 | **45.3 (2.1×)** | 21.7 (4.4×) |
+| 32 series | 46.2 | **21.4 (2.2×)** | 19.9 (2.3×) | 60.2 | **35.5 (1.7×)** | 26.2 (2.3×) | 147.6 | **134.1 (1.1×)** | 52.3 (2.8×) |
+| 128 series | **46.9** | 79.2 (0.59×) | 73.1 (0.64×) | **95.9** | 130.0 (0.74×) | 90.1 (1.06×) | 512.9 | 526.6 (0.97×) | 179.8 (2.9×) |
+| 512 series | **102.4** | 308.7 (0.33×) | 288.6 (0.35×) | **349.6** | 512.0 (0.68×) | 353.9 (0.99×) | 2,067.9 | 2,018.1 (1.02×) | 700.6 (3.0×) |
+| 1 series, H = 1,024 | 78.6 | **7.8 (10.1×)** | 8.8 (8.9×) | 91.2 | **9.7 (9.4×)** | 9.0 (10.2×) | 124.1 | **28.1 (4.4×)** | 13.4 (9.2×) |
+| 8 series, 8,192-step context | 47.9 | **29.9 (1.6×)** | 28.1 (1.7×) | 61.9 | **38.4 (1.6×)** | 37.7 (1.6×) | 153.4 | **146.3 (1.05×)** | 67.7 (2.3×) |
+| 8 series × (2 past + 2 known) | 51.7 | **24.7 (2.1×)** | 22.3 (2.3×) | 77.2 | **42.5 (1.8×)** | 29.3 (2.6×) | 336.3 | **174.5 (1.9×)** | 61.2 (5.5×) |
+
+- The reference costs 45–90 ms per call whatever the batch up to 32 series: launch and Python
+  overhead, which jitrex does not have. Its time grows only once its GEMMs fill the GPU.
+- At large batches of the small checkpoints the reference is faster: there jitrex's time is not in
+  its GEMMs but in the rest of a block (its attention kernels and the host steps), still to profile.
+- FP16 GEMMs change the forecasts (see *Accuracy of the FP16 modes*); FP32 is the default.
+
+### Apple M4 Pro
+
+The reference's scaler and refine step compute in float64, which PyTorch's MPS backend does not
+support, so as published it runs on the CPU only. `bench_reference.py --device mps` runs those two
+steps on the CPU and the rest on the GPU (its forecasts match the CPU run to 8e-6). jitrex runs on
+Metal with its default GEMMs (register-blocked FP32). In ms, with the speed-up over the faster of
+the reference's CPU and MPS runs:
+
+| Workload | 5M ref. CPU | 5M ref. MPS | 5M jitrex Metal | 28M ref. CPU | 28M ref. MPS | 28M jitrex Metal | 209M ref. CPU | 209M ref. MPS | 209M jitrex Metal |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 series | 10.0 | 14.9 | **5.1 (2.0×)** | 22.8 | 22.8 | **18.0 (1.3×)** | 108.0 | **53.6** | 113.8 (0.47×) |
+| 8 series | 33.6 | 23.1 | **12.3 (1.9×)** | 73.9 | **44.4** | 49.1 (0.90×) | 272.6 | **173.2** | 324.5 (0.53×) |
+| 32 series | 68.9 | 47.6 | **39.7 (1.2×)** | 176.3 | **110.2** | 164.2 (0.67×) | 861.0 | **531.7** | 1,156.9 (0.46×) |
+| 128 series | 184.7 | **121.1** | 139.8 (0.87×) | 560.5 | **388.6** | 627.9 (0.62×) | 3,287.0 | **2,201.9** | 4,577.1 (0.48×) |
+| 512 series | 809.1 | 625.6 | **592.0 (1.06×)** | 2,551.8 | **1,939.4** | 2,494.2 (0.78×) | 12,830.4 | **10,372.6** | 18,226.2 (0.57×) |
+| 1 series, H = 1,024 | 12.0 | 17.9 | **6.7 (1.8×)** | 41.2 | 25.7 | **22.0 (1.2×)** | 125.3 | **55.7** | 139.5 (0.40×) |
+| 8 series, 8,192-step context | 72.9 | 48.9 | **41.0 (1.2×)** | 179.8 | **119.2** | 171.5 (0.69×) | 854.9 | **557.0** | 1,194.0 (0.47×) |
+| 8 series × covariates | 123.8 | 85.7 | **48.4 (1.8×)** | 384.9 | 250.9 | **210.7 (1.2×)** | 1,944.6 | **1,363.6** | 1,500.7 (0.91×) |
+
+On Metal about 95% of jitrex's device time is in its GEMMs, which reach about half the throughput of
+the matrix multiplications PyTorch's MPS backend calls; FP16 (`half`) does not change that. Closing
+the gap needs a GEMM on Apple's matrix hardware, which TornadoVM's Metal backend does not expose to
+jitrex today.
+
+### Reproducing
 
 ```bash
 python scripts/timestral/bench_reference.py workloads --out workloads.safetensors
 python scripts/timestral/bench_reference.py run --src timestral/src --ckpt Timestral-5M \
-    --workloads workloads.safetensors --device cpu --out reference.json
-$JITREX ai.beestream.jitrex.bench.TimestralBench --checkpoint Timestral-5M \
-    --workloads workloads.safetensors --engine tornado --out tornado.json
+    --workloads workloads.safetensors --device cuda --out reference.json        # or cpu, mps
+$JITREX -Dtirex.tornado.device=1:0 ai.beestream.jitrex.bench.TimestralBench --checkpoint Timestral-5M \
+    --workloads workloads.safetensors --engine tornado --out jitrex.json
+scripts/timestral/eval_mac.sh <workdir> timestral/src Timestral-5M Timestral-28M Timestral-209M   # the Mac matrix
 ```
-
-GEMMs take about 90% of the device time. They run in FP32 on the shared kernels; the FP16 and
-cuBLAS GEMM modes of TiRex-2 are not wired to Timestral yet, and it has not been run on CUDA.
 
 ## Options
 
 | Property | Default | Effect |
 |---|---|---|
 | `tirex.tornado.device` | TornadoVM's default | Device, as for TiRex-2 |
-| `timestral.tornado.gemm` | `blocked` | `blocked`: the register-blocked FP32 GEMM from `blockedMinRows` rows and the tiled one under it; `tiled`: the tiled one only |
+| `timestral.tornado.gemm` | `auto` | `auto`: `cublas` on CUDA, `blocked` elsewhere. `blocked`: TornadoVM's register-blocked FP32 GEMM from `blockedMinRows` rows and the tiled one under it; `tiled`: the tiled one only; `half`: TornadoVM's FP16 GEMM (FP32 accumulation); `cublas`, `cublas-tf32`, `cublas-fp16`: cuBLAS in FP32, TF32, or FP16 with FP32 accumulation (CUDA) |
+| `timestral.tornado.cudaGraph` | `true` with cuBLAS | Capture the task graph once and replay it as a CUDA graph |
 | `timestral.tornado.blockedMinRows` | `128` | The fewest GEMM rows that use the register-blocked kernel |
 | `timestral.tornado.plans` | `8` | Block shapes kept compiled (least recently used are evicted) |
 | `timestral.tornado.profile` | `false` | Print TornadoVM's per-task kernel times after every execution |
