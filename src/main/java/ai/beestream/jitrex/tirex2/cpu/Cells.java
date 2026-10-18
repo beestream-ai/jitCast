@@ -17,6 +17,7 @@ package ai.beestream.jitrex.tirex2.cpu;
 
 import java.util.stream.IntStream;
 
+import ai.beestream.jitrex.cpu.Ops;
 import ai.beestream.jitrex.tirex2.TiRex2Config;
 
 /**
@@ -59,7 +60,7 @@ public final class Cells {
         }
         float[] h = mlstmCore(p, rows, seq, heads, stride);
         int dv = w.v().out() / heads;
-        float[] hn = Ops.headLayerNorm(h, n, heads, dv, w.headNorm(), TiRex2Config.NORM_EPS);
+        float[] hn = TiRexOps.headLayerNorm(h, n, heads, dv, w.headNorm(), TiRex2Config.NORM_EPS);
         int oOff = w.q().out() + w.k().out() + w.v().out();
         for (int t = 0; t < n; t++) {
             for (int j = 0; j < d; j++) {
@@ -86,9 +87,9 @@ public final class Cells {
             double acc = 0;
             for (int t = 0; t < seq; t++) {
                 int base = (r * seq + t) * stride;
-                acc += Ops.logSigmoid(Ops.softCap(p[base + fOff + hd], TiRex2Config.GATE_SOFT_CAP));
+                acc += TiRexOps.logSigmoid(TiRexOps.softCap(p[base + fOff + hd], TiRex2Config.GATE_SOFT_CAP));
                 cumF[t] = acc;
-                in[t] = Ops.softCap(p[base + iOff + hd], TiRex2Config.GATE_SOFT_CAP);
+                in[t] = TiRexOps.softCap(p[base + iOff + hd], TiRex2Config.GATE_SOFT_CAP);
             }
             double[] num = new double[dv];
             for (int t = 0; t < seq; t++) {
@@ -140,7 +141,7 @@ public final class Cells {
         int n = rows * seq;
         float[] wx = headwiseGates(x, n, d, heads, w.gates());
         float[] y = slstmRecurrence(wx, rows, seq, d, heads, w.r(), w.b());
-        return Ops.headLayerNorm(y, n, heads, d / heads, w.groupNorm(), TiRex2Config.NORM_EPS);
+        return TiRexOps.headLayerNorm(y, n, heads, d / heads, w.groupNorm(), TiRex2Config.NORM_EPS);
     }
 
     /**
@@ -201,7 +202,7 @@ public final class Cells {
                 }
                 for (int j = 0; j < d; j++) {
                     double iRaw = raw[j], fRaw = raw[d + j], zRaw = raw[2 * d + j], oRaw = raw[3 * d + j];
-                    double logf = Ops.logSigmoid(fRaw) + m[j];
+                    double logf = TiRexOps.logSigmoid(fRaw) + m[j];
                     double mNew = t == 0 ? iRaw : Math.max(iRaw, logf);
                     double iG = Math.exp(iRaw - mNew);
                     double fG = Math.exp(logf - mNew);

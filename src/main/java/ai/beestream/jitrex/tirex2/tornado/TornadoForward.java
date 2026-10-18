@@ -25,6 +25,7 @@ import java.util.Map;
 import ai.beestream.jitrex.tirex2.ForwardPass;
 import ai.beestream.jitrex.tirex2.ModelBatch;
 import ai.beestream.jitrex.tirex2.TiRex2Config;
+import ai.beestream.jitrex.tornado.Kernels;
 
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
@@ -583,7 +584,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             TaskGraph g = b.begin("in");
             g.transferToDevice(DataTransferMode.FIRST_EXECUTION, shared);
             g.transferToDevice(DataTransferMode.EVERY_EXECUTION, perCall.toArray());
-            grid.addWorkerGrid(b.name + ".scale", group(rows * TiRexKernels.NORM_THREADS, TiRexKernels.NORM_THREADS));
+            grid.addWorkerGrid(b.name + ".scale", group(rows * Kernels.NORM_THREADS, Kernels.NORM_THREADS));
             g.task("scale", TiRexKernels::scalePatch, ctx, x, present, tok, stats, rows, len, p, c.useArcsinh() ? 1 : 0,
                     c.binaryAware() ? 1 : 0, TiRex2Config.SCALER_EPS, b.twin(tok), b.hasTwin(tok));
             b.residual("in", tok, big, h, tokens, weights.inputEmbedding());
@@ -609,12 +610,12 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                     g.task(s + "scatter", TiRexKernels::scatterRows, ctx, cell, yc, known, nKnown, seq, d);
                     if (fuse) {
                         // h += yc and the FFN's RMSNorm in one pass
-                        grid.addWorkerGrid(b.name + "." + s + "resid", group(tokens * TiRexKernels.NORM_THREADS, TiRexKernels.NORM_THREADS));
-                        g.task(s + "resid", TiRexKernels::addRmsNorm, ctx, h, yc, n, w, blk.normFfn(), d, TiRex2Config.NORM_EPS,
+                        grid.addWorkerGrid(b.name + "." + s + "resid", group(tokens * Kernels.NORM_THREADS, Kernels.NORM_THREADS));
+                        g.task(s + "resid", Kernels::addRmsNorm, ctx, h, yc, n, w, blk.normFfn(), d, TiRex2Config.NORM_EPS,
                                 b.twin(n), b.hasTwin(n));
                     } else {
                         b.items(s + "resid", tokens * d);
-                        g.task(s + "resid", TiRexKernels::addInPlace, ctx, h, yc, tokens * d);
+                        g.task(s + "resid", Kernels::addInPlace, ctx, h, yc, tokens * d);
                         b.rms(s + "fnorm", h, n, blk.normFfn(), tokens, d, TiRex2Config.NORM_EPS);
                     }
                 } else if (!cell(b, s, blk, n, h, rows, true, blk.normFfn())) {
@@ -623,13 +624,13 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 if (ffnUp != null) {
                     b.gemmToHalf(s + "up", n, blk.upGateUp(), ffnUp, tokens);
                     b.items(s + "swiglu", tokens * blk.ffnDim());
-                    g.task(s + "swiglu", TiRexKernels::swiGluHalf, ctx, ffnUp, ffnSw, tokens, blk.ffnDim());
-                    b.gemmFromHalf(s + "down", ffnSw, blk.down(), h, tokens, TiRexKernels.ACCUMULATE);
+                    g.task(s + "swiglu", Kernels::swiGluHalf, ctx, ffnUp, ffnSw, tokens, blk.ffnDim());
+                    b.gemmFromHalf(s + "down", ffnSw, blk.down(), h, tokens, Kernels.ACCUMULATE);
                 } else {
                     b.gemm(s + "up", n, blk.upGateUp(), big, tokens, 0);
                     b.items(s + "swiglu", tokens * blk.ffnDim());
-                    g.task(s + "swiglu", TiRexKernels::swiGlu, ctx, big, proj, tokens, blk.ffnDim(), b.twin(proj), b.hasTwin(proj));
-                    b.gemm(s + "down", proj, blk.down(), h, tokens, TiRexKernels.ACCUMULATE);
+                    g.task(s + "swiglu", Kernels::swiGlu, ctx, big, proj, tokens, blk.ffnDim(), b.twin(proj), b.hasTwin(proj));
+                    b.gemm(s + "down", proj, blk.down(), h, tokens, Kernels.ACCUMULATE);
                 }
                 if (nKept > 0) {
                     variate(b, s, blk.variate(), nKept);
@@ -718,7 +719,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 if (qk / heads != 64 || d / heads != 128) {
                     throw new IllegalStateException("mlstmCell assumes head dims 64/128");
                 }
-                b.gemm(s + "proj", in, pr, proj, tokens, TiRexKernels.BIAS);
+                b.gemm(s + "proj", in, pr, proj, tokens, Kernels.BIAS);
                 if (seq > TiRexKernels.MLSTM_MAX_SEQ) {
                     throw new IllegalStateException("mlstmCell supports up to " + TiRexKernels.MLSTM_MAX_SEQ + " patches");
                 }
@@ -733,7 +734,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                             2 * qk + 2 * d, 2 * qk + 2 * d + heads, TiRex2Config.GATE_SOFT_CAP, TiRex2Config.MLSTM_EPS);
                 }
                 b.headNorm(s + "hnorm", cell, in, blk.headNorm(), tokens, heads, d / heads, proj, pr.out(), 2 * qk + d, 1);
-                b.gemm(s + "out", in, blk.outProj(), dst, tokens, add ? TiRexKernels.ACCUMULATE : 0);
+                b.gemm(s + "out", in, blk.outProj(), dst, tokens, add ? Kernels.ACCUMULATE : 0);
             } else {
                 int heads = c.slstmHeads();
                 int dh = d / heads;
@@ -798,10 +799,10 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             b.grid.addWorkerGrid(b.name + "." + s + "attn", group(queryBlocks * seq * heads * 128, 128));
             b.g.task(s + "attn", TiRexKernels::variateAttention, b.ctx, proj, cell, groupStart, groupEnd, keptTarget, nk, seq,
                     heads, dh, 3 * d, b.twin(cell), b.hasTwin(cell));
-            b.gemm(s + "wo", cell, v.wo(), xk, tokens, TiRexKernels.ACCUMULATE);
+            b.gemm(s + "wo", cell, v.wo(), xk, tokens, Kernels.ACCUMULATE);
             b.rms(s + "vfnorm", xk, n, v.normFfn(), tokens, d, TiRex2Config.NORM_EPS);
-            b.gemm(s + "vin", n, v.ffnIn(), big, tokens, TiRexKernels.SILU);
-            b.gemm(s + "vout", big, v.ffnOut(), xk, tokens, TiRexKernels.ACCUMULATE);
+            b.gemm(s + "vin", n, v.ffnIn(), big, tokens, Kernels.SILU);
+            b.gemm(s + "vout", big, v.ffnOut(), xk, tokens, Kernels.ACCUMULATE);
             b.items(s + "vscatter", tokens * d);
             b.g.task(s + "vscatter", TiRexKernels::scatterRows, b.ctx, xk, h, kept, nk, seq, d);
         }
@@ -921,12 +922,12 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 tornadoHalfGemm(name, a, null, l, c, m, flags);
                 return;
             }
-            int tile = TiRexKernels.TILE;
+            int tile = Kernels.TILE;
             WorkerGrid wg = new WorkerGrid2D(ceil(l.out(), tile), ceil(m, tile));
             wg.setLocalWork(tile, tile, 1);
             grid.addWorkerGrid(this.name + "." + name, wg);
-            int f = flags | (l.b() >= 0 ? TiRexKernels.BIAS : 0);
-            g.task(name, TiRexKernels::gemm, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, 0, m, l.out(), l.in(), f);
+            int f = flags | (l.b() >= 0 ? Kernels.BIAS : 0);
+            g.task(name, Kernels::gemm, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, 0, m, l.out(), l.in(), f);
         }
 
         /** {@code H = A·Wᵀ} into an FP16-only buffer (FP32 accumulation, no bias or activation). */
@@ -940,10 +941,10 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                         0f, out, n);
                 return;
             }
-            int t = TiRexKernels.HGEMM_TILE, threads = TiRexKernels.HGEMM_THREADS;
+            int t = Kernels.HGEMM_TILE, threads = Kernels.HGEMM_THREADS;
             WorkerGrid wg = new WorkerGrid2D((n + t - 1) / t * threads, (m + t - 1) / t * threads);
             wg.setLocalWork(threads, threads, 1);
-            g.task(name, TiRexKernels::gemmHalf, ctx, ah, wh, noOut, w, 0, m, n, k, TiRexKernels.TWIN_ONLY, out, 1);
+            g.task(name, Kernels::gemmHalf, ctx, ah, wh, noOut, w, 0, m, n, k, Kernels.TWIN_ONLY, out, 1);
             grid.addWorkerGrid(this.name + "." + name, wg);
         }
 
@@ -971,16 +972,16 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             WorkerGrid wg;
             if (gemmMode == GemmMode.CUTILE) {
                 // the grid counts tile blocks; the block shape is the tile compiler's
-                wg = new WorkerGrid2D((m + TiRexKernels.CT_M - 1) / TiRexKernels.CT_M, (n + TiRexKernels.CT_N - 1) / TiRexKernels.CT_N);
-                g.task(name, TiRexKernels::gemmHalfTile, new uk.ac.manchester.tornado.api.tile.TileContext(), ah, wh, c, w, bOff, m, n,
-                        k, bias ? 1f : 0f, (flags & TiRexKernels.SILU) != 0 ? 1f : 0f, (flags & TiRexKernels.ACCUMULATE) != 0 ? 1f : 0f,
+                wg = new WorkerGrid2D((m + Kernels.CT_M - 1) / Kernels.CT_M, (n + Kernels.CT_N - 1) / Kernels.CT_N);
+                g.task(name, Kernels::gemmHalfTile, new uk.ac.manchester.tornado.api.tile.TileContext(), ah, wh, c, w, bOff, m, n,
+                        k, bias ? 1f : 0f, (flags & Kernels.SILU) != 0 ? 1f : 0f, (flags & Kernels.ACCUMULATE) != 0 ? 1f : 0f,
                         twin(c), hasTwin(c));
             } else {
-                int t = TiRexKernels.HGEMM_TILE, threads = TiRexKernels.HGEMM_THREADS;
+                int t = Kernels.HGEMM_TILE, threads = Kernels.HGEMM_THREADS;
                 wg = new WorkerGrid2D((n + t - 1) / t * threads, (m + t - 1) / t * threads);
                 wg.setLocalWork(threads, threads, 1);
-                int f = flags | (bias ? TiRexKernels.BIAS : 0);
-                g.task(name, TiRexKernels::gemmHalf, ctx, ah, wh, c, w, bOff, m, n, k, f, twin(c), hasTwin(c));
+                int f = flags | (bias ? Kernels.BIAS : 0);
+                g.task(name, Kernels::gemmHalf, ctx, ah, wh, c, w, bOff, m, n, k, f, twin(c), hasTwin(c));
             }
             grid.addWorkerGrid(this.name + "." + name, wg);
         }
@@ -996,7 +997,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 throw new IllegalStateException("GEMM " + name + " has only an FP16 input but runs in FP32");
             }
             boolean bias = l.b() >= 0;
-            boolean acc = (flags & TiRexKernels.ACCUMULATE) != 0;
+            boolean acc = (flags & Kernels.ACCUMULATE) != 0;
             int n = l.out(), k = l.in();
             if (half && fp16Kernel != Fp16Kernel.GEMMEX_MIXED) {
                 // FP16 A, B and C on tensor cores, then one kernel back to FP32 with bias, SiLU and
@@ -1010,9 +1011,9 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                     g.libraryTask(name, uk.ac.manchester.tornado.cublas.CuBlas::cublasGemmExFP16, 1, 0, n, pad(m), k, 1f, wh, k,
                             ah, k, 0f, cHalf, n);
                 }
-                int f = (bias ? TiRexKernels.BIAS : 0) | (flags & (TiRexKernels.ACCUMULATE | TiRexKernels.SILU));
+                int f = (bias ? Kernels.BIAS : 0) | (flags & (Kernels.ACCUMULATE | Kernels.SILU));
                 items(name + "_epi", m * n);
-                g.task(name + "_epi", TiRexKernels::fromHalfEpilogue, ctx, cHalf, c, w, Math.max(l.b(), 0), m, n, f, twin(c),
+                g.task(name + "_epi", Kernels::fromHalfEpilogue, ctx, cHalf, c, w, Math.max(l.b(), 0), m, n, f, twin(c),
                         hasTwin(c));
                 return;
             }
@@ -1022,10 +1023,10 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             }
             // SiLU without accumulation: the GEMM writes C (β = 0) and one epilogue adds the bias,
             // applies SiLU and writes the FP16 twin
-            boolean siluEpilogue = fuse && (flags & TiRexKernels.SILU) != 0 && !acc;
+            boolean siluEpilogue = fuse && (flags & Kernels.SILU) != 0 && !acc;
             if (bias && !siluEpilogue) {
                 items(name + "_bias", m * l.out());
-                g.task(name + "_bias", TiRexKernels::biasFill, ctx, c, w, l.b(), m, l.out(), acc ? 1 : 0);
+                g.task(name + "_bias", Kernels::biasFill, ctx, c, w, l.b(), m, l.out(), acc ? 1 : 0);
             }
             float beta = (bias && !siluEpilogue) || acc ? 1f : 0f;
             if (half) {
@@ -1044,10 +1045,10 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             }
             if (siluEpilogue) {
                 items(name + "_silu", m * n);
-                g.task(name + "_silu", TiRexKernels::biasSilu, ctx, c, w, bias ? l.b() : -1, m, n, twin(c), hasTwin(c));
-            } else if ((flags & TiRexKernels.SILU) != 0) {
+                g.task(name + "_silu", Kernels::biasSilu, ctx, c, w, bias ? l.b() : -1, m, n, twin(c), hasTwin(c));
+            } else if ((flags & Kernels.SILU) != 0) {
                 items(name + "_silu", m * n);
-                g.task(name + "_silu", TiRexKernels::siluInPlace, ctx, c, m * n, twin(c), hasTwin(c));
+                g.task(name + "_silu", Kernels::siluInPlace, ctx, c, m * n, twin(c), hasTwin(c));
             }
         }
 
@@ -1069,8 +1070,8 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         }
 
         void rms(String name, FloatArray x, FloatArray y, int wOff, int rows, int d, float eps) {
-            grid.addWorkerGrid(this.name + "." + name, group(rows * TiRexKernels.NORM_THREADS, TiRexKernels.NORM_THREADS));
-            g.task(name, TiRexKernels::rmsNorm, ctx, x, y, w, wOff, d, eps, twin(y), hasTwin(y));
+            grid.addWorkerGrid(this.name + "." + name, group(rows * Kernels.NORM_THREADS, Kernels.NORM_THREADS));
+            g.task(name, Kernels::rmsNorm, ctx, x, y, w, wOff, d, eps, twin(y), hasTwin(y));
         }
 
         void headNorm(String name, FloatArray x, FloatArray y, int wOff, int tokens, int heads, int dh, FloatArray gate,
@@ -1084,9 +1085,9 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
 
         /** {@code y = output(SiLU(hidden(x))) + residual(x)}; {@code scratch} holds the hidden layer. */
         void residual(String name, FloatArray x, FloatArray scratch, FloatArray y, int m, PackedWeights.Residual r) {
-            gemm(name + "_hid", x, r.hidden(), scratch, m, TiRexKernels.SILU);
+            gemm(name + "_hid", x, r.hidden(), scratch, m, Kernels.SILU);
             gemm(name + "_out", scratch, r.output(), y, m, 0);
-            gemm(name + "_res", x, r.residual(), y, m, TiRexKernels.ACCUMULATE);
+            gemm(name + "_res", x, r.residual(), y, m, Kernels.ACCUMULATE);
         }
 
         private int ceil(int v, int t) {

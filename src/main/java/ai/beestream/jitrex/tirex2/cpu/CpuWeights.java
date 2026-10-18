@@ -17,6 +17,7 @@ package ai.beestream.jitrex.tirex2.cpu;
 
 import java.util.List;
 
+import ai.beestream.jitrex.cpu.Ops;
 import ai.beestream.jitrex.io.Tensor;
 import ai.beestream.jitrex.tirex2.TiRex2Weights;
 

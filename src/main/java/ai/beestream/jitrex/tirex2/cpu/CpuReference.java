@@ -18,6 +18,7 @@ package ai.beestream.jitrex.tirex2.cpu;
 import java.util.Arrays;
 import java.util.stream.IntStream;
 
+import ai.beestream.jitrex.cpu.Ops;
 import ai.beestream.jitrex.tirex2.ForwardPass;
 import ai.beestream.jitrex.tirex2.ModelBatch;
 import ai.beestream.jitrex.tirex2.TiRex2Config;
@@ -53,7 +54,7 @@ public final class CpuReference implements ForwardPass {
 
     /** {@code input_patch_embedding(cat(tokens, mask))}: {@code [rows · patches · D]}. */
     public float[] embed(InputStage.Result input) {
-        return Ops.residualBlock(input.tokens(), input.rows() * input.patches(), weights.inputEmbedding);
+        return TiRexOps.residualBlock(input.tokens(), input.rows() * input.patches(), weights.inputEmbedding);
     }
 
     @Override
@@ -80,7 +81,7 @@ public final class CpuReference implements ForwardPass {
         }
         h = Ops.rmsNorm(h, rows * seq, d, weights.stackOutNorm, config.stackOutNormEps());
         sink.accept("stack_out_norm", h);
-        float[] y = Ops.residualBlock(h, rows * seq, weights.outputEmbedding);
+        float[] y = TiRexOps.residualBlock(h, rows * seq, weights.outputEmbedding);
         sink.accept("output_patch_embedding", y);
         return unpatch(y, rows, input.scaler());
     }
@@ -134,7 +135,7 @@ public final class CpuReference implements ForwardPass {
             }
         }
         Ops.addInPlace(y, x);
-        float[] ffn = Ops.swiGlu(Ops.rmsNorm(y, n, d, w.normFfn(), TiRex2Config.NORM_EPS), n,
+        float[] ffn = TiRexOps.swiGlu(Ops.rmsNorm(y, n, d, w.normFfn(), TiRex2Config.NORM_EPS), n,
                 w.upGate(), w.up(), w.down());
         Ops.addInPlace(ffn, y);
         return ffn;
