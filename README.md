@@ -13,10 +13,13 @@
 
 # jitrex
 
-**jitrex** is an inference engine for [TiRex-2](https://github.com/NX-AI/tirex-2), NXAI's zero-shot
-time-series forecasting model, written in Java on [TornadoVM](https://github.com/beehive-lab/TornadoVM) (similar to [jitLLM](https://github.com/beehive-lab/jitllm)).
+**jitrex** is an inference engine for zero-shot time-series forecasting models, written in Java on
+[TornadoVM](https://github.com/beehive-lab/TornadoVM) (similar to [jitLLM](https://github.com/beehive-lab/jitllm)).
+It runs [TiRex-2](https://github.com/NX-AI/tirex-2), NXAI's model, and
+[Timestral](https://huggingface.co/mistralai/Timestral-5M), Mistral AI's family (see
+[docs/TIMESTRAL.md](docs/TIMESTRAL.md)).
 
-jitrex reproduces NXAI's `ForecastModel.forecast()` end to end: 9-quantile forecasts for
+For TiRex-2, jitrex reproduces NXAI's `ForecastModel.forecast()` end to end: 9-quantile forecasts for
 univariate series, multi-target series, and series with past or future covariates. The host
 pipeline is in Java, and the model's forward pass runs on the GPU through TornadoVM.
 
@@ -110,7 +113,8 @@ and benchmark-suite tables and the method are in [docs/PERFORMANCE.md](docs/PERF
 | [CONFIGURATION.md](docs/CONFIGURATION.md) | Every engine option, GEMM modes, hybrid APIs, per-platform recommendations |
 | [VALIDATION.md](docs/VALIDATION.md) | How the implementation was checked, from an executable spec to GIFT-Eval and fev-bench |
 | [PERFORMANCE.md](docs/PERFORMANCE.md) | The comparison with NXAI's engine on an NVIDIA A100: method, results, charts |
-| [KERNELS.md](docs/KERNELS.md) | All 26 kernels, with source links and their hybrid alternatives |
+| [TIMESTRAL.md](docs/TIMESTRAL.md) | Timestral: quick start, how it maps onto jitrex, validation, performance on Apple silicon, options |
+| [KERNELS.md](docs/KERNELS.md) | Every kernel, with source links and their hybrid alternatives |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Architecture, code layout and scripts |
 | [ROADMAP.md](docs/ROADMAP.md) | Planned work, and the TornadoVM issues that limit jitrex today |
 
@@ -119,4 +123,6 @@ and benchmark-suite tables and the method are in [docs/PERFORMANCE.md](docs/PERF
 jitrex is released under the [Apache License, Version 2.0](LICENSE).
 Copyright (c) 2026 Beestream Ltd.
 `util/Json.java` is derived from [jitllm](https://github.com/beehive-lab/jitllm) (MIT); see [NOTICE](NOTICE).
-The TiRex-2 model and its weights are NX-AI's, under their own licence terms.
+The TiRex-2 model and its weights are NX-AI's, under their own licence terms. The Timestral weights
+are Mistral AI's, under a Modified MIT licence with a revenue restriction (see
+[docs/TIMESTRAL.md](docs/TIMESTRAL.md#licence)).

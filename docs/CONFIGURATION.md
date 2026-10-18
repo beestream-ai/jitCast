@@ -29,12 +29,14 @@ TornadoVM properties used alongside: `tornado.device.memory` (device heap, e.g. 
 
 | Mode | Kernel | Precision | Backends |
 |---|---|---|---|
-| `tiled` | `TiRexKernels.gemm` (KernelContext) | FP32 | all |
-| `half` | `TiRexKernels.gemmHalf` (KernelContext, register-blocked) | FP16 in, FP32 accumulation and output | all |
+| `tiled` | `Kernels.gemm` (KernelContext) | FP32 | all |
+| `half` | `Kernels.gemmHalf` (KernelContext, register-blocked) | FP16 in, FP32 accumulation and output | all |
 | `cublas` / `cublas-tf32` | cuBLAS SGEMM | FP32 / TF32 | CUDA |
 | `cublas-fp16` | cuBLAS GemmEx on every GEMM | FP16 in, FP32 accumulation | CUDA |
 | `cublas-auto` | FP16 GemmEx from `fp16MinTokens` rows, SGEMM below | mixed | CUDA |
-| `cutile` | `TiRexKernels.gemmHalfTile` (CUDA Tile, tensor cores) | FP16 in, FP32 accumulation | CUDA with toolkit 13.3+ |
+| `cutile` | `Kernels.gemmHalfTile` (CUDA Tile, tensor cores) | FP16 in, FP32 accumulation | CUDA with toolkit 13.3+ |
+
+These are TiRex-2's modes. Timestral's options are in [TIMESTRAL.md](TIMESTRAL.md#options).
 
 ## Programmatic options
 - `ForecastPipeline(config, forward, batchSize, ttaDiff, ttaSignFlip)`: series per forward (512); trend differencing and sign flip, defaulting to the checkpoint's values.

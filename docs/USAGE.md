@@ -47,6 +47,8 @@ $JITREX ai.beestream.jitrex.bench.TiRexServer --weights tirex2.safetensors --por
 
 `TiRexBench` options: `--engine tornado|cpu`, `--scenarios`, `--batches`, `--mv-batches`, `--covariates`, `--horizon` (64), `--reps` (30), `--warmup` (5), `--budget` (3 s per point), `--max-batch` (1024), `--config` (a label).
 
+Timestral's engines, benchmark and tests are in [TIMESTRAL.md](TIMESTRAL.md).
+
 ## Tests
 
 ```bash

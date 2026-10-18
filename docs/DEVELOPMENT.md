@@ -37,9 +37,12 @@ The packages at the top are shared by every model family; each family lives in i
 | `tornado` | `Kernels`: the device kernels shared by every family — the FP32, FP16 and CUDA Tile GEMMs, RMSNorm, SwiGLU and the epilogues around a GEMM (see [KERNELS.md](KERNELS.md)) |
 | `host` | Model-agnostic host pieces: `SeriesWindows` (splits a forecast call into forward passes by series count and token budget) and `SignFlip` (sign-flip test-time augmentation) |
 | `util` | `Json` |
-| `bench` | `TiRexBench` (latency/throughput), `TiRexColdStart`, `TiRexServer` (socket server for NXAI's Python harnesses), `PlanMemoryProbe` |
+| `bench` | `TiRexBench` (latency/throughput), `TiRexColdStart`, `TiRexServer` (socket server for NXAI's Python harnesses), `PlanMemoryProbe`, `TimestralBench` |
 | `tirex2` | `TiRex2Config` (from the embedded model config), `TiRex2Weights` (binds every tensor by name and shape; unknown or missing tensors fail the load), `ForecastPipeline` (`ForecastModel.forecast`: batch assembly and padding, horizon slicing, calibration) and `PostProcessor` (trend detection, differencing, band calibration) — shared by both TiRex-2 engines |
 | `tirex2.cpu` | FP32 CPU reference, the oracle for the device kernels: `TiRexOps` (head LayerNorm, gate functions, residual block, SwiGLU FFN), `InputStage`, `Cells` (mLSTM, sLSTM), `CpuReference` (the full forward pass), `CpuTiRex2Engine` |
+| `timestral` | `TimestralConfig` (`config.json`), `TimestralWeights` (binds every tensor; rearranges q\|k\|v and the MLP input), `BlockInput` / `BlockForward` (one `predict_block`), `BlockLayout` (token layout and masks), `Scaler`, `Quantiles`, `BlockPrep` (the host ends of a block), `TimestralPipeline` (`TimestralForecaster.forecast`) — see [TIMESTRAL.md](TIMESTRAL.md) |
+| `timestral.cpu` | `CpuTimestral` (the FP32 reference of `predict_block`), `CpuTimestralEngine` |
+| `timestral.tornado` | `TimestralKernels` (token assembly, RoPE, time and variate attention, gate, decoder gather), `TimestralPacked`, `TimestralForward` (a task graph per block shape), `TornadoTimestralEngine` |
 | `tirex2.tornado` | `TiRexKernels` (the TiRex-2-specific device kernels: scaler, mLSTM and sLSTM cells, head norms, variate attention, output stage), `PackedWeights` (one device buffer plus per-matrix FP32/FP16 copies for the library GEMMs; fused q\|k\|v\|o\|i\|f, up_gate\|up and the block-diagonal sLSTM gates), `TornadoForward` (a plan per batch shape — rows, known covariates, kept rows — built as one task graph: the input stage, the blocks and the output stage; the GEMM modes; CUDA graphs), `TornadoTiRex2Engine` |
 
 ## Scripts (`scripts/`)
@@ -53,6 +56,8 @@ The packages at the top are shared by every model family; each family lives in i
 | `setup_reference.sh` | The whole reference setup on a CUDA machine, in a work directory: venv, CUDA-kernel check, conversion, CPU + CUDA goldens, NXAI baseline, cold start |
 | `tirex_tornado.py`, `run_with_tornado.py` | Run an unmodified NXAI harness with `TiRex2.predict` served by `TiRexServer` |
 | `gift_resumable.py` | GIFT-Eval one configuration at a time: results appended as they land, resumable, server restart and retry on failure |
+| `timestral/dump_golden.py` | Runs Mistral's Timestral forecaster on 13 cases and saves every `predict_block` call's arguments, stages and output, the forecasts, and each stage's distance from a float64 replay |
+| `timestral/bench_reference.py` | The Timestral benchmark workloads, and the reference's latency on them |
 | `eval/` | The evaluation matrix: `eval_nvidia.sh` / `eval_mac.sh` + `summarize_eval.py` / `plot_eval.py` ([PERFORMANCE.md](PERFORMANCE.md)); accuracy parity: `acc_setup.sh` / `acc_run.sh` / `acc_compare.py` ([VALIDATION.md](VALIDATION.md)); `tornado_run.sh` (run a jitrex main class on a TornadoVM SDK), `nxai.sh` (NXAI's benchmark in its venv), `profile.sh` + `kern_sum.py` (nsys), `cublas13_shim.sh` ([INSTALL.md](INSTALL.md#nvidia-extras)), `waitfree.sh` (wait for a shared machine to be free). Each script's header lists its arguments and environment |
 
 ```bash
