@@ -97,7 +97,7 @@ public class PipelineGoldenTest {
         }
     }
 
-    static TimestralPipeline.Options options(TimestralConfig c, Map<String, Object> info) {
+    public static TimestralPipeline.Options options(TimestralConfig c, Map<String, Object> info) {
         TimestralPipeline.Options o = TimestralPipeline.Options.defaults(c);
         Object kw = info.get("kwargs");
         if (kw instanceof Map<?, ?> m && m.get("symmetric_averaging") instanceof Boolean b) {
@@ -107,7 +107,7 @@ public class PipelineGoldenTest {
     }
 
     /** The golden inputs as series; with {@code stripLeadingNaN}, each series without its all-NaN prefix. */
-    static List<TimeSeries> series(SafeTensors g, boolean stripLeadingNaN) {
+    public static List<TimeSeries> series(SafeTensors g, boolean stripLeadingNaN) {
         float[][][] ctx = cube(g.get("in.context"));
         float[][][] past = g.contains("in.past_covariates") ? cube(g.get("in.past_covariates")) : null;
         float[][][] known = g.contains("in.known_covariates") ? cube(g.get("in.known_covariates")) : null;
@@ -155,7 +155,7 @@ public class PipelineGoldenTest {
     }
 
     /** Relative max error of the forecasts against the golden {@code (B, V, H, Q)} quantiles. */
-    static double forecastError(List<Forecast> fc, Tensor golden) {
+    public static double forecastError(List<Forecast> fc, Tensor golden) {
         int bs = golden.dim(0), vs = golden.dim(1), hs = golden.dim(2), qs = golden.dim(3);
         float[] exp = golden.toFloatArray();
         float[] act = new float[exp.length];

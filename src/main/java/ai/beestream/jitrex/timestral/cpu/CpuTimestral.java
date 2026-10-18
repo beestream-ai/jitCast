@@ -25,8 +25,8 @@ import ai.beestream.jitrex.cpu.Ops;
 import ai.beestream.jitrex.timestral.BlockForward;
 import ai.beestream.jitrex.timestral.BlockInput;
 import ai.beestream.jitrex.timestral.BlockLayout;
+import ai.beestream.jitrex.timestral.BlockPrep;
 import ai.beestream.jitrex.timestral.Quantiles;
-import ai.beestream.jitrex.timestral.Scaler;
 import ai.beestream.jitrex.timestral.TimestralConfig;
 import ai.beestream.jitrex.timestral.TimestralWeights;
 
@@ -127,49 +127,17 @@ public final class CpuTimestral implements BlockForward {
     public float[][][] predictBlock(BlockInput block, StageSink sink) {
         TimestralConfig c = config;
         BlockLayout lay = BlockLayout.of(c, block);
-        int r = lay.rows(), ps = c.patchSize(), d = c.dModel(), q = c.numQuantiles();
+        int r = lay.rows(), d = c.dModel();
         int enc = lay.encoderTokens(), h = lay.horizonPatches(), n = lay.tokens();
-        int w = enc * ps;
 
-        // scaler: causal per-patch statistics; known covariates use whole-row statistics
-        float[][] window = lay.window();
-        boolean[][] obs = lay.observed();
-        float[] scaled = new float[r * w], loc = new float[r * w], scale = new float[r * w];
-        for (int i = 0; i < r; i++) {
-            float[] l = new float[w], s = new float[w];
-            Scaler.causalPatchLocScale(window[i], obs[i], ps, c.minimumScale(), l, s);
-            boolean known = lay.known(i);
-            float[] inst = known ? Scaler.instanceNorm(window[i], obs[i], c.minimumScale()) : null;
-            for (int t = 0; t < w; t++) {
-                int o = i * w + t;
-                if (known) {
-                    loc[o] = inst[0];
-                    scale[o] = inst[1];
-                    scaled[o] = Scaler.affine(window[i][t], inst[0], inst[1], obs[i][t], c.useAsinh() && inst[2] == 0f);
-                } else {
-                    loc[o] = l[t];
-                    scale[o] = s[t];
-                    scaled[o] = Scaler.affine(window[i][t], l[t], s[t], obs[i][t], c.useAsinh());
-                }
-            }
-        }
-        emit(sink, "scaled", scaled);
-        emit(sink, "loc", loc);
-        emit(sink, "scale", scale);
+        // scaler (known covariates use whole-row statistics) and the patch tokens, on the host
+        BlockPrep prep = BlockPrep.of(c, lay);
+        emit(sink, "scaled", prep.scaled());
+        emit(sink, "loc", prep.loc());
+        emit(sink, "scale", prep.scale());
 
         // patch embedding of [values, missing] per encoder token; the decoder tokens are the forecast query
-        float[] tok = new float[r * enc * 2 * ps];
-        for (int i = 0; i < r; i++) {
-            for (int p = 0; p < enc; p++) {
-                int o = (i * enc + p) * 2 * ps;
-                for (int s = 0; s < ps; s++) {
-                    int t = p * ps + s;
-                    tok[o + s] = scaled[i * w + t];
-                    tok[o + ps + s] = obs[i][t] ? 0f : 1f;
-                }
-            }
-        }
-        float[] embed = embedding.apply(tok, r * enc);
+        float[] embed = embedding.apply(prep.tokens(), r * enc);
         emit(sink, "embed", embed);
         float[] x = new float[r * n * d];
         for (int i = 0; i < r; i++) {
@@ -214,24 +182,8 @@ public final class CpuTimestral implements BlockForward {
             System.arraycopy(y, (i * n + enc) * d, dec, i * h * d, h * d);
         }
         float[] raw = head.apply(dec, r * h);
-        for (int v = 0; v < r * h * ps; v++) {
-            quantiles.apply(raw, v * q);
-        }
+        float[][][] out = prep.finish(c, lay, quantiles, raw);
         emit(sink, "head", raw);
-
-        // denormalize with the frame of the last context patch
-        int ll = lay.contextPatches();
-        float[][][] out = new float[r][h * ps][q];
-        for (int i = 0; i < r; i++) {
-            int anchor = i * w + (ll - 1) * ps;
-            for (int t = 0; t < h * ps; t++) {
-                float[] v = out[i][t];
-                for (int k = 0; k < q; k++) {
-                    v[k] = Scaler.invert(raw[(i * h * ps + t) * q + k], loc[anchor], scale[anchor], c.useAsinh());
-                }
-                Scaler.clampNonFinite(v);
-            }
-        }
         return out;
     }
 
