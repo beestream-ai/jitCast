@@ -6,14 +6,14 @@
 foundation models: 5M, 28M, 123M and 209M parameters, one architecture. jitcast reproduces
 `TimestralForecaster.forecast()` from Mistral's [`timestral`](https://github.com/mistralai/timestral)
 package end to end: 21-quantile forecasts for univariate and multivariate series, with past-only and
-known-future covariates, any horizon (decoded block by block), and the clampsym test-time
+known-future covariates (numeric or categorical), any horizon (decoded block by block), and the clampsym test-time
 augmentation.
 
 | | |
 |---|---|
 | Architecture | patch transformer (32 steps per patch): time attention with partial RoPE and a sigmoid gate, attention across the variates of a series, SwiGLU MLPs, RMSNorm; a monotone 21-quantile head |
 | Checkpoints | `mistralai/Timestral-5M`, `-28M`, `-123M`, `-209M` on Hugging Face, loaded as published (`config.json` + `model.safetensors`) |
-| Validated | 5M, 28M and 209M on CPU, Metal, OpenCL and CUDA ([VALIDATION.md](../VALIDATION.md#timestral)) |
+| Validated | all four checkpoints on CPU, Metal, OpenCL and CUDA ([VALIDATION.md](../VALIDATION.md#timestral)) |
 | Performance | [PERFORMANCE.md](../PERFORMANCE.md#timestral) |
 | Engines | `timestral.tornado.TornadoTimestralEngine` (TornadoVM), `timestral.cpu.CpuTimestralEngine` (FP32 reference) |
 
@@ -30,7 +30,8 @@ done
 try (ForecastEngine engine = TornadoTimestralEngine.load(Path.of("Timestral-5M"))) {
     List<Forecast> forecasts = engine.forecast(List.of(
             TimeSeries.univariate(history),                              // NaN = missing
-            new TimeSeries(targets, pastCovariates, futureCovariates)),  // [V][T], [Vp][T], [Vf][T+H]
+            new TimeSeries(targets, pastCovariates, futureCovariates),   // [V][T], [Vp][T], [Vf][T+H]
+            new TimeSeries(targets, null, null, pastCodes, futureCodes)),// category codes: [Cp][T], [Cf][T+H]
             64);
     float[] median = forecasts.get(0).median(0);                         // values[target][quantile][step]
 }
@@ -48,12 +49,11 @@ TimestralPipeline p = engine.pipeline().withOptions(
 
 | Feature | Supported |
 |---|---|
-| Inputs | univariate series, several jointly forecast targets, past-only and known-future covariates, mixed batches, NaN gaps and late starts, series of different lengths in one batch |
+| Inputs | univariate series, several jointly forecast targets, past-only and known-future covariates, numeric and categorical, mixed batches, NaN gaps and late starts, series of different lengths in one batch |
 | Context | up to the checkpoint's 32,768 steps (longer contexts keep the most recent) |
 | Horizon | any: up to 32 patches (1,024 steps) per block, then block by block with the median fed back and each block in the advancing refine frame |
 | Test-time augmentation | sign-flip averaging and clipping non-negative series at 0, both on by default as in the reference |
 | Precision | FP32 throughout by default; optional FP16 or TF32 GEMM inputs |
-| Not supported | categorical covariates (target-encoded in the reference) |
 
 ## How it maps onto jitcast
 
@@ -66,6 +66,7 @@ TimestralPipeline p = engine.pipeline().withOptions(
 | `scaler.py` | `timestral.Scaler` |
 | `monotone_quantiles` | `timestral.Quantiles` |
 | `TimestralForecaster.forecast` | `timestral.TimestralPipeline` |
+| `covariate_encoding.target_encode` | `timestral.TargetEncoding` |
 
 - **Host and device.** The scaler (float64 statistics, which Apple GPUs do not have), the patch
   tokens, the monotone quantile fan-out and the denormalization (which clamps infinities, which
@@ -75,6 +76,11 @@ TimestralPipeline p = engine.pipeline().withOptions(
 - **Rearranged weights.** The fused `q|k|v` projection is stored head-dim-major and becomes
   heads-major; the MLP's fused input projection, whose SiLU half is second, is swapped so the shared
   SwiGLU kernel applies.
+- **Categorical covariates.** As in the reference, each category becomes the smoothed mean of the
+  target where it occurs in the context, per series, on the host before the forward pass: `NaN` is a
+  category of its own, a code the context never shows becomes the series mean, and a series with
+  several targets uses its codes as they are. Codes are any finite numbers (`double`), so map strings
+  to numbers first.
 - **Covariates.** With covariates the reference also runs a decoder token for every context patch.
   Those tokens attend only to themselves and nothing reads them, so jitcast leaves them out; the
   forecasts are the same.
@@ -86,7 +92,7 @@ TimestralPipeline p = engine.pipeline().withOptions(
 | Property | Default | Effect |
 |---|---|---|
 | `jitcast.tornado.device` | TornadoVM's default | The device, `<backend>:<device>` |
-| `timestral.tornado.gemm` | `auto` | `auto`: `cublas` on CUDA, `blocked` elsewhere. `blocked`: TornadoVM's register-blocked FP32 GEMM from `blockedMinRows` rows and the tiled one under it; `tiled`; `half`: TornadoVM's FP16 GEMM (FP32 accumulation); `cublas`, `cublas-tf32`, `cublas-fp16` (CUDA) |
+| `timestral.tornado.gemm` | `auto` | `auto`: `cublas` on CUDA, `simdgroup` on Metal when Metal is TornadoVM's default backend, `blocked` elsewhere. `simdgroup`: FP32 GEMM on Apple's simdgroup matrix units (Metal, TornadoVM 7.3.1+); `blocked`: TornadoVM's register-blocked FP32 GEMM from `blockedMinRows` rows and the tiled one under it; `tiled`; `half`: TornadoVM's FP16 GEMM (FP32 accumulation); `cublas`, `cublas-tf32`, `cublas-fp16` (CUDA) |
 | `timestral.tornado.blockedMinRows` | `128` | The fewest GEMM rows that use the register-blocked kernel |
 | `timestral.tornado.cudaGraph` | `true` with cuBLAS | Capture the task graph once and replay it as a CUDA graph |
 | `timestral.tornado.plans` | `8` | Block shapes kept compiled (least recently used are evicted) |
@@ -100,10 +106,8 @@ weights.
 
 ## Limits
 
-- Categorical covariates are not supported.
 - Every checkpoint has 64-wide attention heads; the attention kernels support up to 128, in
   multiples of 8.
-- Timestral-123M shares the architecture and loads with the same code, but has not been validated.
 
 ## Licence
 
