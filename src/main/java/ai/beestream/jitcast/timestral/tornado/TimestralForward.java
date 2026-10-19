@@ -74,14 +74,24 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
 
     /**
      * Blocks are padded to shared shapes so that few plans are compiled ({@code -Dtimestral.tornado.buckets},
-     * on by default): the context to a multiple of {@link #PATCH_BUCKET} patches with leading empty
-     * patches, and the rows to a multiple of {@link #ROW_BUCKET} with empty series of their own. Neither
-     * is ever a valid key, and time positions count from each series' first observation, so the
-     * forecasts do not change.
+     * on by default): the context with leading empty patches and the rows with empty series of their
+     * own, each up to its {@link #bucket}. Neither is ever a valid key, and time positions count from
+     * each series' first observation, so the forecasts do not change.
      */
     private final boolean buckets = !"false".equalsIgnoreCase(System.getProperty("timestral.tornado.buckets", "true"));
-    static final int PATCH_BUCKET = 16;
-    static final int ROW_BUCKET = 8;
+
+    /**
+     * The size {@code x} is padded to: {@code x} itself up to 8, then the next multiple of a quarter of
+     * its power of two (9–16 in steps of 2, 17–32 in steps of 4, …), so padding adds at most 25% and
+     * the number of shapes grows with the logarithm of the size.
+     */
+    static int bucket(int x) {
+        if (x <= 8) {
+            return x;
+        }
+        int step = Integer.highestOneBit(x - 1) / 4;
+        return (x + step - 1) / step * step;
+    }
 
     /** The fewest rows a GEMM needs to run on {@link Kernels#gemmBlocked}. */
     private final int blockedMinRows = Integer.getInteger("timestral.tornado.blockedMinRows", 128);
@@ -155,8 +165,8 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
     static BlockInput bucketed(BlockInput b, int ps) {
         int r = b.rows(), t = b.length();
         int patches = t / ps;
-        int padPatches = (patches + PATCH_BUCKET - 1) / PATCH_BUCKET * PATCH_BUCKET;
-        int rows = (r + ROW_BUCKET - 1) / ROW_BUCKET * ROW_BUCKET;
+        int padPatches = bucket(patches);
+        int rows = bucket(r);
         if (padPatches == patches && rows == r) {
             return b;
         }
