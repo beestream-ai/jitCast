@@ -53,18 +53,15 @@ public final class Quantiles {
     public void apply(float[] raw, int off) {
         int q = scale.length;
         float m = raw[off + median];
-        float[] inc = new float[q];
-        for (int i = 0; i < q; i++) {
-            inc[i] = scale[i] * softplus(raw[off + i]);
-        }
+        // each level's increment is read before that level is overwritten
         float up = 0;
         for (int i = median + 1; i < q; i++) {
-            up += inc[i];
+            up += scale[i] * softplus(raw[off + i]);
             raw[off + i] = clamp(m + up);
         }
         float down = 0;
         for (int i = median - 1; i >= 0; i--) {
-            down += inc[i];
+            down += scale[i] * softplus(raw[off + i]);
             raw[off + i] = clamp(m - down);
         }
         raw[off + median] = clamp(m);

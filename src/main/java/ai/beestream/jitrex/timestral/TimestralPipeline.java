@@ -17,6 +17,7 @@ package ai.beestream.jitrex.timestral;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.IntStream;
 
 import ai.beestream.jitrex.api.Forecast;
 import ai.beestream.jitrex.api.TimeSeries;
@@ -287,18 +288,24 @@ public final class TimestralPipeline {
         float[][][] q = decode(a, horizon);
         tm = Timing.start();
         int nq = config.numQuantiles();
+        float[][] bounds = new float[a.rows().length][];
+        IntStream.range(0, series.size()).parallel().forEach(s -> {
+            for (int row : a.targetRows()[s]) {
+                bounds[row] = capBounds(a.rows()[row], a.mask()[row]);
+            }
+        });
         List<float[][][]> out = new ArrayList<>(series.size());
         for (int s = 0; s < series.size(); s++) {
             int[] tr = a.targetRows()[s];
             float[][][] f = new float[tr.length][nq][horizon];
             for (int v = 0; v < tr.length; v++) {
                 int row = tr[v];
-                float[] bounds = capBounds(a.rows()[row], a.mask()[row]);
+                float[] b = bounds[row];
                 for (int t = 0; t < horizon; t++) {
                     for (int k = 0; k < nq; k++) {
                         float x = q[row][t][k];
-                        if (bounds != null) {
-                            x = Math.min(Math.max(x, bounds[0]), bounds[1]);
+                        if (b != null) {
+                            x = Math.min(Math.max(x, b[0]), b[1]);
                         }
                         if (Float.isNaN(x)) {
                             throw new IllegalStateException("forecast produced NaN values; the input is degenerate");
@@ -413,9 +420,9 @@ public final class TimestralPipeline {
         }
         int median = config.medianIndex();
         int t = context[0].length;
-        for (int i = 0; i < q.length; i++) {
+        IntStream.range(0, q.length).parallel().forEach(i -> {
             if (role != null && role[i] != BlockInput.TARGET) {
-                continue;
+                return;
             }
             float[] loc = new float[t], scale = new float[t];
             Scaler.causalPatchLocScale(context[i], mask[i], ps, config.minimumScale(), loc, scale);
@@ -438,7 +445,7 @@ public final class TimestralPipeline {
                     Scaler.clampNonFinite(v);
                 }
             }
-        }
+        });
     }
 
     private static float[][] slice(float[][] m, int from, int len) {

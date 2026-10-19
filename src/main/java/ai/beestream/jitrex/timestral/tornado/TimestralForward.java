@@ -15,6 +15,8 @@
  */
 package ai.beestream.jitrex.timestral.tornado;
 
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
@@ -397,9 +399,7 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
             int rows = shape.rows(), enc = shape.encoder(), h = shape.horizon(), n = enc + h, dh = config.headDim();
             long t0 = Timing.start();
             float[] t = prep.tokens();
-            for (int i = 0; i < t.length; i++) {
-                tok.set(i, t[i]);
-            }
+            MemorySegment.copy(t, 0, tok.getSegment(), ValueLayout.JAVA_FLOAT, 0, t.length);
             // RoPE table over every position a token can have: (−enc, enc + h)
             int half = dh / 2;
             for (int p = 0; p < 2 * enc + h; p++) {
@@ -440,9 +440,7 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
             Timing.add("fwd.device", t0);
             t0 = Timing.start();
             float[] out = new float[raw.getSize()];
-            for (int i = 0; i < out.length; i++) {
-                out[i] = raw.get(i);
-            }
+            MemorySegment.copy(raw.getSegment(), ValueLayout.JAVA_FLOAT, 0, out, 0, out.length);
             Timing.add("fwd.download", t0);
             return out;
         }
