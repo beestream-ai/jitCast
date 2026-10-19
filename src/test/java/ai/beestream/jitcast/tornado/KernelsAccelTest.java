@@ -112,16 +112,34 @@ public class KernelsAccelTest {
     @Test
     public void gemmSimdgroupWithEveryFlag() {
         Assume.assumeTrue("simdgroup matrices need the Metal backend", KernelHarness.device().getTornadoVMBackend() == TornadoVMBackendType.METAL);
-        int m = 150, n = 200, k = 88; // ragged in every dimension against 32 × 32 × 32 tiles
+        checkSimdgroup(false, 150, 200, 88); // ragged in every dimension against 32 × 32 × 32 tiles
+    }
+
+    @Test
+    public void gemmSimdgroupWideWithEveryFlag() {
+        Assume.assumeTrue("simdgroup matrices need the Metal backend", KernelHarness.device().getTornadoVMBackend() == TornadoVMBackendType.METAL);
+        checkSimdgroup(true, 150, 200, 88); // interior tiles read directly, ragged edge tiles staged
+        checkSimdgroup(true, 128, 192, 96); // every tile interior
+        checkSimdgroup(true, 200, 136, 384); // interior and edge tiles over a long K
+        checkSimdgroup(true, 130, 140, 90); // K not a multiple of 8: every tile staged
+    }
+
+    private void checkSimdgroup(boolean wide, int m, int n, int k) {
         int aOff = 5, wOff = 7;
         float[] a = random(aOff + m * k, 1f), w = random(wOff + n * k + n, 0.2f), c0 = random(m * n, 1f);
         for (int flags : new int[] {0, Kernels.BIAS | Kernels.SILU, Kernels.BIAS | Kernels.ACCUMULATE, Kernels.ACCUMULATE}) {
             FloatArray fa = FloatArray.fromArray(a), fw = FloatArray.fromArray(w), fc = FloatArray.fromArray(c0);
-            int tiles = ((m + Kernels.MMA_TILE - 1) / Kernels.MMA_TILE) * ((n + Kernels.MMA_TILE - 1) / Kernels.MMA_TILE);
+            int t = wide ? Kernels.MMA_WIDE : Kernels.MMA_TILE;
+            int tiles = ((m + t - 1) / t) * ((n + t - 1) / t);
             KernelContext ctx = new KernelContext();
             int f = flags;
-            run("t", grid1(tiles * Kernels.MMA_THREADS, Kernels.MMA_THREADS),
-                    g -> g.task("t", Kernels::gemmSimdgroup, ctx, fa, aOff, fw, wOff, wOff + n * k, fc, m, n, k, f), fc, fa, fw);
+            run("t", grid1(tiles * Kernels.MMA_THREADS, Kernels.MMA_THREADS), g -> {
+                if (wide) {
+                    g.task("t", Kernels::gemmSimdgroupWide, ctx, fa, aOff, fw, wOff, wOff + n * k, fc, m, n, k, f);
+                } else {
+                    g.task("t", Kernels::gemmSimdgroup, ctx, fa, aOff, fw, wOff, wOff + n * k, fc, m, n, k, f);
+                }
+            }, fc, fa, fw);
             float[] bias = Arrays.copyOfRange(w, wOff + n * k, wOff + n * k + n);
             float[] exp = Ops.linear(Arrays.copyOfRange(a, aOff, aOff + m * k), m, Arrays.copyOfRange(w, wOff, wOff + n * k),
                     (f & Kernels.BIAS) != 0 ? bias : null, k, n);
@@ -131,7 +149,7 @@ public class KernelsAccelTest {
             if ((f & Kernels.ACCUMULATE) != 0) {
                 Ops.addInPlace(exp, c0);
             }
-            check("gemmSimdgroup flags=" + f, fc.toHeapArray(), exp);
+            check((wide ? "gemmSimdgroupWide " : "gemmSimdgroup ") + m + "x" + n + "x" + k + " flags=" + f, fc.toHeapArray(), exp);
         }
     }
 

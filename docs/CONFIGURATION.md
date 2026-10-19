@@ -98,8 +98,9 @@ Some kernels adapt to the device's maximum work-group size (for example 256 on O
 
 | Property | Values (default first) | Effect |
 |---|---|---|
-| `timestral.tornado.gemm` | `auto`, `blocked`, `tiled`, `half`, `cublas`, `cublas-tf32`, `cublas-fp16` | GEMM implementation. `auto`: `cublas` on CUDA, `blocked` elsewhere. `blocked`: TornadoVM's register-blocked FP32 kernel from `blockedMinRows` rows and the tiled one under it. `half`: TornadoVM's FP16 kernel (FP32 accumulation). `cublas*`: cuBLAS in FP32, TF32, or FP16 with FP32 accumulation |
+| `timestral.tornado.gemm` | `auto`, `simdgroup`, `blocked`, `tiled`, `half`, `cublas`, `cublas-tf32`, `cublas-fp16` | GEMM implementation. `auto`: `cublas` on CUDA, `simdgroup` on Metal when Metal is TornadoVM's default backend (`-Dtornado.metal.priority=100`), `blocked` elsewhere. `simdgroup`: FP32 on Apple's simdgroup matrix units (TornadoVM 7.3.1+). `blocked`: TornadoVM's register-blocked FP32 kernel from `blockedMinRows` rows and the tiled one under it. `half`: TornadoVM's FP16 kernel (FP32 accumulation). `cublas*`: cuBLAS in FP32, TF32, or FP16 with FP32 accumulation |
 | `timestral.tornado.blockedMinRows` | `128` | The fewest GEMM rows that use the register-blocked kernel (its 64-row tiles waste most of their work below that) |
+| `timestral.tornado.simdgroupWideMinRows` | `64` | The fewest GEMM rows that use the 64 × 64 simdgroup kernel; fewer use the 32 × 32 one, which spreads over more work-groups |
 | `timestral.tornado.cudaGraph` | `true` with cuBLAS, `false` otherwise | Capture the plan's task graph once and replay it as a CUDA graph |
 | `timestral.tornado.plans` | `8` | Block shapes kept compiled (rows, encoder tokens, horizon patches, covariates); least recently used are evicted |
 | `timestral.tornado.profile` | `false`, `true` | Print TornadoVM's per-task kernel times after every execution (analysis only) |

@@ -94,6 +94,7 @@ TimestralPipeline p = engine.pipeline().withOptions(
 | `jitcast.tornado.device` | TornadoVM's default | The device, `<backend>:<device>` |
 | `timestral.tornado.gemm` | `auto` | `auto`: `cublas` on CUDA, `simdgroup` on Metal when Metal is TornadoVM's default backend, `blocked` elsewhere. `simdgroup`: FP32 GEMM on Apple's simdgroup matrix units (Metal, TornadoVM 7.3.1+); `blocked`: TornadoVM's register-blocked FP32 GEMM from `blockedMinRows` rows and the tiled one under it; `tiled`; `half`: TornadoVM's FP16 GEMM (FP32 accumulation); `cublas`, `cublas-tf32`, `cublas-fp16` (CUDA) |
 | `timestral.tornado.blockedMinRows` | `128` | The fewest GEMM rows that use the register-blocked kernel |
+| `timestral.tornado.simdgroupWideMinRows` | `64` | The fewest GEMM rows that use the 64 × 64 simdgroup kernel (the 32 × 32 one below) |
 | `timestral.tornado.cudaGraph` | `true` with cuBLAS | Capture the task graph once and replay it as a CUDA graph |
 | `timestral.tornado.plans` | `8` | Block shapes kept compiled (least recently used are evicted) |
 | `timestral.tornado.profile` | `false` | Print TornadoVM's per-task kernel times after every execution |
