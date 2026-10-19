@@ -109,6 +109,32 @@ public class KernelsAccelTest {
         }
     }
 
+    @Test
+    public void gemmSimdgroupWithEveryFlag() {
+        Assume.assumeTrue("simdgroup matrices need the Metal backend", KernelHarness.device().getTornadoVMBackend() == TornadoVMBackendType.METAL);
+        int m = 150, n = 200, k = 88; // ragged in every dimension against 32 × 32 × 32 tiles
+        int aOff = 5, wOff = 7;
+        float[] a = random(aOff + m * k, 1f), w = random(wOff + n * k + n, 0.2f), c0 = random(m * n, 1f);
+        for (int flags : new int[] {0, Kernels.BIAS | Kernels.SILU, Kernels.BIAS | Kernels.ACCUMULATE, Kernels.ACCUMULATE}) {
+            FloatArray fa = FloatArray.fromArray(a), fw = FloatArray.fromArray(w), fc = FloatArray.fromArray(c0);
+            int tiles = ((m + Kernels.MMA_TILE - 1) / Kernels.MMA_TILE) * ((n + Kernels.MMA_TILE - 1) / Kernels.MMA_TILE);
+            KernelContext ctx = new KernelContext();
+            int f = flags;
+            run("t", grid1(tiles * Kernels.MMA_THREADS, Kernels.MMA_THREADS),
+                    g -> g.task("t", Kernels::gemmSimdgroup, ctx, fa, aOff, fw, wOff, wOff + n * k, fc, m, n, k, f), fc, fa, fw);
+            float[] bias = Arrays.copyOfRange(w, wOff + n * k, wOff + n * k + n);
+            float[] exp = Ops.linear(Arrays.copyOfRange(a, aOff, aOff + m * k), m, Arrays.copyOfRange(w, wOff, wOff + n * k),
+                    (f & Kernels.BIAS) != 0 ? bias : null, k, n);
+            if ((f & Kernels.SILU) != 0) {
+                Ops.siluInPlace(exp);
+            }
+            if ((f & Kernels.ACCUMULATE) != 0) {
+                Ops.addInPlace(exp, c0);
+            }
+            check("gemmSimdgroup flags=" + f, fc.toHeapArray(), exp);
+        }
+    }
+
     /** The FP16 GEMMs: FP16-rounded A and W, FP32 bias, accumulation and C, plus C's FP16 twin. */
     private void checkHalfGemm(boolean tile) {
         int m = 150, n = 200, k = 88; // ragged in every dimension against 64 × 64 × 16/32 tiles

@@ -16,6 +16,7 @@
 package ai.beestream.jitcast.tornado;
 
 import uk.ac.manchester.tornado.api.KernelContext;
+import uk.ac.manchester.tornado.api.types.matrix.Matrix8x8Float;
 import uk.ac.manchester.tornado.api.math.TornadoMath;
 import uk.ac.manchester.tornado.api.tile.DType;
 import uk.ac.manchester.tornado.api.tile.PartitionView;
@@ -310,6 +311,82 @@ public final class Kernels {
                 v += c.get(ci);
             }
             c.set(ci, v);
+        }
+    }
+
+    /** Output tile edge of {@link #gemmSimdgroup}: a work-group of 4 SIMD groups computes 32 × 32. */
+    public static final int MMA_TILE = 32;
+    /** The K slice {@link #gemmSimdgroup} stages in threadgroup memory. */
+    public static final int MMA_K = 32;
+    /** Threads per work-group of {@link #gemmSimdgroup}: 4 SIMD groups of 32. */
+    public static final int MMA_THREADS = 128;
+
+    /**
+     * {@link #gemm} on Apple's matrix units (Metal only, {@code simdgroup_float8x8}), FP32 throughout:
+     * {@code C[m, n] (+)= act(A[m, :] · W[n, :] + b[n])} with {@code A} at {@code aOff}, {@code W}
+     * ({@code [N, K]}) at {@code wOff} and {@code b} at {@code bOff} in the packed weights.
+     *
+     * <p>One work-group of {@link #MMA_THREADS} threads per 32 × 32 output tile; each of its four SIMD
+     * groups owns a 16 × 16 quadrant as 2 × 2 accumulator fragments of 8 × 8. Each K slice of A and of
+     * W is staged in threadgroup memory, zero-padded past {@code m}, {@code n} and {@code k}, so any
+     * shape works; W's rows are read transposed. The tile goes back through threadgroup memory for
+     * the epilogue of {@link #gemm} (bias, SiLU, then accumulate). Global work
+     * {@code ⌈M/32⌉·⌈N/32⌉·128}, local 128.
+     */
+    public static void gemmSimdgroup(KernelContext ctx, FloatArray a, int aOff, FloatArray w, int wOff, int bOff, FloatArray c,
+            int m, int n, int k, int flags) {
+        int tid = ctx.localIdx;
+        int tilesN = (n + MMA_TILE - 1) / MMA_TILE;
+        int tile = ctx.groupIdx;
+        int rowBase = (tile / tilesN) * MMA_TILE;
+        int colBase = (tile % tilesN) * MMA_TILE;
+        int sg = tid / 32;
+        int qr = (sg / 2) * 16;
+        int qc = (sg % 2) * 16;
+        float[] as = ctx.allocateFloatLocalArray(MMA_TILE * MMA_K);
+        float[] ws = ctx.allocateFloatLocalArray(MMA_TILE * MMA_K);
+        float[] cs = ctx.allocateFloatLocalArray(MMA_TILE * MMA_TILE);
+        Matrix8x8Float acc00 = ctx.simdgroupMatrixZero();
+        Matrix8x8Float acc01 = ctx.simdgroupMatrixZero();
+        Matrix8x8Float acc10 = ctx.simdgroupMatrixZero();
+        Matrix8x8Float acc11 = ctx.simdgroupMatrixZero();
+        for (int kt = 0; kt < k; kt += MMA_K) {
+            for (int e = tid; e < MMA_TILE * MMA_K; e += MMA_THREADS) {
+                int r = e / MMA_K;
+                int kk = kt + e - r * MMA_K;
+                float av = 0f;
+                if (rowBase + r < m && kk < k) {
+                    av = a.get(aOff + (rowBase + r) * k + kk);
+                }
+                as[e] = av;
+                float wv = 0f;
+                if (colBase + r < n && kk < k) {
+                    wv = w.get(wOff + (colBase + r) * k + kk);
+                }
+                ws[e] = wv;
+            }
+            ctx.localBarrier();
+            for (int kk = 0; kk < MMA_K; kk += 8) {
+                Matrix8x8Float a0 = ctx.simdgroupMatrixLoad(as, qr * MMA_K + kk, MMA_K);
+                Matrix8x8Float a1 = ctx.simdgroupMatrixLoad(as, (qr + 8) * MMA_K + kk, MMA_K);
+                Matrix8x8Float b0 = ctx.simdgroupMatrixLoadTransposed(ws, qc * MMA_K + kk, MMA_K);
+                Matrix8x8Float b1 = ctx.simdgroupMatrixLoadTransposed(ws, (qc + 8) * MMA_K + kk, MMA_K);
+                acc00 = ctx.simdgroupMatrixMultiplyAccumulate(a0, b0, acc00);
+                acc01 = ctx.simdgroupMatrixMultiplyAccumulate(a0, b1, acc01);
+                acc10 = ctx.simdgroupMatrixMultiplyAccumulate(a1, b0, acc10);
+                acc11 = ctx.simdgroupMatrixMultiplyAccumulate(a1, b1, acc11);
+            }
+            ctx.localBarrier();
+        }
+        ctx.simdgroupMatrixStore(acc00, cs, qr * MMA_TILE + qc, MMA_TILE);
+        ctx.simdgroupMatrixStore(acc01, cs, qr * MMA_TILE + qc + 8, MMA_TILE);
+        ctx.simdgroupMatrixStore(acc10, cs, (qr + 8) * MMA_TILE + qc, MMA_TILE);
+        ctx.simdgroupMatrixStore(acc11, cs, (qr + 8) * MMA_TILE + qc + 8, MMA_TILE);
+        ctx.localBarrier();
+        for (int e = tid; e < MMA_TILE * MMA_TILE; e += MMA_THREADS) {
+            int r = e / MMA_TILE;
+            int col = e - r * MMA_TILE;
+            blockedStore(c, 0, w, bOff, rowBase + r, colBase + col, m, n, flags, cs[e]);
         }
     }
 

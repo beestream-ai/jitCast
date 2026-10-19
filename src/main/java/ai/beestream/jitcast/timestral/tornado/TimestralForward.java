@@ -354,7 +354,12 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
             }
             int f = flags | (l.b() >= 0 ? Kernels.BIAS : 0);
             WorkerGrid wg;
-            if (gemmMode == GemmMode.HALF) {
+            if (gemmMode == GemmMode.SIMDGROUP) {
+                int t = Kernels.MMA_TILE;
+                int tiles = ((m + t - 1) / t) * ((l.out() + t - 1) / t);
+                wg = group(tiles * Kernels.MMA_THREADS, Kernels.MMA_THREADS);
+                g.task(name, Kernels::gemmSimdgroup, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, m, l.out(), l.in(), f);
+            } else if (gemmMode == GemmMode.HALF) {
                 HalfFloatArray ah = half(name, a, m * l.in());
                 HalfFloatArray wh = halfWeight(l);
                 int t = Kernels.HGEMM_TILE, threads = Kernels.HGEMM_THREADS;
