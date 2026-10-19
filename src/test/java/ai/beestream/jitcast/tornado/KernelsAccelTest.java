@@ -32,8 +32,10 @@ import ai.beestream.jitcast.cpu.Ops;
 import org.junit.Assume;
 import org.junit.Test;
 
+import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.TaskGraph;
+import uk.ac.manchester.tornado.api.TornadoExecutionPlan;
 import uk.ac.manchester.tornado.api.WorkerGrid;
 import uk.ac.manchester.tornado.api.WorkerGrid2D;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
@@ -124,6 +126,48 @@ public class KernelsAccelTest {
         checkSimdgroup(true, 130, 140, 90); // K not a multiple of 8: every tile staged
     }
 
+    @Test
+    public void gemmSimdgroupSplitKWithEveryFlag() {
+        Assume.assumeTrue("simdgroup matrices need the Metal backend", KernelHarness.device().getTornadoVMBackend() == TornadoVMBackendType.METAL);
+        checkSplitK(40, 200, 384, 96); // four slices, edge tiles staged
+        checkSplitK(128, 128, 384, 128); // three slices, interior tiles read directly
+        checkSplitK(70, 136, 300, 128); // K not a multiple of 8, a short last slice
+    }
+
+    private void checkSplitK(int m, int n, int k, int kSlice) {
+        int aOff = 3, wOff = 11, slices = (k + kSlice - 1) / kSlice;
+        float[] a = random(aOff + m * k, 1f), w = random(wOff + n * k + n, 0.2f), c0 = random(m * n, 1f);
+        for (int flags : new int[] {0, Kernels.BIAS | Kernels.SILU, Kernels.BIAS | Kernels.ACCUMULATE}) {
+            FloatArray fa = FloatArray.fromArray(a), fw = FloatArray.fromArray(w), fc = FloatArray.fromArray(c0);
+            FloatArray part = new FloatArray(slices * m * n);
+            int tiles = ((m + Kernels.MMA_WIDE - 1) / Kernels.MMA_WIDE) * ((n + Kernels.MMA_WIDE - 1) / Kernels.MMA_WIDE);
+            KernelContext ctx = new KernelContext();
+            int f = flags;
+            TaskGraph g = new TaskGraph("k").transferToDevice(DataTransferMode.EVERY_EXECUTION, fa, fw, fc, part)
+                    .task("p", Kernels::gemmSimdgroupWide, ctx, fa, aOff, fw, wOff, 0, part, m, n, k, 0, kSlice)
+                    .task("s", Kernels::splitKSum, ctx, part, slices, fw, wOff + n * k, fc, m, n, f)
+                    .transferToHost(DataTransferMode.EVERY_EXECUTION, fc);
+            GridScheduler grid = new GridScheduler();
+            grid.addWorkerGrid("k.p", grid1(slices * tiles * Kernels.MMA_THREADS, Kernels.MMA_THREADS));
+            grid.addWorkerGrid("k.s", items(m * n));
+            try (TornadoExecutionPlan plan = new TornadoExecutionPlan(g.snapshot())) {
+                plan.withGridScheduler(grid).withDevice(KernelHarness.device()).execute();
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+            float[] bias = Arrays.copyOfRange(w, wOff + n * k, wOff + n * k + n);
+            float[] exp = Ops.linear(Arrays.copyOfRange(a, aOff, aOff + m * k), m, Arrays.copyOfRange(w, wOff, wOff + n * k),
+                    (f & Kernels.BIAS) != 0 ? bias : null, k, n);
+            if ((f & Kernels.SILU) != 0) {
+                Ops.siluInPlace(exp);
+            }
+            if ((f & Kernels.ACCUMULATE) != 0) {
+                Ops.addInPlace(exp, c0);
+            }
+            check("splitK " + m + "x" + n + "x" + k + "/" + kSlice + " flags=" + f, fc.toHeapArray(), exp);
+        }
+    }
+
     private void checkSimdgroup(boolean wide, int m, int n, int k) {
         int aOff = 5, wOff = 7;
         float[] a = random(aOff + m * k, 1f), w = random(wOff + n * k + n, 0.2f), c0 = random(m * n, 1f);
@@ -135,7 +179,7 @@ public class KernelsAccelTest {
             int f = flags;
             run("t", grid1(tiles * Kernels.MMA_THREADS, Kernels.MMA_THREADS), g -> {
                 if (wide) {
-                    g.task("t", Kernels::gemmSimdgroupWide, ctx, fa, aOff, fw, wOff, wOff + n * k, fc, m, n, k, f);
+                    g.task("t", Kernels::gemmSimdgroupWide, ctx, fa, aOff, fw, wOff, wOff + n * k, fc, m, n, k, f, k);
                 } else {
                     g.task("t", Kernels::gemmSimdgroup, ctx, fa, aOff, fw, wOff, wOff + n * k, fc, m, n, k, f);
                 }

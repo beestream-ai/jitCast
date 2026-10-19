@@ -16,7 +16,8 @@ The kernels every model family uses are in [`Kernels.java`](../src/main/java/ai/
 | [`gemmHalf`](../src/main/java/ai/beestream/jitcast/tornado/Kernels.java#L109) | Register-blocked FP16-input GEMM, FP32 accumulation, same epilogues and output twin | cuBLAS `cublasGemmExFP16FP32`, `cublasGemmExFP16`; cuBLASLt `ltMatmulFP16`; CUDA Tile `gemmHalfTile` |
 | [`gemmBlocked`](../src/main/java/ai/beestream/jitcast/tornado/Kernels.java#L218) | The tiled GEMM register-blocked as `gemmHalf` is, in FP32 throughout (Timestral, from 128 rows) | — |
 | [`gemmSimdgroup`](../src/main/java/ai/beestream/jitcast/tornado/Kernels.java#L336) | FP32 GEMM on Apple's simdgroup matrix units (Metal), 32 × 32 tiles staged in threadgroup memory, same epilogues (Timestral, under 64 rows) | — |
-| [`gemmSimdgroupWide`](../src/main/java/ai/beestream/jitcast/tornado/Kernels.java#L405) | `gemmSimdgroup` with 64 × 64 tiles whose interior tiles read A and W straight from device memory (Timestral, from 64 rows) | — |
+| [`gemmSimdgroupWide`](../src/main/java/ai/beestream/jitcast/tornado/Kernels.java#L411) | `gemmSimdgroup` with 64 × 64 tiles whose interior tiles read A and W straight from device memory, optionally over one K slice per work-group (Timestral, from 64 rows) | — |
+| [`splitKSum`](../src/main/java/ai/beestream/jitcast/tornado/Kernels.java#L584) | Adds a split-K GEMM's partial tiles and applies the epilogue (Timestral, GEMMs with few tiles) | — |
 | [`gemmHalfTile`](../src/main/java/ai/beestream/jitcast/tornado/Kernels.java#L329) | The FP16 GEMM in the CUDA Tile API (`mma` on tensor cores, masked tiles) | is itself the CUDA-only variant |
 | [`rmsNorm`](../src/main/java/ai/beestream/jitcast/tornado/Kernels.java#L354) | RMSNorm per row; FP16 twin | — |
 | [`swiGlu`](../src/main/java/ai/beestream/jitcast/tornado/Kernels.java#L382) | `SiLU(gate) · up` for the fused up-gate projection; FP16 twin | — |

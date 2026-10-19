@@ -400,20 +400,30 @@ public final class Kernels {
      * {@code m} and {@code n} (with {@code k} a multiple of 8) loads its fragments straight from
      * device memory; an edge tile stages each K slice of A and W in threadgroup memory, zero-padded,
      * so nothing is read past {@code m}, {@code n} or {@code k}. Same arguments and epilogue as
-     * {@link #gemmSimdgroup}. Global work {@code ⌈M/64⌉·⌈N/64⌉·128}, local 128.
+     * {@link #gemmSimdgroup}.
+     *
+     * <p>Split K: with {@code kSlice < k} the work-groups also split K into slices of {@code kSlice}
+     * (a multiple of 8), and each writes its raw partial tile to {@code c} at {@code slice·m·n},
+     * without the epilogue, for {@link #splitKSum} to add up. With {@code kSlice ≥ k} it is one slice
+     * and the kernel writes the result itself. Global work {@code ⌈K/kSlice⌉·⌈M/64⌉·⌈N/64⌉·128},
+     * local 128.
      */
     public static void gemmSimdgroupWide(KernelContext ctx, FloatArray a, int aOff, FloatArray w, int wOff, int bOff,
-            FloatArray c, int m, int n, int k, int flags) {
+            FloatArray c, int m, int n, int k, int flags, int kSlice) {
         int tid = ctx.localIdx;
         int tilesN = (n + MMA_WIDE - 1) / MMA_WIDE;
-        int tile = ctx.groupIdx;
+        int tiles = ((m + MMA_WIDE - 1) / MMA_WIDE) * tilesN;
+        int slice = ctx.groupIdx / tiles;
+        int tile = ctx.groupIdx - slice * tiles;
+        int k0 = slice * kSlice;
+        int k1 = TornadoMath.min(k, k0 + kSlice);
         int rowBase = (tile / tilesN) * MMA_WIDE;
         int colBase = (tile % tilesN) * MMA_WIDE;
         int sg = tid / 32;
         int sr = (sg / 2) * 32;
         int sc = (sg % 2) * 32;
         float[] sh = ctx.allocateFloatLocalArray(2 * MMA_WIDE * MMA_K);
-        int inside = (rowBase + MMA_WIDE <= m ? 1 : 0) * (colBase + MMA_WIDE <= n ? 1 : 0) * (k % 8 == 0 ? 1 : 0);
+        int inside = (rowBase + MMA_WIDE <= m ? 1 : 0) * (colBase + MMA_WIDE <= n ? 1 : 0) * (k % 8 == 0 ? 1 : 0) * (kSlice % 8 == 0 ? 1 : 0);
         // each path keeps its own accumulators and leaves them in threadgroup memory: TornadoVM's Metal
         // backend does not merge simdgroup matrices correctly where the two paths join
         if (inside == 1) {
@@ -435,7 +445,7 @@ public final class Kernels {
             Matrix8x8Float acc33 = ctx.simdgroupMatrixZero();
             int ar = aOff + (rowBase + sr) * k;
             int wr = wOff + (colBase + sc) * k;
-            for (int kk = 0; kk < k; kk += 8) {
+            for (int kk = k0; kk < k1; kk += 8) {
                 Matrix8x8Float a0 = ctx.simdgroupMatrixLoad(a, ar + 0 * k + kk, k);
                 Matrix8x8Float a1 = ctx.simdgroupMatrixLoad(a, ar + 8 * k + kk, k);
                 Matrix8x8Float a2 = ctx.simdgroupMatrixLoad(a, ar + 16 * k + kk, k);
@@ -494,17 +504,17 @@ public final class Kernels {
             Matrix8x8Float acc31 = ctx.simdgroupMatrixZero();
             Matrix8x8Float acc32 = ctx.simdgroupMatrixZero();
             Matrix8x8Float acc33 = ctx.simdgroupMatrixZero();
-            for (int kt = 0; kt < k; kt += MMA_K) {
+            for (int kt = k0; kt < k1; kt += MMA_K) {
                 for (int e = tid; e < MMA_WIDE * MMA_K; e += MMA_THREADS) {
                     int r = e / MMA_K;
                     int kk = kt + e - r * MMA_K;
                     float av = 0f;
-                    if (rowBase + r < m && kk < k) {
+                    if (rowBase + r < m && kk < k1) {
                         av = a.get(aOff + (rowBase + r) * k + kk);
                     }
                     sh[e] = av;
                     float wv = 0f;
-                    if (colBase + r < n && kk < k) {
+                    if (colBase + r < n && kk < k1) {
                         wv = w.get(wOff + (colBase + r) * k + kk);
                     }
                     sh[MMA_WIDE * MMA_K + e] = wv;
@@ -559,7 +569,28 @@ public final class Kernels {
         for (int e = tid; e < MMA_WIDE * MMA_WIDE; e += MMA_THREADS) {
             int r = e / MMA_WIDE;
             int col = e - r * MMA_WIDE;
-            blockedStore(c, 0, w, bOff, rowBase + r, colBase + col, m, n, flags, sh[e]);
+            if (kSlice >= k) {
+                blockedStore(c, 0, w, bOff, rowBase + r, colBase + col, m, n, flags, sh[e]);
+            } else if (rowBase + r < m && colBase + col < n) {
+                c.set(slice * m * n + (rowBase + r) * n + colBase + col, sh[e]);
+            }
+        }
+    }
+
+    /**
+     * The second half of a split-K {@link #gemmSimdgroupWide}: {@code C = act(Σ_s part[s] + b) (+ C)}
+     * over its {@code slices} partial tiles, with the epilogue of {@link #gemm}. One thread per output.
+     */
+    public static void splitKSum(KernelContext ctx, FloatArray part, int slices, FloatArray w, int bOff, FloatArray c, int m,
+            int n, int flags) {
+        int id = ctx.globalIdx;
+        if (id < m * n) {
+            float sum = 0f;
+            for (int sl = 0; sl < slices; sl++) {
+                sum += part.get(sl * m * n + id);
+            }
+            int row = id / n;
+            blockedStore(c, 0, w, bOff, row, id - row * n, m, n, flags, sum);
         }
     }
 

@@ -99,6 +99,23 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
     /** The fewest GEMM rows that use {@link Kernels#gemmSimdgroupWide} rather than {@link Kernels#gemmSimdgroup}. */
     private final int wideMinRows = Integer.getInteger("timestral.tornado.simdgroupWideMinRows", 64);
 
+    /**
+     * Split K: a 64 × 64 simdgroup GEMM with fewer tiles than {@code splitKTarget} work-groups also
+     * splits K, into at most {@code splitKMax} slices of at least {@link #SPLIT_K_MIN} each, so that
+     * GEMMs with few rows still fill the GPU. 1 turns it off.
+     */
+    private final int splitKTarget = Integer.getInteger("timestral.tornado.splitKTarget", 320);
+    private final int splitKMax = Math.max(1, Integer.getInteger("timestral.tornado.splitKMax", 16));
+    static final int SPLIT_K_MIN = 128;
+
+    /** The number of K slices for a GEMM of {@code tiles} 64 × 64 tiles over {@code k}. */
+    int splitK(int tiles, int k) {
+        if (tiles >= splitKTarget) {
+            return 1;
+        }
+        return Math.max(1, Math.min(Math.min(splitKMax, (splitKTarget + tiles - 1) / tiles), k / SPLIT_K_MIN));
+    }
+
     /** One compiled block shape. */
     public record Shape(int rows, int encoder, int horizon, boolean covariates) {}
 
@@ -251,6 +268,7 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
         final KernelContext ctx = new KernelContext();
         final FloatArray w = weights.data();
         TaskGraph g;
+        FloatArray part;
         /** FP16 copies of GEMM inputs, and the ones whose copy is current (no task has written the source since). */
         final Map<FloatArray, HalfFloatArray> halves = new IdentityHashMap<>();
         final Set<FloatArray> fresh = Collections.newSetFromMap(new IdentityHashMap<>());
@@ -372,8 +390,20 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
                 int t = wide ? Kernels.MMA_WIDE : Kernels.MMA_TILE;
                 int tiles = ((m + t - 1) / t) * ((l.out() + t - 1) / t);
                 wg = group(tiles * Kernels.MMA_THREADS, Kernels.MMA_THREADS);
+                int slices = wide ? splitK(tiles, l.in()) : 1;
+                if (slices > 1) {
+                    int kSlice = ((l.in() + slices - 1) / slices + Kernels.MMA_K - 1) / Kernels.MMA_K * Kernels.MMA_K;
+                    slices = (l.in() + kSlice - 1) / kSlice;
+                    FloatArray p = partials();
+                    grid.addWorkerGrid(G + "." + name, group(slices * tiles * Kernels.MMA_THREADS, Kernels.MMA_THREADS));
+                    g.task(name, Kernels::gemmSimdgroupWide, ctx, a, 0, w, l.w(), 0, p, m, l.out(), l.in(), 0, kSlice);
+                    items(name + "_sum", m * l.out());
+                    g.task(name + "_sum", Kernels::splitKSum, ctx, p, slices, w, Math.max(l.b(), 0), c, m, l.out(), f);
+                    written(c);
+                    return;
+                }
                 if (wide) {
-                    g.task(name, Kernels::gemmSimdgroupWide, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, m, l.out(), l.in(), f);
+                    g.task(name, Kernels::gemmSimdgroupWide, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, m, l.out(), l.in(), f, l.in());
                 } else {
                     g.task(name, Kernels::gemmSimdgroup, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, m, l.out(), l.in(), f);
                 }
@@ -460,6 +490,19 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
                 g.transferToDevice(DataTransferMode.FIRST_EXECUTION, wh);
             }
             return wh;
+        }
+
+        /**
+         * The split-K partial tiles, shared by every split GEMM of the plan (they run one after another).
+         * A split GEMM has fewer tiles than the target and at most ⌈target / tiles⌉ slices, so its
+         * partials take fewer than two targets' worth of tiles.
+         */
+        private FloatArray partials() {
+            if (part == null) {
+                part = new FloatArray(2 * splitKTarget * Kernels.MMA_WIDE * Kernels.MMA_WIDE);
+                g.transferToDevice(DataTransferMode.FIRST_EXECUTION, part);
+            }
+            return part;
         }
 
         /** A task has written {@code buf}: its FP16 copy is stale. */
