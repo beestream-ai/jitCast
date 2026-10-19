@@ -29,6 +29,7 @@ import ai.beestream.jitrex.timestral.BlockLayout;
 import ai.beestream.jitrex.timestral.BlockPrep;
 import ai.beestream.jitrex.timestral.Quantiles;
 import ai.beestream.jitrex.timestral.TimestralConfig;
+import ai.beestream.jitrex.timestral.Timing;
 import ai.beestream.jitrex.timestral.cpu.CpuTimestral;
 import ai.beestream.jitrex.tornado.GemmMode;
 import ai.beestream.jitrex.tornado.Kernels;
@@ -128,8 +129,12 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
 
     @Override
     public float[][][] predictBlock(BlockInput block) {
+        long t = Timing.start();
         BlockLayout lay = BlockLayout.of(config, block);
+        Timing.add("fwd.layout", t);
+        t = Timing.start();
         BlockPrep prep = BlockPrep.of(config, lay);
+        Timing.add("fwd.prep", t);
         Shape shape = new Shape(lay.rows(), lay.encoderTokens(), lay.horizonPatches(), lay.covariates());
         Plan plan = plans.get(shape);
         if (plan == null) {
@@ -142,7 +147,10 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
             plans.put(shape, plan);
         }
         float[] raw = plan.run(lay, prep);
-        return prep.finish(config, lay, quantiles, raw);
+        t = Timing.start();
+        float[][][] out = prep.finish(config, lay, quantiles, raw);
+        Timing.add("fwd.finish", t);
+        return out;
     }
 
     @Override
@@ -387,6 +395,7 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
         /** Uploads one block's per-call inputs, runs the graph, returns the head's raw outputs. */
         float[] run(BlockLayout lay, BlockPrep prep) {
             int rows = shape.rows(), enc = shape.encoder(), h = shape.horizon(), n = enc + h, dh = config.headDim();
+            long t0 = Timing.start();
             float[] t = prep.tokens();
             for (int i = 0; i < t.length; i++) {
                 tok.set(i, t[i]);
@@ -425,11 +434,16 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
                     }
                 }
             }
+            Timing.add("fwd.upload", t0);
+            t0 = Timing.start();
             exec.execute();
+            Timing.add("fwd.device", t0);
+            t0 = Timing.start();
             float[] out = new float[raw.getSize()];
             for (int i = 0; i < out.length; i++) {
                 out[i] = raw.get(i);
             }
+            Timing.add("fwd.download", t0);
             return out;
         }
 

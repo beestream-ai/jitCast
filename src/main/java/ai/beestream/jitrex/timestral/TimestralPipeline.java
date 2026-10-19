@@ -281,8 +281,11 @@ public final class TimestralPipeline {
 
     /** One forecast pass ({@code _forecast_raw}): per series, {@code [targets][quantiles][horizon]}. */
     private List<float[][][]> forecastRaw(List<TimeSeries> series, int horizon, float sign) {
+        long tm = Timing.start();
         Assembled a = assemble(series, horizon, sign);
+        Timing.add("host.assemble", tm);
         float[][][] q = decode(a, horizon);
+        tm = Timing.start();
         int nq = config.numQuantiles();
         List<float[][][]> out = new ArrayList<>(series.size());
         for (int s = 0; s < series.size(); s++) {
@@ -306,6 +309,7 @@ public final class TimestralPipeline {
             }
             out.add(f);
         }
+        Timing.add("host.cap", tm);
         return out;
     }
 
@@ -350,7 +354,9 @@ public final class TimestralPipeline {
             float[][] kf = slice(a.knownFuture(), offset, blen);
             boolean[][] kfm = slice(a.knownFutureMask(), offset, blen);
             float[][][] q = forward.predictBlock(new BlockInput(context, mask, a.group(), block, a.role(), kf, kfm));
+            long tm = Timing.start();
             refine(q, context, mask, a.role());
+            Timing.add("host.refine", tm);
             for (int i = 0; i < r; i++) {
                 for (int t = 0; t < blen && offset + t < horizon; t++) {
                     out[i][offset + t] = q[i][t];

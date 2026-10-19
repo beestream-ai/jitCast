@@ -29,6 +29,7 @@ import ai.beestream.jitrex.api.ForecastEngine;
 import ai.beestream.jitrex.api.TimeSeries;
 import ai.beestream.jitrex.io.SafeTensors;
 import ai.beestream.jitrex.io.Tensor;
+import ai.beestream.jitrex.timestral.Timing;
 import ai.beestream.jitrex.timestral.cpu.CpuTimestralEngine;
 import ai.beestream.jitrex.timestral.tornado.TornadoTimestralEngine;
 import ai.beestream.jitrex.util.Json;
@@ -84,6 +85,7 @@ public final class TimestralBench {
                     engine.forecast(series, h);
                     ms.add((System.nanoTime() - t0) / 1e6);
                 }
+                Timing.report(name, warmup + ms.size() + 1);
                 double[] sorted = ms.stream().mapToDouble(Double::doubleValue).sorted().toArray();
                 double median = sorted.length % 2 == 1 ? sorted[sorted.length / 2]
                         : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
