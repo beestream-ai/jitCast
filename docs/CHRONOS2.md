@@ -128,6 +128,45 @@ python scripts/chronos2/dump_golden.py --src chronos-forecasting/src --ckpt chro
     -Dchronos2.checkpoint=chronos-2 -Dchronos2.golden=golden-c2
 ```
 
+## Performance
+
+End-to-end `predict()` / `forecast()`, the median of repeated calls after warm-up, on the same
+inputs for both engines (`bench_reference.py workloads`: contexts of 2,048 steps and a horizon of 64
+unless stated). jitcast runs on TornadoVM develop on Metal with its default GEMMs (register-blocked
+FP32); Amazon's reference on PyTorch 2.14 in eager mode, on the CPU and on MPS (its forecasts there
+match the CPU run within 9e-6).
+
+### Apple M4 Pro
+
+In ms; the fastest of each row in bold:
+
+| Workload | small ref. CPU | small ref. MPS | small jitcast Metal | base ref. CPU | base ref. MPS | base jitcast Metal |
+|---|---|---|---|---|---|---|
+| 1 series | 16.2 | **8.3** | 9.4 | 45.1 | **19.8** | 36.6 |
+| 8 series | 39.9 | **31.5** | 40.6 | 129.3 | **103.2** | 187.8 |
+| 32 series | 115.6 | **81.3** | 153.0 | 414.5 | **302.5** | 709.0 |
+| 128 series | 457.6 | **328.0** | 597.7 | 1,720.4 | **1,202.8** | 2,790.8 |
+| 512 series | 1,942.7 | **1,514.5** | 2,399.4 | 7,133.4 | **5,494.1** | 11,235.6 |
+| 1 series, H = 1,024 | 18.1 | **10.0** | 11.6 | 48.3 | **25.8** | 44.6 |
+| 1 series, H = 2,048 (unrolled) | 91.0 | **66.8** | 108.6 | 308.9 | **222.4** | 472.7 |
+| 8 series, 8,192-step context | 127.3 | **106.2** | 179.4 | 479.3 | **387.4** | 1,133.2 |
+| 8 series × (2 past + 2 known) | 143.8 | **101.9** | 190.9 | 547.9 | **379.4** | 1,305.2 |
+
+On Apple silicon the reference on MPS is faster than jitcast on every workload, by 1.1–1.9× on
+`chronos-2-small` and 1.7–3.4× on `chronos-2`; jitcast's breakdown on Metal is not profiled yet.
+Timestral on the same GPU spends about 95% of its device time in GEMMs that reach half the
+throughput of MPS's; the same may hold here.
+
+### Reproducing
+
+```bash
+python scripts/chronos2/bench_reference.py workloads --out workloads.safetensors
+python scripts/chronos2/bench_reference.py run --src chronos-forecasting/src --ckpt chronos-2 \
+    --workloads workloads.safetensors --device mps --out reference.json        # or cpu, cuda
+$JITCAST -Djitcast.tornado.device=1:0 ai.beestream.jitcast.bench.Chronos2Bench --checkpoint chronos-2 \
+    --workloads workloads.safetensors --engine tornado --out jitcast.json
+```
+
 ## Options
 
 | Property | Default | Effect |
