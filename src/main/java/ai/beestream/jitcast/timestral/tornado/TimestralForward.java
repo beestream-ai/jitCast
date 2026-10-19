@@ -72,6 +72,17 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
     /** Work-group size of the element-wise kernels. */
     private static final int ITEM_GROUP = 128;
 
+    /**
+     * Blocks are padded to shared shapes so that few plans are compiled ({@code -Dtimestral.tornado.buckets},
+     * on by default): the context to a multiple of {@link #PATCH_BUCKET} patches with leading empty
+     * patches, and the rows to a multiple of {@link #ROW_BUCKET} with empty series of their own. Neither
+     * is ever a valid key, and time positions count from each series' first observation, so the
+     * forecasts do not change.
+     */
+    private final boolean buckets = !"false".equalsIgnoreCase(System.getProperty("timestral.tornado.buckets", "true"));
+    static final int PATCH_BUCKET = 16;
+    static final int ROW_BUCKET = 8;
+
     /** The fewest rows a GEMM needs to run on {@link Kernels#gemmBlocked}. */
     private final int blockedMinRows = Integer.getInteger("timestral.tornado.blockedMinRows", 128);
 
@@ -131,6 +142,53 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
 
     @Override
     public float[][][] predictBlock(BlockInput block) {
+        if (buckets) {
+            BlockInput padded = bucketed(block, config.patchSize());
+            if (padded != block) {
+                return java.util.Arrays.copyOf(predictExact(padded), block.rows());
+            }
+        }
+        return predictExact(block);
+    }
+
+    /** {@code block} padded to the shared shapes, or {@code block} itself when it already has one. */
+    static BlockInput bucketed(BlockInput b, int ps) {
+        int r = b.rows(), t = b.length();
+        int patches = t / ps;
+        int padPatches = (patches + PATCH_BUCKET - 1) / PATCH_BUCKET * PATCH_BUCKET;
+        int rows = (r + ROW_BUCKET - 1) / ROW_BUCKET * ROW_BUCKET;
+        if (padPatches == patches && rows == r) {
+            return b;
+        }
+        int lead = (padPatches - patches) * ps, len = padPatches * ps;
+        float[][] inputs = new float[rows][len];
+        boolean[][] observed = new boolean[rows][len];
+        int[] group = new int[rows];
+        int[] role = b.role() == null ? null : new int[rows];
+        int fl = b.knownFuture() == null ? 0 : b.knownFuture()[0].length;
+        float[][] kf = b.knownFuture() == null ? null : new float[rows][fl];
+        boolean[][] kfm = b.knownFutureMask() == null ? null : new boolean[rows][fl];
+        int nextGroup = java.util.Arrays.stream(b.group()).max().orElse(0) + 1;
+        for (int i = 0; i < rows; i++) {
+            if (i < r) {
+                System.arraycopy(b.inputs()[i], 0, inputs[i], lead, t);
+                System.arraycopy(b.observed()[i], 0, observed[i], lead, t);
+                group[i] = b.group()[i];
+                if (role != null) {
+                    role[i] = b.role()[i];
+                }
+                if (kf != null) {
+                    System.arraycopy(b.knownFuture()[i], 0, kf[i], 0, fl);
+                    System.arraycopy(b.knownFutureMask()[i], 0, kfm[i], 0, fl);
+                }
+            } else {
+                group[i] = nextGroup++; // an empty series of its own (role 0, a target)
+            }
+        }
+        return new BlockInput(inputs, observed, group, b.horizonPatches(), role, kf, kfm);
+    }
+
+    private float[][][] predictExact(BlockInput block) {
         long t = Timing.start();
         BlockLayout lay = BlockLayout.of(config, block);
         Timing.add("fwd.layout", t);
@@ -145,8 +203,10 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
                 Shape eldest = plans.keySet().iterator().next();
                 plans.remove(eldest).close();
             }
+            long tb = Timing.start();
             plan = new Plan(shape);
             plans.put(shape, plan);
+            Timing.add("fwd.plan-build", tb);
         }
         float[] raw = plan.run(lay, prep);
         t = Timing.start();
