@@ -45,6 +45,8 @@ public final class Kernels {
     public static final int SILU = 4;
     /** {@link #gemmHalf}: write only the FP16 twin of C, not C (no bias, SiLU or accumulation). */
     public static final int TWIN_ONLY = 8;
+    /** {@link #gemm} flag: ReLU instead of SiLU after the bias. */
+    public static final int RELU = 16;
     /** Work-group width of {@link #rmsNorm}. */
     public static final int NORM_THREADS = 256;
     /**
@@ -80,6 +82,9 @@ public final class Kernels {
             if ((flags & SILU) != 0) {
                 acc = acc / (1f + TornadoMath.exp(-acc));
             }
+            if ((flags & RELU) != 0) {
+                acc = TornadoMath.max(acc, 0f);
+            }
             int ci = cOff + row * n + col;
             if ((flags & ACCUMULATE) != 0) {
                 acc += c.get(ci);
@@ -99,7 +104,7 @@ public final class Kernels {
      * twin) and FP16 {@code W} ({@code [N, K]}), accumulated and written in FP32, plus the FP16
      * twin of {@code C} when {@code twin == 1}. The portable counterpart of
      * {@code cublasGemmExFP16FP32}: it runs on OpenCL and Metal as well as CUDA, without tensor
-     * cores. Flags and epilogue order as {@link #gemm} (bias, SiLU, then accumulate).
+     * cores. Flags and epilogue order as {@link #gemm} (bias, SiLU or ReLU, then accumulate).
      *
      * <p>Register-blocked: each work-group stages a 64 × 16 slice of A and of W in local memory
      * (converted to FP32 once), and each thread accumulates a 4 × 4 block whose rows and columns
@@ -196,6 +201,9 @@ public final class Kernels {
             }
             if ((flags & SILU) != 0) {
                 v = v / (1f + TornadoMath.exp(-v));
+            }
+            if ((flags & RELU) != 0) {
+                v = TornadoMath.max(v, 0f);
             }
             int ci = row * n + col;
             if ((flags & ACCUMULATE) != 0) {
@@ -304,6 +312,9 @@ public final class Kernels {
             }
             if ((flags & SILU) != 0) {
                 v = v / (1f + TornadoMath.exp(-v));
+            }
+            if ((flags & RELU) != 0) {
+                v = TornadoMath.max(v, 0f);
             }
             int ci = cOff + row * n + col;
             if ((flags & ACCUMULATE) != 0) {
@@ -455,6 +466,9 @@ public final class Kernels {
             if ((flags & SILU) != 0) {
                 v = v / (1f + TornadoMath.exp(-v));
             }
+            if ((flags & RELU) != 0) {
+                v = TornadoMath.max(v, 0f);
+            }
             if ((flags & ACCUMULATE) != 0) {
                 v += c.get(i);
             }
@@ -482,6 +496,24 @@ public final class Kernels {
                 v += w.get(bOff + col);
             }
             v = v / (1f + TornadoMath.exp(-v));
+            c.set(i, v);
+            if (twin == 1) {
+                th.set(i, new HalfFloat(v));
+            }
+        }
+    }
+    /** {@link #biasSilu} with a ReLU: {@code C[i] = max(C[i] + b[col], 0)} (the bias when {@code bOff >= 0}). */
+    public static void biasRelu(KernelContext ctx, FloatArray c, FloatArray w, int bOff, int m, int n, HalfFloatArray th,
+            int twin) {
+        int i = ctx.globalIdx;
+        if (i < m * n) {
+            int row = i / n;
+            int col = i - row * n;
+            float v = c.get(i);
+            if (bOff >= 0) {
+                v += w.get(bOff + col);
+            }
+            v = TornadoMath.max(v, 0f);
             c.set(i, v);
             if (twin == 1) {
                 th.set(i, new HalfFloat(v));

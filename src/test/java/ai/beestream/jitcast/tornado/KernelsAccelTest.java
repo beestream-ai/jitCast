@@ -64,7 +64,7 @@ public class KernelsAccelTest {
     public void gemmWithEveryFlag() {
         int m = 37, n = 45, k = 70;
         float[] a = random(m * k, 1f), w = random(n * k + n, 0.2f), c0 = random(m * n, 1f);
-        for (int flags : new int[] {0, Kernels.BIAS | Kernels.SILU, Kernels.BIAS | Kernels.ACCUMULATE}) {
+        for (int flags : new int[] {0, Kernels.BIAS | Kernels.SILU, Kernels.BIAS | Kernels.RELU, Kernels.BIAS | Kernels.ACCUMULATE}) {
             FloatArray fa = FloatArray.fromArray(a), fw = FloatArray.fromArray(w), fc = FloatArray.fromArray(c0);
             WorkerGrid wg = new WorkerGrid2D((n + 15) / 16 * 16, (m + 15) / 16 * 16);
             wg.setLocalWork(16, 16, 1);
@@ -75,6 +75,9 @@ public class KernelsAccelTest {
             float[] exp = Ops.linear(a, m, Arrays.copyOf(w, n * k), (f & Kernels.BIAS) != 0 ? bias : null, k, n);
             if ((f & Kernels.SILU) != 0) {
                 Ops.siluInPlace(exp);
+            }
+            if ((f & Kernels.RELU) != 0) {
+                Ops.reluInPlace(exp);
             }
             if ((f & Kernels.ACCUMULATE) != 0) {
                 Ops.addInPlace(exp, c0);
@@ -88,7 +91,8 @@ public class KernelsAccelTest {
         int m = 150, n = 200, k = 88; // ragged in every dimension against 64 × 64 × 16 tiles
         int aOff = 5, wOff = 7, cOff = 3;
         float[] a = random(aOff + m * k, 1f), w = random(wOff + n * k + n, 0.2f), c0 = random(cOff + m * n, 1f);
-        for (int flags : new int[] {0, Kernels.BIAS | Kernels.SILU, Kernels.BIAS | Kernels.ACCUMULATE, Kernels.ACCUMULATE}) {
+        for (int flags : new int[] {0, Kernels.BIAS | Kernels.SILU, Kernels.BIAS | Kernels.RELU, Kernels.BIAS | Kernels.ACCUMULATE,
+                Kernels.ACCUMULATE}) {
             FloatArray fa = FloatArray.fromArray(a), fw = FloatArray.fromArray(w), fc = FloatArray.fromArray(c0);
             WorkerGrid wg = new WorkerGrid2D((n + 63) / 64 * 16, (m + 63) / 64 * 16);
             wg.setLocalWork(16, 16, 1);
@@ -102,6 +106,9 @@ public class KernelsAccelTest {
             if ((f & Kernels.SILU) != 0) {
                 Ops.siluInPlace(exp);
             }
+            if ((f & Kernels.RELU) != 0) {
+                Ops.reluInPlace(exp);
+            }
             if ((f & Kernels.ACCUMULATE) != 0) {
                 Ops.addInPlace(exp, Arrays.copyOfRange(c0, cOff, cOff + m * n));
             }
@@ -113,8 +120,12 @@ public class KernelsAccelTest {
     private void checkHalfGemm(boolean tile) {
         int m = 150, n = 200, k = 88; // ragged in every dimension against 64 × 64 × 16/32 tiles
         float[] a = roundHalf(random(m * k, 1f)), wm = roundHalf(random(n * k, 0.2f)), b = random(n, 0.5f), c0 = random(m * n, 1f);
-        int[] flagSets = {0, Kernels.BIAS | Kernels.SILU, Kernels.BIAS | Kernels.ACCUMULATE, Kernels.ACCUMULATE};
+        int[] flagSets = {0, Kernels.BIAS | Kernels.SILU, Kernels.BIAS | Kernels.RELU, Kernels.BIAS | Kernels.ACCUMULATE,
+                Kernels.ACCUMULATE};
         for (int flags : flagSets) {
+            if (tile && (flags & Kernels.RELU) != 0) {
+                continue; // the Tile GEMM has no ReLU epilogue
+            }
             HalfFloatArray ha = half(a), hw = half(wm);
             HalfFloatArray th = new HalfFloatArray(m * n);
             FloatArray fc = FloatArray.fromArray(c0), fb = FloatArray.fromArray(b);
@@ -136,6 +147,9 @@ public class KernelsAccelTest {
             float[] exp = Ops.linear(a, m, wm, bias ? b : null, k, n);
             if ((flags & Kernels.SILU) != 0) {
                 Ops.siluInPlace(exp);
+            }
+            if ((flags & Kernels.RELU) != 0) {
+                Ops.reluInPlace(exp);
             }
             if ((flags & Kernels.ACCUMULATE) != 0) {
                 Ops.addInPlace(exp, c0);
@@ -207,8 +221,8 @@ public class KernelsAccelTest {
     }
 
     @Test
-    public void biasSiluAndAddRmsNorm() {
-        // biasSilu, with and without a bias
+    public void biasActivationsAndAddRmsNorm() {
+        // biasSilu and biasRelu, with and without a bias
         int m = 29, n = 70;
         float[] c0 = random(m * n, 2f), wb = random(n, 1f);
         for (int withBias : new int[] {1, 0}) {
@@ -222,6 +236,13 @@ public class KernelsAccelTest {
                 exp[i] = Ops.silu(exp[i] + (withBias == 1 ? wb[i % n] : 0f));
             }
             check("biasSilu bias=" + withBias, fc.toHeapArray(), exp);
+
+            FloatArray rc = FloatArray.fromArray(c0);
+            run("t", items(m * n), g -> g.task("t", Kernels::biasRelu, ctx, rc, fw, bOff, m, n, th, 1), rc, fw);
+            for (int i = 0; i < exp.length; i++) {
+                exp[i] = Math.max(c0[i] + (withBias == 1 ? wb[i % n] : 0f), 0f);
+            }
+            check("biasRelu bias=" + withBias, rc.toHeapArray(), exp);
         }
 
         // addRmsNorm: h += y, n = RMSNorm(h)·w
