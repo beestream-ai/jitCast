@@ -336,9 +336,7 @@ public final class TimestralPipeline {
         }
         max = max == Float.NEGATIVE_INFINITY ? 0f : max;
         min = min == Float.POSITIVE_INFINITY ? 0f : min;
-        float[] loc = new float[row.length], scale = new float[row.length];
-        Scaler.causalPatchLocScale(row, mask, config.patchSize(), config.minimumScale(), loc, scale);
-        float s = scale[row.length - 1] * options.capK();
+        float s = Scaler.lastLocScale(row, mask, config.minimumScale())[1] * options.capK();
         return new float[] {min - s, max + s};
     }
 
@@ -421,14 +419,12 @@ public final class TimestralPipeline {
             return;
         }
         int median = config.medianIndex();
-        int t = context[0].length;
         IntStream.range(0, q.length).parallel().forEach(i -> {
             if (role != null && role[i] != BlockInput.TARGET) {
                 return;
             }
-            float[] loc = new float[t], scale = new float[t];
-            Scaler.causalPatchLocScale(context[i], mask[i], ps, config.minimumScale(), loc, scale);
-            float loc0 = loc[t - 1], scale0 = scale[t - 1];
+            float[] last = Scaler.lastLocScale(context[i], mask[i], config.minimumScale());
+            float loc0 = last[0], scale0 = last[1];
             double[][] sinhMedian = new double[nPred][ps];
             for (int j = 0; j < nPred; j++) {
                 for (int s = 0; s < ps; s++) {

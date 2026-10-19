@@ -57,6 +57,26 @@ public final class Scaler {
         }
     }
 
+    /**
+     * The {@code (loc, scale)} of a row's last patch, as {@link #causalPatchLocScale} computes it at
+     * the row's last step, in one pass and without the per-step arrays; the row is a whole number of
+     * patches long.
+     */
+    public static float[] lastLocScale(float[] x, boolean[] observed, float minimumScale) {
+        double cumW = 0, cumX = 0, m2 = 0, prevMean = 0, mean = 0;
+        for (int i = 0; i < x.length; i++) {
+            double w = observed[i] ? 1.0 : 0.0;
+            double xi = x[i];
+            cumW += w;
+            cumX += w * xi;
+            mean = cumX / Math.max(cumW, 1.0);
+            m2 += (xi - prevMean) * (xi - mean) * w;
+            prevMean = mean;
+        }
+        double var = m2 / Math.max(Math.max(cumW, 1.0) - 1.0, 1.0);
+        return new float[] {(float) mean, (float) Math.max(Math.sqrt(var), minimumScale)};
+    }
+
     /** {@code asinh((x − loc) / scale)} on observed positions, 0 elsewhere ({@code apply_affine_asinh_masked}). */
     public static float affine(float x, float loc, float scale, boolean observed, boolean asinh) {
         if (!observed) {
