@@ -10,8 +10,7 @@ Planned work on jitcast, and the TornadoVM issues that limit it today. The curre
 1. **Chronos-2** (Amazon): in progress. Its time and cross-variate attention are close to Timestral's.
 2. **Further candidates**: TimesFM, Toto, Moirai 2, TTM, Sundial, checked against the GIFT-Eval
    leaderboard and each model's weight licence before porting.
-3. **Timestral-123M**: validate it (it loads with the same code as the other sizes).
-4. **Benchmark parity for Timestral**: GIFT-Eval and fev-bench scored through Mistral's or the
+3. **Benchmark parity for Timestral**: GIFT-Eval and fev-bench scored through Mistral's or the
    benchmarks' own harnesses, as for TiRex-2.
 
 ## Engine
@@ -61,7 +60,7 @@ Planned work on jitcast, and the TornadoVM issues that limit it today. The curre
 | Device numbering differs between JVMs launched with and without the test profile, on SDKs with several backends | the accelerated tests can pick a different backend than the benchmarks | set `-Djitcast.tornado.device` per JVM (`TEST_CUDA_DEVICE` in the evaluation scripts) |
 | A kernel that cannot launch for lack of registers fails silently on NVIDIA's OpenCL | wrong results instead of an error | `slstmR=auto` avoids the register-resident sLSTM kernel there |
 | Metal's dispatch spin wait | up to 2× slower on Metal | jitcast turns it off by default |
-| No access to Apple's matrix hardware from Metal kernels | jitcast's GEMMs reach about half the throughput of PyTorch's MPS on Apple GPUs (Timestral-28M and -209M) | none yet |
+| Simdgroup matrices that meet after an if/else are merged wrongly (Metal): the copy from one branch runs on every path | a kernel that keeps its accumulators across such a join gets the other branch's values | `gemmSimdgroupWide` stores each branch's accumulators to threadgroup memory before the join |
 | No float64 on Apple GPUs | statistics that need float64 run on the host | Timestral's scaler and refine step run on the host |
 | Fast math folds NaN checks away (Metal) | in-kernel NaN tests do not work | the host uploads NaN as 0 plus a mask |
 | The cuBLAS provider prefers CUDA 12 libraries over CUDA 13 | slow fallback GEMM kernels on newer GPUs | a library shim directory ([INSTALL.md](INSTALL.md#nvidia-extras)) |

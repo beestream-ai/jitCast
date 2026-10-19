@@ -55,6 +55,12 @@ example `7.3.2-jdk22plus-dev`); the build installs them in `~/.m2`.
 and CUDA `1:0` on an NVIDIA machine with both. The accelerated tests (`-Paccel-tests`) give CUDA
 priority, so in the tests CUDA is `0:0`. Pick the device per JVM with `-Djitcast.tornado.device`.
 
+On macOS a Metal + OpenCL SDK lists OpenCL `0:0` and Metal `1:0`. TornadoVM compiles kernels for its
+default backend, and Timestral's simdgroup GEMMs exist only on Metal, so run Metal as the default with
+`-Dtornado.metal.priority=100`: Metal is then `0:0`. Without it Timestral still runs on Metal `1:0`,
+with the portable register-blocked GEMMs. A backend's priority is `-Dtornado.<backend>.priority`, and
+the backend with the highest priority is numbered `0`.
+
 ### NVIDIA extras
 
 - **cuBLAS 13 on Blackwell.** TornadoVM's cuBLAS provider loads `libcublas.so.12` first. If a CUDA 12.0
