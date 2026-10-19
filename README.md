@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/jitrex-logo-dark.svg">
-    <img alt="jitrex" src="docs/images/jitrex-logo-light.svg" width="480">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/jitcast-logo-dark.svg">
+    <img alt="jitcast" src="docs/images/jitcast-logo-light.svg" width="480">
   </picture>
 </p>
 
@@ -11,15 +11,15 @@
   <img alt="TornadoVM" src="https://img.shields.io/badge/TornadoVM-7.1.0%2B-0B1F33.svg">
 </p>
 
-# jitrex
+# jitcast
 
-**jitrex** is an inference engine for zero-shot time-series forecasting models, written in Java on
+**jitcast** is an inference engine for zero-shot time-series forecasting models, written in Java on
 [TornadoVM](https://github.com/beehive-lab/TornadoVM) (similar to [jitLLM](https://github.com/beehive-lab/jitllm)).
 It runs [TiRex-2](https://github.com/NX-AI/tirex-2), NXAI's model, and
 [Timestral](https://huggingface.co/mistralai/Timestral-5M), Mistral AI's family (see
 [docs/TIMESTRAL.md](docs/TIMESTRAL.md)).
 
-For TiRex-2, jitrex reproduces NXAI's `ForecastModel.forecast()` end to end: 9-quantile forecasts for
+For TiRex-2, jitcast reproduces NXAI's `ForecastModel.forecast()` end to end: 9-quantile forecasts for
 univariate series, multi-target series, and series with past or future covariates. The host
 pipeline is in Java, and the model's forward pass runs on the GPU through TornadoVM.
 
@@ -27,7 +27,7 @@ pipeline is in Java, and the model's forward pass runs on the GPU through Tornad
   OpenCL and Metal.
 - **Hybrid on NVIDIA.** The GEMMs can run on cuBLAS / cuBLASLt or on a CUDA Tile kernel, and each
   task graph can be replayed as a CUDA graph.
-- **Validated against NXAI.** On fev-bench (100 tasks) and GIFT-Eval (97 configurations), jitrex's
+- **Validated against NXAI.** On fev-bench (100 tasks) and GIFT-Eval (97 configurations), jitcast's
   aggregate scores are within 0.03% and 0.08% of NXAI's on the same GPU.
 
 ## Where it runs
@@ -53,8 +53,8 @@ sdk install java 25.0.4-tem                     # any JDK 22+; the TornadoVM SDK
 sdk install tornadovm 7.1.0-jdk22plus-cuda      # or ...-metal / ...-opencl
 tornado --devices                               # device ids, as <backend>:<device>
 
-# 2. jitrex
-git clone https://github.com/beestream-ai/jitcast && cd jitrex
+# 2. jitcast
+git clone https://github.com/beestream-ai/jitcast && cd jitcast
 ./mvnw -q package -DskipTests
 
 # 3. weights: NXAI's checkpoint from Hugging Face, converted to safetensors
@@ -76,7 +76,7 @@ Run it on the TornadoVM JVM, choosing the device and flags:
 
 ```bash
 java @$TORNADOVM_HOME/tornado-argfile --add-modules jdk.incubator.vector -cp target/classes:<your app> \
-     -Dtirex.tornado.device=0:0 -Dtirex.tornado.gemm=cublas-auto your.Main
+     -Djitcast.tornado.device=0:0 -Dtirex.tornado.gemm=cublas-auto your.Main
 ```
 
 Covariates, the benchmark and cold-start tools, the harness server and the tests are covered in
@@ -84,10 +84,10 @@ Covariates, the benchmark and cold-start tools, the harness server and the tests
 
 ## Performance
 
-End-to-end `forecast()` on an NVIDIA A100 80GB, jitrex's best configuration (`cublas-auto`) against
+End-to-end `forecast()` on an NVIDIA A100 80GB, jitcast's best configuration (`cublas-auto`) against
 NXAI's best of eager, `torch.compile` and FlexAttention on the same GPU, on TornadoVM 7.1.0 (2026-10-05).
 
-| Workload | NXAI | jitrex | Speed-up |
+| Workload | NXAI | jitcast | Speed-up |
 |---|---|---|---|
 | 1 series | 35.1 ms | **2.25 ms** | 15.6× |
 | 64 series | 123.7 ms | **14.8 ms** | 8.3× |
@@ -99,7 +99,7 @@ NXAI's best of eager, `torch.compile` and FlexAttention on the same GPU, on Torn
 | Cold start: process → first forecast (warm caches) | 13.85 s | **3.75 s** | 3.7× |
 | fev-bench, 100 tasks: inference time | 2,897 s | **919 s** | 3.2× |
 
-![jitrex speed-up over NXAI on the A100](docs/images/eval-a100.svg)
+![jitcast speed-up over NXAI on the A100](docs/images/eval-a100.svg)
 
 The other configurations (cuBLAS FP32, TornadoVM's own FP16 GEMMs), the long-context, cold-start
 and benchmark-suite tables and the method are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
@@ -113,14 +113,14 @@ and benchmark-suite tables and the method are in [docs/PERFORMANCE.md](docs/PERF
 | [CONFIGURATION.md](docs/CONFIGURATION.md) | Every engine option, GEMM modes, hybrid APIs, per-platform recommendations |
 | [VALIDATION.md](docs/VALIDATION.md) | How the implementation was checked, from an executable spec to GIFT-Eval and fev-bench |
 | [PERFORMANCE.md](docs/PERFORMANCE.md) | The comparison with NXAI's engine on an NVIDIA A100: method, results, charts |
-| [TIMESTRAL.md](docs/TIMESTRAL.md) | Timestral: quick start, how it maps onto jitrex, validation, performance on Apple silicon, options |
+| [TIMESTRAL.md](docs/TIMESTRAL.md) | Timestral: quick start, how it maps onto jitcast, validation, performance on Apple silicon, options |
 | [KERNELS.md](docs/KERNELS.md) | Every kernel, with source links and their hybrid alternatives |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Architecture, code layout and scripts |
-| [ROADMAP.md](docs/ROADMAP.md) | Planned work, and the TornadoVM issues that limit jitrex today |
+| [ROADMAP.md](docs/ROADMAP.md) | Planned work, and the TornadoVM issues that limit jitcast today |
 
 ## License
 
-jitrex is released under the [Apache License, Version 2.0](LICENSE).
+jitcast is released under the [Apache License, Version 2.0](LICENSE).
 Copyright (c) 2026 Beestream Ltd.
 `util/Json.java` is derived from [jitllm](https://github.com/beehive-lab/jitllm) (MIT); see [NOTICE](NOTICE).
 The TiRex-2 model and its weights are NX-AI's, under their own licence terms. The Timestral weights

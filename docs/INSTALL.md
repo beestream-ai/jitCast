@@ -1,4 +1,4 @@
-# Installing jitrex
+# Installing jitcast
 
 [← back to the README](../README.md)
 
@@ -20,7 +20,7 @@ export TORNADOVM_HOME=<the SDK directory>       # SDKMAN! sets this for you
 tornado --devices                               # lists the backends and devices, numbered <backend>:<device>
 ```
 
-The first `tornado` command also writes `$TORNADOVM_HOME/tornado-argfile`, the JVM flags jitrex is launched with.
+The first `tornado` command also writes `$TORNADOVM_HOME/tornado-argfile`, the JVM flags jitcast is launched with.
 
 There is no prebuilt SDK for Linux on AArch64 (for example NVIDIA Grace or Ampere hosts); build that one from the release tag with TornadoVM's installer, which downloads the JDK it builds with. Run it inside a Python venv (its build scripts pip-install their helpers and import them straight away), and point `JVMCI_SOURCE_JDK` at a JDK 21: the `jdk22plus` SDK bundles a `jdk.internal.vm.ci` module built from a JDK 21 image.
 
@@ -33,7 +33,7 @@ source setvars.sh                               # sets JAVA_HOME (the JDK 25 it 
 tornado --devices
 ```
 
-`tornado --generate-argfile` regenerates `$TORNADOVM_HOME/tornado-argfile` (the JVM flags jitrex is launched with) after switching JDK. To build TornadoVM from source, for example for its `develop` branch, see the [TornadoVM installation guide](https://tornadovm.readthedocs.io/en/latest/installation.html).
+`tornado --generate-argfile` regenerates `$TORNADOVM_HOME/tornado-argfile` (the JVM flags jitcast is launched with) after switching JDK. To build TornadoVM from source, for example for its `develop` branch, see the [TornadoVM installation guide](https://tornadovm.readthedocs.io/en/latest/installation.html).
 
 ### NVIDIA extras
 - **cuBLAS 13 on Blackwell.** TornadoVM's cuBLAS provider loads `libcublas.so.12` first. If a CUDA 12.0 cuBLAS is installed next to CUDA 13, it silently runs generic, non-tensor-core kernels on sm_120. Point `LD_LIBRARY_PATH` at a directory where `lib{cublas,cublasLt,cudart}.so.12` link to the CUDA 13 libraries; `scripts/eval/cublas13_shim.sh <dir>` builds such a shim, and `scripts/eval/tornado_run.sh` uses it when `CUBLAS_SHIM=<dir>` is set.
@@ -44,19 +44,19 @@ tornado --devices
   export CUDA_HOME=/usr/local/cuda-13.0 CUDA_PATH=/usr/local/cuda-13.0 PATH=/usr/local/cuda-13.0/bin:$PATH
   rm -rf ~/.cache/torch_extensions/py*_cu*
   ```
-  This only concerns NXAI's engine, not jitrex. The fix belongs in FlashRNN: compile native code for the GPU next to the PTX (`code=[sm_XY,compute_XY]` from `torch.cuda.get_device_capability()`, or `TORCH_CUDA_ARCH_LIST`), which a newer 13.x toolkit can build for an older 13.x driver, and report the CUDA error string instead of the generic message. Upgrading the driver also avoids it.
+  This only concerns NXAI's engine, not jitcast. The fix belongs in FlashRNN: compile native code for the GPU next to the PTX (`code=[sm_XY,compute_XY]` from `torch.cuda.get_device_capability()`, or `TORCH_CUDA_ARCH_LIST`), which a newer 13.x toolkit can build for an older 13.x driver, and report the CUDA error string instead of the generic message. Upgrading the driver also avoids it.
 
-## Build jitrex
+## Build jitcast
 
 ```bash
-git clone https://github.com/beestream-ai/jitcast && cd jitrex
+git clone https://github.com/beestream-ai/jitcast && cd jitcast
 ./mvnw -q package -DskipTests                                     # TornadoVM 7.1.0 API from Maven Central
 ./mvnw -q package -DskipTests -Dtornadovm.version=7.0.2-jdk22plus-dev   # or another installed version
 ```
 
 ## Get the weights
 
-jitrex reads one safetensors file per checkpoint. `convert_ckpt.py` downloads a checkpoint from Hugging Face and writes that file, with aliases removed and the model config embedded:
+jitcast reads one safetensors file per checkpoint. `convert_ckpt.py` downloads a checkpoint from Hugging Face and writes that file, with aliases removed and the model config embedded:
 
 ```bash
 python3.11 -m venv venv && . venv/bin/activate        # Python 3.11 or newer
@@ -65,4 +65,4 @@ python scripts/convert_ckpt.py --ckpt NX-AI/TiRex-2 --out tirex2.safetensors
 python scripts/convert_ckpt.py --ckpt NX-AI/TiRex-2-gifteval-zs --out TiRex-2-gifteval-zs.safetensors
 ```
 
-Next: [running jitrex](USAGE.md).
+Next: [running jitcast](USAGE.md).

@@ -5,11 +5,11 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>ai.beestream</groupId>
-    <artifactId>jitrex</artifactId>
+    <artifactId>jitcast</artifactId>
     <version>0.1.0${jdk.version.suffix}</version>
     <packaging>jar</packaging>
 
-    <name>jitrex</name>
+    <name>jitcast</name>
     <description>An inference engine for NX-AI TiRex-2 time-series forecasting on TornadoVM, with the hybrid CUDA libraries (cuBLAS) and CUDA Tile</description>
 
     <url>https://github.com/beestream-ai/jitcast</url>

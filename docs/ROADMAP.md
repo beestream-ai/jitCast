@@ -2,7 +2,7 @@
 
 [← back to the README](../README.md)
 
-Planned work on jitrex, and the TornadoVM issues that limit it today. The current results are in [PERFORMANCE.md](PERFORMANCE.md) and [VALIDATION.md](VALIDATION.md).
+Planned work on jitcast, and the TornadoVM issues that limit it today. The current results are in [PERFORMANCE.md](PERFORMANCE.md) and [VALIDATION.md](VALIDATION.md).
 
 ## Engine: performance and memory
 
@@ -23,14 +23,14 @@ Planned work on jitrex, and the TornadoVM issues that limit it today. The curren
 - GIFT-Eval parity in multivariate mode (the current GIFT-Eval run is univariate).
 - CUDA Tile (`gemm=cutile`), once TornadoVM can compile it, and then tuning its GEMM: it was about 5× slower than cuBLAS per GEMM when it last ran.
 
-## TornadoVM issues that affect jitrex
+## TornadoVM issues that affect jitcast
 
-| Issue | Effect on jitrex | Workaround in jitrex |
+| Issue | Effect on jitcast | Workaround in jitcast |
 |---|---|---|
 | The Tile API's `TileContext.checkShape` cannot be compiled into a kernel (its message uses string concatenation) | `gemm=cutile` fails on TornadoVM 7.1.0 | use `cublas-auto` or `half` |
-| Device numbering differs between JVMs launched with and without the test profile, on SDKs with several backends | the accelerated tests can pick a different backend than the benchmarks | set `-Dtirex.tornado.device` per JVM (`TEST_CUDA_DEVICE` in the evaluation scripts) |
+| Device numbering differs between JVMs launched with and without the test profile, on SDKs with several backends | the accelerated tests can pick a different backend than the benchmarks | set `-Djitcast.tornado.device` per JVM (`TEST_CUDA_DEVICE` in the evaluation scripts) |
 | A kernel that cannot launch for lack of registers fails silently on NVIDIA's OpenCL | wrong results instead of an error | `slstmR=auto` avoids the register-resident sLSTM kernel there |
-| Metal's dispatch spin wait | up to 2× slower on Metal | jitrex turns it off by default |
+| Metal's dispatch spin wait | up to 2× slower on Metal | jitcast turns it off by default |
 | Fast math folds NaN checks away (Metal) | in-kernel NaN tests do not work | the host uploads NaN as 0 plus a mask |
 | The cuBLAS provider prefers CUDA 12 libraries over CUDA 13 | slow fallback GEMM kernels on newer GPUs | a library shim directory ([INSTALL.md](INSTALL.md#nvidia-extras)) |
 | cuBLAS library tasks take whole arrays, with no element offsets | each GEMM weight needs its own array (about 300 MB extra) | separate weight arrays |

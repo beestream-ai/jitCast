@@ -1,4 +1,4 @@
-jitrex
+jitcast
 Copyright (c) 2026 Beestream Ltd
 
 This product is licensed under the Apache License, Version 2.0 (see LICENSE).
@@ -7,7 +7,7 @@ It runs NX-AI's TiRex-2 model (https://github.com/NX-AI/tirex-2). The model weig
 of this repository; they are downloaded from Hugging Face under NX-AI's own licence terms.
 
 ------------------------------------------------------------------------------------------------
-src/main/java/ai/beestream/jitrex/util/Json.java is derived from jitllm
+src/main/java/ai/beestream/jitcast/util/Json.java is derived from jitllm
 (https://github.com/beehive-lab/jitllm), which is distributed under the MIT License:
 
 MIT License

@@ -1,4 +1,4 @@
-# Developing jitrex
+# Developing jitcast
 
 [← back to the README](../README.md)
 
@@ -8,7 +8,7 @@ TiRex-2 is an xLSTM model: 12 blocks of `[mLSTM, sLSTM] × 6`, with a variate-mi
 block after each time mixer, D = 512, and 82.5M parameters. It gives 9-quantile forecasts for
 univariate series, multi-target series, and series with past or future covariates.
 
-jitrex reproduces NXAI's `ForecastModel.forecast()` end to end:
+jitcast reproduces NXAI's `ForecastModel.forecast()` end to end:
 - **Host side, in Java:** batch assembly and padding, the scaler, the postprocessor (trend
   detection, differencing, band calibration) and sign-flip test-time augmentation.
 - **Model forward pass:** on a TornadoVM device. It runs as one task graph per batch shape, with
@@ -24,7 +24,7 @@ The engine loads NXAI's checkpoints after a one-off conversion to safetensors, a
 base model (`NX-AI/TiRex-2`) and the benchmark checkpoints (`-fevbench`, `-gifteval-zs`,
 `-gifteval-pretrain`).
 
-## Java layout (`ai.beestream.jitrex`)
+## Java layout (`ai.beestream.jitcast`)
 
 The packages at the top are shared by every model family; each family lives in its own package
 (`tirex2` for TiRex-2) with its config, weights, host pipeline, CPU reference and TornadoVM engine.
@@ -58,7 +58,7 @@ The packages at the top are shared by every model family; each family lives in i
 | `gift_resumable.py` | GIFT-Eval one configuration at a time: results appended as they land, resumable, server restart and retry on failure |
 | `timestral/dump_golden.py` | Runs Mistral's Timestral forecaster on 13 cases and saves every `predict_block` call's arguments, stages and output, the forecasts, and each stage's distance from a float64 replay |
 | `timestral/bench_reference.py` | The Timestral benchmark workloads, and the reference's latency on them |
-| `eval/` | The evaluation matrix: `eval_nvidia.sh` / `eval_mac.sh` + `summarize_eval.py` / `plot_eval.py` ([PERFORMANCE.md](PERFORMANCE.md)); accuracy parity: `acc_setup.sh` / `acc_run.sh` / `acc_compare.py` ([VALIDATION.md](VALIDATION.md)); `tornado_run.sh` (run a jitrex main class on a TornadoVM SDK), `nxai.sh` (NXAI's benchmark in its venv), `profile.sh` + `kern_sum.py` (nsys), `cublas13_shim.sh` ([INSTALL.md](INSTALL.md#nvidia-extras)), `waitfree.sh` (wait for a shared machine to be free). Each script's header lists its arguments and environment |
+| `eval/` | The evaluation matrix: `eval_nvidia.sh` / `eval_mac.sh` + `summarize_eval.py` / `plot_eval.py` ([PERFORMANCE.md](PERFORMANCE.md)); accuracy parity: `acc_setup.sh` / `acc_run.sh` / `acc_compare.py` ([VALIDATION.md](VALIDATION.md)); `tornado_run.sh` (run a jitcast main class on a TornadoVM SDK), `nxai.sh` (NXAI's benchmark in its venv), `profile.sh` + `kern_sum.py` (nsys), `cublas13_shim.sh` ([INSTALL.md](INSTALL.md#nvidia-extras)), `waitfree.sh` (wait for a shared machine to be free). Each script's header lists its arguments and environment |
 
 ```bash
 ./scripts/setup_reference.sh ~/tirex2-work

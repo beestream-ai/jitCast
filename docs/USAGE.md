@@ -1,11 +1,11 @@
-# Running jitrex
+# Running jitcast
 
 [← back to the README](../README.md)
 
 Every entry point runs on the TornadoVM JVM with the SDK's argfile:
 
 ```bash
-JITREX="java @$TORNADOVM_HOME/tornado-argfile --add-modules jdk.incubator.vector -cp target/classes"
+JITCAST="java @$TORNADOVM_HOME/tornado-argfile --add-modules jdk.incubator.vector -cp target/classes"
 ```
 
 ## From Java
@@ -23,7 +23,7 @@ try (ForecastEngine engine = TornadoTiRex2Engine.load(Path.of("tirex2.safetensor
 `CpuTiRex2Engine` is the same API on the CPU reference. Engine options are JVM properties (`-Dtirex.tornado.*`, see [CONFIGURATION.md](CONFIGURATION.md)), for example:
 
 ```bash
-$JITREX -Dtirex.tornado.device=0:0 -Dtirex.tornado.gemm=cublas-auto my.App
+$JITCAST -Djitcast.tornado.device=0:0 -Dtirex.tornado.gemm=cublas-auto my.App
 ```
 
 ## Benchmark, cold start and harness server
@@ -33,16 +33,16 @@ $JITREX -Dtirex.tornado.device=0:0 -Dtirex.tornado.gemm=cublas-auto my.App
 python scripts/bench_nxai.py workloads --out workloads.safetensors
 
 # latency and throughput: univariate batches and multivariate series × covariates
-$JITREX -Dtirex.tornado.gemm=cublas-auto ai.beestream.jitrex.bench.TiRexBench \
+$JITCAST -Dtirex.tornado.gemm=cublas-auto ai.beestream.jitcast.bench.TiRexBench \
     --weights tirex2.safetensors --workloads workloads.safetensors --engine tornado \
     --scenarios throughput,multivariate --batches 1,8,64,512 --mv-batches 1,32 --covariates 15 --out results.jsonl
 
 # cold start: process start → first forecast, split into runtime init, load, first and second forecast
-BENCH_EXEC_START_NS=$(date +%s%N) $JITREX ai.beestream.jitrex.bench.TiRexColdStart \
+BENCH_EXEC_START_NS=$(date +%s%N) $JITCAST ai.beestream.jitcast.bench.TiRexColdStart \
     --weights tirex2.safetensors --workloads workloads.safetensors --out cold.jsonl
 
 # forecasts over a local socket, for NXAI's Python harnesses (scripts/tirex_tornado.py is the client)
-$JITREX ai.beestream.jitrex.bench.TiRexServer --weights tirex2.safetensors --port-file port.txt
+$JITCAST ai.beestream.jitcast.bench.TiRexServer --weights tirex2.safetensors --port-file port.txt
 ```
 
 `TiRexBench` options: `--engine tornado|cpu`, `--scenarios`, `--batches`, `--mv-batches`, `--covariates`, `--horizon` (64), `--reps` (30), `--warmup` (5), `--budget` (3 s per point), `--max-batch` (1024), `--config` (a label).
@@ -55,7 +55,7 @@ Timestral's engines, benchmark and tests are in [TIMESTRAL.md](TIMESTRAL.md).
 # CPU reference and host pipeline against the goldens (skipped unless both paths are set)
 ./mvnw test -Dtirex.weights=tirex2.safetensors -Dtirex.golden=golden-cpu
 # device: each kernel against the CPU operator, and the whole engine against the goldens
-./mvnw test -Paccel-tests -Dtest='*AccelTest' -Dtirex.tornado.device=1:0 \
+./mvnw test -Paccel-tests -Dtest='*AccelTest' -Djitcast.tornado.device=1:0 \
     -Dtirex.weights=tirex2.safetensors -Dtirex.golden=golden-cpu -Dtirex.golden.gpu=golden-cuda
 ```
 

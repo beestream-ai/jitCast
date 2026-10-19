@@ -2,7 +2,7 @@
 
 [← back to the README](../README.md)
 
-jitrex runs [Timestral](https://huggingface.co/mistralai/Timestral-5M), Mistral AI's family of
+jitcast runs [Timestral](https://huggingface.co/mistralai/Timestral-5M), Mistral AI's family of
 time-series foundation models (5M, 28M, 123M and 209M parameters). It reproduces
 `TimestralForecaster.forecast()` from Mistral's [`timestral`](https://github.com/mistralai/timestral)
 package end to end: 21-quantile forecasts for univariate and multivariate series, with past-only and
@@ -40,9 +40,9 @@ TimestralPipeline p = engine.pipeline().withOptions(
         TimestralPipeline.Options.defaults(engine.config()).withSymmetricAveraging(false));
 ```
 
-## How it maps onto jitrex
+## How it maps onto jitcast
 
-| Reference | jitrex |
+| Reference | jitcast |
 |---|---|
 | `TimestralConfig` | `timestral.TimestralConfig` (unknown keys and unsupported settings fail the load) |
 | `load_model` | `timestral.TimestralWeights`: every tensor bound by name and shape |
@@ -63,7 +63,7 @@ becomes heads-major, and the MLP's fused input projection, whose SiLU half is se
 the shared SwiGLU kernel applies.
 
 With covariates the reference also runs a decoder token for every context patch. Those tokens
-attend only to themselves and nothing reads them, so jitrex leaves them out; the forecasts are the
+attend only to themselves and nothing reads them, so jitcast leaves them out; the forecasts are the
 same.
 
 The device kernels are listed in [KERNELS.md](KERNELS.md#timestral).
@@ -120,7 +120,7 @@ git clone https://github.com/mistralai/timestral
 python scripts/timestral/dump_golden.py --src timestral/src --ckpt Timestral-5M --out golden-5m
 
 ./mvnw test -Dtimestral.checkpoint=Timestral-5M -Dtimestral.golden=golden-5m
-./mvnw test -Paccel-tests -Dtest='Timestral*AccelTest' -Dtirex.tornado.device=1:0 \
+./mvnw test -Paccel-tests -Dtest='Timestral*AccelTest' -Djitcast.tornado.device=1:0 \
     -Dtimestral.checkpoint=Timestral-5M -Dtimestral.golden=golden-5m
 ```
 
@@ -128,15 +128,15 @@ python scripts/timestral/dump_golden.py --src timestral/src --ckpt Timestral-5M 
 
 End-to-end `forecast()` with the reference's defaults (sign-flip averaging on), the median of
 repeated calls after warm-up, on the same inputs for both engines (`bench_reference.py workloads`:
-contexts of 2,048 steps and a horizon of 64 unless stated). jitrex runs on TornadoVM develop
+contexts of 2,048 steps and a horizon of 64 unless stated). jitcast runs on TornadoVM develop
 (`02e83b2`), Mistral's reference on PyTorch 2.14 in eager mode. Speed-ups are over the reference.
 
 ### NVIDIA A100 80GB PCIe
 
-jitrex with its default GEMMs on CUDA (cuBLAS FP32, CUDA graphs) and with cuBLAS FP16, against the
+jitcast with its default GEMMs on CUDA (cuBLAS FP32, CUDA graphs) and with cuBLAS FP16, against the
 reference on PyTorch CUDA (FP32), in ms:
 
-| Workload | 5M reference | 5M jitrex FP32 | 5M jitrex FP16 | 28M reference | 28M jitrex FP32 | 28M jitrex FP16 | 209M reference | 209M jitrex FP32 | 209M jitrex FP16 |
+| Workload | 5M reference | 5M jitcast FP32 | 5M jitcast FP16 | 28M reference | 28M jitcast FP32 | 28M jitcast FP16 | 209M reference | 209M jitcast FP32 | 209M jitcast FP16 |
 |---|---|---|---|---|---|---|---|---|---|
 | 1 series | 44.4 | **4.7 (9.4×)** | 4.4 (10.0×) | 57.4 | **6.4 (9.0×)** | 5.8 (9.9×) | 90.6 | **21.9 (4.1×)** | 9.3 (9.8×) |
 | 8 series | 46.3 | **12.1 (3.8×)** | 9.9 (4.7×) | 60.0 | **16.1 (3.7×)** | 12.7 (4.7×) | 94.9 | **45.3 (2.1×)** | 21.7 (4.4×) |
@@ -148,8 +148,8 @@ reference on PyTorch CUDA (FP32), in ms:
 | 8 series × (2 past + 2 known) | 51.7 | **24.7 (2.1×)** | 22.3 (2.3×) | 77.2 | **42.5 (1.8×)** | 29.3 (2.6×) | 336.3 | **174.5 (1.9×)** | 61.2 (5.5×) |
 
 - The reference costs 45–90 ms per call whatever the batch up to 32 series: launch and Python
-  overhead, which jitrex does not have. Its time grows only once its GEMMs fill the GPU.
-- At large batches of the small checkpoints the reference is faster: there jitrex's time is not in
+  overhead, which jitcast does not have. Its time grows only once its GEMMs fill the GPU.
+- At large batches of the small checkpoints the reference is faster: there jitcast's time is not in
   its GEMMs but in the rest of a block (its attention kernels and the host steps), still to profile.
 - FP16 GEMMs change the forecasts (see *Accuracy of the FP16 modes*); FP32 is the default.
 
@@ -157,11 +157,11 @@ reference on PyTorch CUDA (FP32), in ms:
 
 The reference's scaler and refine step compute in float64, which PyTorch's MPS backend does not
 support, so as published it runs on the CPU only. `bench_reference.py --device mps` runs those two
-steps on the CPU and the rest on the GPU (its forecasts match the CPU run to 8e-6). jitrex runs on
+steps on the CPU and the rest on the GPU (its forecasts match the CPU run to 8e-6). jitcast runs on
 Metal with its default GEMMs (register-blocked FP32). In ms, with the speed-up over the faster of
 the reference's CPU and MPS runs:
 
-| Workload | 5M ref. CPU | 5M ref. MPS | 5M jitrex Metal | 28M ref. CPU | 28M ref. MPS | 28M jitrex Metal | 209M ref. CPU | 209M ref. MPS | 209M jitrex Metal |
+| Workload | 5M ref. CPU | 5M ref. MPS | 5M jitcast Metal | 28M ref. CPU | 28M ref. MPS | 28M jitcast Metal | 209M ref. CPU | 209M ref. MPS | 209M jitcast Metal |
 |---|---|---|---|---|---|---|---|---|---|
 | 1 series | 10.0 | 14.9 | **5.1 (2.0×)** | 22.8 | 22.8 | **18.0 (1.3×)** | 108.0 | **53.6** | 113.8 (0.47×) |
 | 8 series | 33.6 | 23.1 | **12.3 (1.9×)** | 73.9 | **44.4** | 49.1 (0.90×) | 272.6 | **173.2** | 324.5 (0.53×) |
@@ -172,10 +172,10 @@ the reference's CPU and MPS runs:
 | 8 series, 8,192-step context | 72.9 | 48.9 | **41.0 (1.2×)** | 179.8 | **119.2** | 171.5 (0.69×) | 854.9 | **557.0** | 1,194.0 (0.47×) |
 | 8 series × covariates | 123.8 | 85.7 | **48.4 (1.8×)** | 384.9 | 250.9 | **210.7 (1.2×)** | 1,944.6 | **1,363.6** | 1,500.7 (0.91×) |
 
-On Metal about 95% of jitrex's device time is in its GEMMs, which reach about half the throughput of
+On Metal about 95% of jitcast's device time is in its GEMMs, which reach about half the throughput of
 the matrix multiplications PyTorch's MPS backend calls; FP16 (`half`) does not change that. Closing
 the gap needs a GEMM on Apple's matrix hardware, which TornadoVM's Metal backend does not expose to
-jitrex today.
+jitcast today.
 
 ### Reproducing
 
@@ -183,8 +183,8 @@ jitrex today.
 python scripts/timestral/bench_reference.py workloads --out workloads.safetensors
 python scripts/timestral/bench_reference.py run --src timestral/src --ckpt Timestral-5M \
     --workloads workloads.safetensors --device cuda --out reference.json        # or cpu, mps
-$JITREX -Dtirex.tornado.device=1:0 ai.beestream.jitrex.bench.TimestralBench --checkpoint Timestral-5M \
-    --workloads workloads.safetensors --engine tornado --out jitrex.json
+$JITCAST -Djitcast.tornado.device=1:0 ai.beestream.jitcast.bench.TimestralBench --checkpoint Timestral-5M \
+    --workloads workloads.safetensors --engine tornado --out jitcast.json
 scripts/timestral/eval_mac.sh <workdir> timestral/src Timestral-5M Timestral-28M Timestral-209M   # the Mac matrix
 ```
 
@@ -192,7 +192,7 @@ scripts/timestral/eval_mac.sh <workdir> timestral/src Timestral-5M Timestral-28M
 
 | Property | Default | Effect |
 |---|---|---|
-| `tirex.tornado.device` | TornadoVM's default | Device, as for TiRex-2 |
+| `jitcast.tornado.device` | TornadoVM's default | Device, as for TiRex-2 |
 | `timestral.tornado.gemm` | `auto` | `auto`: `cublas` on CUDA, `blocked` elsewhere. `blocked`: TornadoVM's register-blocked FP32 GEMM from `blockedMinRows` rows and the tiled one under it; `tiled`: the tiled one only; `half`: TornadoVM's FP16 GEMM (FP32 accumulation); `cublas`, `cublas-tf32`, `cublas-fp16`: cuBLAS in FP32, TF32, or FP16 with FP32 accumulation (CUDA) |
 | `timestral.tornado.cudaGraph` | `true` with cuBLAS | Capture the task graph once and replay it as a CUDA graph |
 | `timestral.tornado.blockedMinRows` | `128` | The fewest GEMM rows that use the register-blocked kernel |
@@ -212,4 +212,4 @@ scripts/timestral/eval_mac.sh <workdir> timestral/src Timestral-5M Timestral-28M
 
 The Timestral weights are Mistral AI's, under a Modified MIT licence that withholds every right
 from companies whose monthly revenue exceeds $20 million; read it before use. Mistral's inference
-code is Apache 2.0. jitrex does not distribute the weights.
+code is Apache 2.0. jitcast does not distribute the weights.
