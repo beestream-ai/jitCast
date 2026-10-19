@@ -111,6 +111,8 @@ public class PipelineGoldenTest {
         float[][][] ctx = cube(g.get("in.context"));
         float[][][] past = g.contains("in.past_covariates") ? cube(g.get("in.past_covariates")) : null;
         float[][][] known = g.contains("in.known_covariates") ? cube(g.get("in.known_covariates")) : null;
+        double[][][] catPast = g.contains("in.categorical_past_covariates") ? cube64(g.get("in.categorical_past_covariates")) : null;
+        double[][][] catKnown = g.contains("in.categorical_known_covariates") ? cube64(g.get("in.categorical_known_covariates")) : null;
         List<TimeSeries> out = new ArrayList<>();
         for (int b = 0; b < ctx.length; b++) {
             int start = 0;
@@ -120,7 +122,8 @@ public class PipelineGoldenTest {
                 }
             }
             out.add(new TimeSeries(from(ctx[b], start), past == null ? null : from(past[b], start),
-                    known == null ? null : from(known[b], start)));
+                    known == null ? null : from(known[b], start), catPast == null ? null : from(catPast[b], start),
+                    catKnown == null ? null : from(catKnown[b], start)));
         }
         return out;
     }
@@ -138,6 +141,26 @@ public class PipelineGoldenTest {
         float[][] r = new float[rows.length][];
         for (int i = 0; i < rows.length; i++) {
             r[i] = Arrays.copyOfRange(rows[i], start, rows[i].length);
+        }
+        return r;
+    }
+
+    private static double[][] from(double[][] rows, int start) {
+        double[][] r = new double[rows.length][];
+        for (int i = 0; i < rows.length; i++) {
+            r[i] = Arrays.copyOfRange(rows[i], start, rows[i].length);
+        }
+        return r;
+    }
+
+    static double[][][] cube64(Tensor t) {
+        int a = t.dim(0), b = t.dim(1), n = t.dim(2);
+        double[] flat = t.toDoubleArray();
+        double[][][] r = new double[a][b][n];
+        for (int i = 0; i < a; i++) {
+            for (int j = 0; j < b; j++) {
+                System.arraycopy(flat, (i * b + j) * n, r[i][j], 0, n);
+            }
         }
         return r;
     }

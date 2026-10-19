@@ -34,7 +34,7 @@ import ai.beestream.jitcast.host.SignFlip;
  *
  * <p>A series' forecast does not depend on the other series of its batch: rows are right-aligned,
  * so patch boundaries count from the forecast start, and time positions from each series' first
- * observation. Categorical covariates are not supported.
+ * observation. Categorical covariates are target-encoded first ({@link TargetEncoding}).
  */
 public final class TimestralPipeline {
 
@@ -126,16 +126,18 @@ public final class TimestralPipeline {
 
     private List<Forecast> forecastWindow(List<TimeSeries> series, int horizon) {
         for (TimeSeries ts : series) {
-            if ((ts.pastCount() > 0 || ts.futureCount() > 0) && !config.covariateEnabled()) {
+            if (ts.rows() > ts.targets() && !config.covariateEnabled()) {
                 throw new IllegalArgumentException("this checkpoint was not trained with covariates");
             }
-            if (ts.futureCount() > 0 && !config.supportsKnownCovariates()) {
+            if (ts.futureCount() + ts.futureCategoricalCount() > 0 && !config.supportsKnownCovariates()) {
                 throw new IllegalArgumentException("this checkpoint cannot condition on known-future covariates");
             }
         }
-        List<float[][][]> a = forecastRaw(series, horizon, 1f);
+        // categorical covariates become numeric ones, encoded once against the series' own target
+        List<TimeSeries> encoded = series.stream().map(ts -> TargetEncoding.apply(ts, horizon, options.maxContext())).toList();
+        List<float[][][]> a = forecastRaw(encoded, horizon, 1f);
         if (options.symmetricAveraging()) {
-            List<float[][][]> b = forecastRaw(series, horizon, -1f);
+            List<float[][][]> b = forecastRaw(encoded, horizon, -1f);
             for (int s = 0; s < a.size(); s++) {
                 SignFlip.average(a.get(s), b.get(s), complement, horizon);
             }

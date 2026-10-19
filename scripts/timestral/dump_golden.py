@@ -17,6 +17,7 @@
 
 For each case this writes ``<out>/<case>.safetensors`` holding:
   in.context / in.past_covariates / in.known_covariates     the forecast() inputs, (B, V, T) etc.
+  in.categorical_past_covariates / in.categorical_known_covariates   category codes, when the case has them
   forecast                                                  the final (B, V, H, Q) quantiles
   call<k>.in.inputs / .observed / .group_ids / .role_ids    the k-th predict_block call's arguments
   call<k>.in.known_future / .known_future_mask
@@ -87,6 +88,17 @@ def cases():
     out["constant"] = (32, torch.full((1, 1, 200), 5.0), None, None, {})
     out["no_symmetric"] = (40, series(1, 300, 28)[None], None, None, {"symmetric_averaging": False})
     out["overlong_context"] = (64, series(1, 33000, 29)[None], None, None, {})
+    # categorical covariates: a weekday code with gaps, and an event code whose horizon holds a code
+    # the context never shows (it encodes to the series mean); two targets pass their codes raw
+    weekday = ((torch.arange(500) // 24) % 7).double()
+    weekday[50:60] = float("nan")
+    event = (torch.arange(540) % 97 < 10).double() * 2.0
+    event[520:530] = 5.0
+    out["categorical"] = (40, series(1, 500, 30)[None], series(1, 500, 31)[None], None,
+                          {"categorical_past_covariates": weekday[None, None],
+                           "categorical_known_covariates": event[None, None]})
+    out["categorical_multitarget"] = (40, series(2, 300, 32)[None], None, None,
+                                      {"categorical_past_covariates": ((torch.arange(300) // 24) % 7).double()[None, None]})
     return out
 
 
@@ -197,6 +209,9 @@ def main():
         recorder.calls.clear()
         fc = forecaster.forecast(context, h, past_covariates=past, known_covariates=known, **kwargs)
         tensors = {"in.context": cpu(context), "forecast": cpu(fc.quantiles)}
+        for name in ("categorical_past_covariates", "categorical_known_covariates"):
+            if name in kwargs:
+                tensors[f"in.{name}"] = kwargs[name].detach().to("cpu", torch.float64).contiguous()
         if past is not None:
             tensors["in.past_covariates"] = cpu(past)
         if known is not None:
@@ -210,7 +225,8 @@ def main():
                 if not name.startswith("in."):
                     tensors[f"call{k}.fp32err.{name}"] = torch.tensor([relative_max_error(value, ref64[name])])
         save_file(tensors, out_dir / f"{case}.safetensors")
-        manifest["cases"][case] = {"H": h, "kwargs": kwargs, "calls": len(recorder.calls), "horizon_patches": horizons}
+        options = {k: v for k, v in kwargs.items() if not torch.is_tensor(v)}
+        manifest["cases"][case] = {"H": h, "kwargs": options, "calls": len(recorder.calls), "horizon_patches": horizons}
         print(f"{case}: {len(recorder.calls)} predict_block calls, horizon patches {horizons}")
 
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=1))

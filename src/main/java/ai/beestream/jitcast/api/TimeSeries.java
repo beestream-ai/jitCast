@@ -16,15 +16,19 @@
 package ai.beestream.jitcast.api;
 
 /**
- * One forecasting input, as {@code tirex2.TimeseriesType}: target rows plus optional covariates.
- * Missing observations are {@code NaN}.
+ * One forecasting input: target rows plus optional numeric and categorical covariates. Missing
+ * observations are {@code NaN}.
  *
  * @param target {@code [V_t][T]}; a univariate series has one row
  * @param pastCovariates {@code [V_p][T]}, known only up to the forecast start, or null
  * @param futureCovariates {@code [V_f][>= T + H]}, known over the horizon too, or null; extra
  *     trailing steps are ignored
+ * @param pastCategorical {@code [C_p][T]} category codes (any numbers; {@code NaN} is missing),
+ *     known only up to the forecast start, or null
+ * @param futureCategorical {@code [C_f][>= T + H]} category codes known over the horizon too, or null
  */
-public record TimeSeries(float[][] target, float[][] pastCovariates, float[][] futureCovariates) {
+public record TimeSeries(float[][] target, float[][] pastCovariates, float[][] futureCovariates, double[][] pastCategorical,
+        double[][] futureCategorical) {
 
     public TimeSeries {
         if (target == null || target.length == 0) {
@@ -32,11 +36,11 @@ public record TimeSeries(float[][] target, float[][] pastCovariates, float[][] f
         }
         int t = target[0].length;
         for (float[] row : target) {
-            requireLength(row, t, "target");
+            requireLength(row.length, t, "target");
         }
         if (pastCovariates != null) {
             for (float[] row : pastCovariates) {
-                requireLength(row, t, "past covariate");
+                requireLength(row.length, t, "past covariate");
             }
         }
         if (futureCovariates != null) {
@@ -46,6 +50,25 @@ public record TimeSeries(float[][] target, float[][] pastCovariates, float[][] f
                 }
             }
         }
+        if (pastCategorical != null) {
+            for (double[] row : pastCategorical) {
+                requireLength(row.length, t, "past categorical covariate");
+                requireNotInfinite(row);
+            }
+        }
+        if (futureCategorical != null) {
+            for (double[] row : futureCategorical) {
+                if (row.length < t) {
+                    throw new IllegalArgumentException("a future categorical covariate row is shorter than the target");
+                }
+                requireNotInfinite(row);
+            }
+        }
+    }
+
+    /** A series with numeric covariates only. */
+    public TimeSeries(float[][] target, float[][] pastCovariates, float[][] futureCovariates) {
+        this(target, pastCovariates, futureCovariates, null, null);
     }
 
     public static TimeSeries univariate(float[] values) {
@@ -68,9 +91,35 @@ public record TimeSeries(float[][] target, float[][] pastCovariates, float[][] f
         return futureCovariates == null ? 0 : futureCovariates.length;
     }
 
-    private static void requireLength(float[] row, int t, String what) {
-        if (row.length != t) {
+    public int pastCategoricalCount() {
+        return pastCategorical == null ? 0 : pastCategorical.length;
+    }
+
+    public int futureCategoricalCount() {
+        return futureCategorical == null ? 0 : futureCategorical.length;
+    }
+
+    /** Whether the series has categorical covariates. */
+    public boolean hasCategorical() {
+        return pastCategoricalCount() + futureCategoricalCount() > 0;
+    }
+
+    /** Every row the series contributes to a forward pass: targets and all covariates. */
+    public int rows() {
+        return targets() + pastCount() + futureCount() + pastCategoricalCount() + futureCategoricalCount();
+    }
+
+    private static void requireLength(int length, int t, String what) {
+        if (length != t) {
             throw new IllegalArgumentException("every " + what + " row must have the target's length " + t);
+        }
+    }
+
+    private static void requireNotInfinite(double[] codes) {
+        for (double c : codes) {
+            if (Double.isInfinite(c)) {
+                throw new IllegalArgumentException("category codes must be finite or NaN");
+            }
         }
     }
 }

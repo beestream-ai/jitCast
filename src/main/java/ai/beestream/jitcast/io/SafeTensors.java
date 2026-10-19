@@ -42,6 +42,9 @@ public final class SafeTensors implements AutoCloseable {
     /** Little-endian float, the only element layout safetensors writes for F32. */
     public static final ValueLayout.OfFloat F32 =
             ValueLayout.JAVA_FLOAT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
+    /** Little-endian double, for F64 tensors. */
+    public static final ValueLayout.OfDouble F64 =
+            ValueLayout.JAVA_DOUBLE_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
 
     private final Arena arena;
     private final Map<String, Tensor> tensors;

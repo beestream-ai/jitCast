@@ -58,6 +58,14 @@ public record Tensor(String name, SafeTensors.DType dtype, long[] shape, MemoryS
         return data.toArray(SafeTensors.F32);
     }
 
+    /** Copies an F64 tensor to a Java array. */
+    public double[] toDoubleArray() {
+        if (dtype != SafeTensors.DType.F64) {
+            throw new IllegalStateException(name + " is " + dtype + ", not F64");
+        }
+        return data.toArray(SafeTensors.F64);
+    }
+
     @Override
     public String toString() {
         return name + ":" + dtype + Arrays.toString(shape);
