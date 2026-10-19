@@ -15,9 +15,10 @@
 
 **jitcast** is an inference engine for zero-shot time-series forecasting models, written in Java on
 [TornadoVM](https://github.com/beehive-lab/TornadoVM) (similar to [jitLLM](https://github.com/beehive-lab/jitllm)).
-It runs [TiRex-2](https://github.com/NX-AI/tirex-2), NXAI's model, and
+It runs [TiRex-2](https://github.com/NX-AI/tirex-2), NXAI's model,
 [Timestral](https://huggingface.co/mistralai/Timestral-5M), Mistral AI's family (see
-[docs/TIMESTRAL.md](docs/TIMESTRAL.md)).
+[docs/TIMESTRAL.md](docs/TIMESTRAL.md)), and [Chronos-2](https://huggingface.co/amazon/chronos-2),
+Amazon's model (see [docs/CHRONOS2.md](docs/CHRONOS2.md)).
 
 For TiRex-2, jitcast reproduces NXAI's `ForecastModel.forecast()` end to end: 9-quantile forecasts for
 univariate series, multi-target series, and series with past or future covariates. The host
@@ -114,6 +115,7 @@ and benchmark-suite tables and the method are in [docs/PERFORMANCE.md](docs/PERF
 | [VALIDATION.md](docs/VALIDATION.md) | How the implementation was checked, from an executable spec to GIFT-Eval and fev-bench |
 | [PERFORMANCE.md](docs/PERFORMANCE.md) | The comparison with NXAI's engine on an NVIDIA A100: method, results, charts |
 | [TIMESTRAL.md](docs/TIMESTRAL.md) | Timestral: quick start, how it maps onto jitcast, validation, performance on Apple silicon, options |
+| [CHRONOS2.md](docs/CHRONOS2.md) | Chronos-2: quick start, how it maps onto jitcast, validation, options |
 | [KERNELS.md](docs/KERNELS.md) | Every kernel, with source links and their hybrid alternatives |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Architecture, code layout and scripts |
 | [ROADMAP.md](docs/ROADMAP.md) | Planned work, and the TornadoVM issues that limit jitcast today |
@@ -125,4 +127,5 @@ Copyright (c) 2026 Beestream Ltd.
 `util/Json.java` is derived from [jitllm](https://github.com/beehive-lab/jitllm) (MIT); see [NOTICE](NOTICE).
 The TiRex-2 model and its weights are NX-AI's, under their own licence terms. The Timestral weights
 are Mistral AI's, under a Modified MIT licence with a revenue restriction (see
-[docs/TIMESTRAL.md](docs/TIMESTRAL.md#licence)).
+[docs/TIMESTRAL.md](docs/TIMESTRAL.md#licence)). The Chronos-2 weights are Amazon's, under the
+Apache License 2.0.
