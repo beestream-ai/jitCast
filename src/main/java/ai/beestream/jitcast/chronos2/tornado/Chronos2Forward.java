@@ -73,6 +73,9 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
     /** The fewest rows a GEMM needs to run on {@link Kernels#gemmBlocked}. */
     private final int blockedMinRows = Integer.getInteger("chronos2.tornado.blockedMinRows", 128);
 
+    /** The fewest rows a GEMM needs to run on {@link Kernels#gemmBlockedWide}, whose 64 × 128 tiles leave the GPU idle below that. */
+    private final int wideMinRows = Integer.getInteger("chronos2.tornado.wideMinRows", 1024);
+
     /** One compiled shape. */
     public record Shape(int rows, int contextPatches, int outputPatches) {}
 
@@ -315,6 +318,11 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
                 wg = new WorkerGrid2D((l.out() + t - 1) / t * threads, (m + t - 1) / t * threads);
                 wg.setLocalWork(threads, threads, 1);
                 g.task(name, Kernels::gemmHalf, ctx, ah, wh, c, w, Math.max(l.b(), 0), m, l.out(), l.in(), f, noTwin, 0);
+            } else if (gemmMode == GemmMode.BLOCKED && m >= wideMinRows) {
+                int tr = Kernels.WIDE_ROWS, tc = Kernels.WIDE_COLS, threads = Kernels.HGEMM_THREADS;
+                wg = new WorkerGrid2D((l.out() + tc - 1) / tc * threads, (m + tr - 1) / tr * threads);
+                wg.setLocalWork(threads, threads, 1);
+                g.task(name, Kernels::gemmBlockedWide, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, 0, m, l.out(), l.in(), f);
             } else if (gemmMode == GemmMode.BLOCKED && m >= blockedMinRows) {
                 int t = Kernels.HGEMM_TILE, threads = Kernels.HGEMM_THREADS;
                 wg = new WorkerGrid2D((l.out() + t - 1) / t * threads, (m + t - 1) / t * threads);

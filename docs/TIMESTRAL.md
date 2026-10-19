@@ -196,6 +196,7 @@ scripts/timestral/eval_mac.sh <workdir> timestral/src Timestral-5M Timestral-28M
 | `timestral.tornado.gemm` | `auto` | `auto`: `cublas` on CUDA, `blocked` elsewhere. `blocked`: TornadoVM's register-blocked FP32 GEMM from `blockedMinRows` rows and the tiled one under it; `tiled`: the tiled one only; `half`: TornadoVM's FP16 GEMM (FP32 accumulation); `cublas`, `cublas-tf32`, `cublas-fp16`: cuBLAS in FP32, TF32, or FP16 with FP32 accumulation (CUDA) |
 | `timestral.tornado.cudaGraph` | `true` with cuBLAS | Capture the task graph once and replay it as a CUDA graph |
 | `timestral.tornado.blockedMinRows` | `128` | The fewest GEMM rows that use the register-blocked kernel |
+| `timestral.tornado.wideMinRows` | `1024` | The fewest GEMM rows that use the register-blocked kernel with 64 × 128 tiles |
 | `timestral.tornado.plans` | `8` | Block shapes kept compiled (least recently used are evicted) |
 | `timestral.tornado.profile` | `false` | Print TornadoVM's per-task kernel times after every execution |
 | `timestral.maxTokens` | `131072` | The most tokens one forward pass takes; forecasts do not depend on the split |

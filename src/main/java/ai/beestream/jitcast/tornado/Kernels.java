@@ -312,7 +312,143 @@ public final class Kernels {
         blockedStore(c, cOff, w, bOff, r0 + 48, col0 + 48, m, n, flags, c33);
     }
 
-    /** One output element of {@link #gemmBlocked}: bias, SiLU, accumulate, store. */
+    /** Output tile of {@link #gemmBlockedWide}: a 16 × 16 work-group computes 64 rows × 128 columns, 4 × 8 per thread. */
+    public static final int WIDE_ROWS = 64;
+    public static final int WIDE_COLS = 128;
+    /**
+     * {@link #gemmBlocked} with a wider tile, for GEMMs with enough rows to fill the GPU with it:
+     * {@code C[m, n] (+)= act(A[m, :] · W[n, :] + b[n])} with {@code A} at {@code aOff}, {@code W} ({@code [N, K]}) at {@code wOff} and {@code b}
+     * at {@code bOff} in the packed weights, and {@code C} at {@code cOff}. Each work-group stages a
+     * 64 × 16 slice of A and a 128 × 16 slice of W in local memory (K-major with a padded pitch, so
+     * reads and stores are free of bank conflicts), and each thread accumulates a 4 × 8 block whose
+     * rows and columns are 16 apart, so the stores of a warp are contiguous. Flags and epilogue
+     * order as {@link #gemm}. Global work {@code (⌈N/128⌉·16, ⌈M/64⌉·16)}, local {@code (16, 16)}.
+     */
+    public static void gemmBlockedWide(KernelContext ctx, FloatArray a, int aOff, FloatArray w, int wOff, int bOff, FloatArray c,
+            int cOff, int m, int n, int k, int flags) {
+        int lx = ctx.localIdx;
+        int ly = ctx.localIdy;
+        int tid = ly * HGEMM_THREADS + lx;
+        int rowBase = ctx.groupIdy * WIDE_ROWS;
+        int colBase = ctx.groupIdx * WIDE_COLS;
+        float[] as = ctx.allocateFloatLocalArray((WIDE_ROWS + 1) * HGEMM_K);
+        float[] ws = ctx.allocateFloatLocalArray((WIDE_COLS + 1) * HGEMM_K);
+        float c00 = 0f, c01 = 0f, c02 = 0f, c03 = 0f, c04 = 0f, c05 = 0f, c06 = 0f, c07 = 0f;
+        float c10 = 0f, c11 = 0f, c12 = 0f, c13 = 0f, c14 = 0f, c15 = 0f, c16 = 0f, c17 = 0f;
+        float c20 = 0f, c21 = 0f, c22 = 0f, c23 = 0f, c24 = 0f, c25 = 0f, c26 = 0f, c27 = 0f;
+        float c30 = 0f, c31 = 0f, c32 = 0f, c33 = 0f, c34 = 0f, c35 = 0f, c36 = 0f, c37 = 0f;
+        for (int kt = 0; kt < k; kt += HGEMM_K) {
+            // 64 × 16 elements of A (4 per thread) and 128 × 16 of W (8 per thread); consecutive threads read along K
+            for (int e = 0; e < 4; e++) {
+                int idx = tid + e * HGEMM_THREADS * HGEMM_THREADS;
+                int r = idx / HGEMM_K;
+                int kk0 = idx % HGEMM_K;
+                int ka = kt + kk0;
+                float av = 0f;
+                if (rowBase + r < m && ka < k) {
+                    av = a.get(aOff + (rowBase + r) * k + ka);
+                }
+                as[kk0 * (WIDE_ROWS + 1) + r] = av;
+            }
+            for (int e = 0; e < 8; e++) {
+                int idx = tid + e * HGEMM_THREADS * HGEMM_THREADS;
+                int r = idx / HGEMM_K;
+                int kk0 = idx % HGEMM_K;
+                int ka = kt + kk0;
+                float wv = 0f;
+                if (colBase + r < n && ka < k) {
+                    wv = w.get(wOff + (colBase + r) * k + ka);
+                }
+                ws[kk0 * (WIDE_COLS + 1) + r] = wv;
+            }
+            ctx.localBarrier();
+            for (int kk = 0; kk < HGEMM_K; kk++) {
+                int oa = kk * (WIDE_ROWS + 1);
+                int ow = kk * (WIDE_COLS + 1);
+                float a0 = as[oa + ly];
+                float a1 = as[oa + ly + 16];
+                float a2 = as[oa + ly + 32];
+                float a3 = as[oa + ly + 48];
+                float b0 = ws[ow + lx];
+                float b1 = ws[ow + lx + 16];
+                float b2 = ws[ow + lx + 32];
+                float b3 = ws[ow + lx + 48];
+                float b4 = ws[ow + lx + 64];
+                float b5 = ws[ow + lx + 80];
+                float b6 = ws[ow + lx + 96];
+                float b7 = ws[ow + lx + 112];
+                c00 += a0 * b0;
+                c01 += a0 * b1;
+                c02 += a0 * b2;
+                c03 += a0 * b3;
+                c04 += a0 * b4;
+                c05 += a0 * b5;
+                c06 += a0 * b6;
+                c07 += a0 * b7;
+                c10 += a1 * b0;
+                c11 += a1 * b1;
+                c12 += a1 * b2;
+                c13 += a1 * b3;
+                c14 += a1 * b4;
+                c15 += a1 * b5;
+                c16 += a1 * b6;
+                c17 += a1 * b7;
+                c20 += a2 * b0;
+                c21 += a2 * b1;
+                c22 += a2 * b2;
+                c23 += a2 * b3;
+                c24 += a2 * b4;
+                c25 += a2 * b5;
+                c26 += a2 * b6;
+                c27 += a2 * b7;
+                c30 += a3 * b0;
+                c31 += a3 * b1;
+                c32 += a3 * b2;
+                c33 += a3 * b3;
+                c34 += a3 * b4;
+                c35 += a3 * b5;
+                c36 += a3 * b6;
+                c37 += a3 * b7;
+            }
+            ctx.localBarrier();
+        }
+        int r0 = rowBase + ly;
+        int col0 = colBase + lx;
+        blockedStore(c, cOff, w, bOff, r0, col0, m, n, flags, c00);
+        blockedStore(c, cOff, w, bOff, r0, col0 + 16, m, n, flags, c01);
+        blockedStore(c, cOff, w, bOff, r0, col0 + 32, m, n, flags, c02);
+        blockedStore(c, cOff, w, bOff, r0, col0 + 48, m, n, flags, c03);
+        blockedStore(c, cOff, w, bOff, r0, col0 + 64, m, n, flags, c04);
+        blockedStore(c, cOff, w, bOff, r0, col0 + 80, m, n, flags, c05);
+        blockedStore(c, cOff, w, bOff, r0, col0 + 96, m, n, flags, c06);
+        blockedStore(c, cOff, w, bOff, r0, col0 + 112, m, n, flags, c07);
+        blockedStore(c, cOff, w, bOff, r0 + 16, col0, m, n, flags, c10);
+        blockedStore(c, cOff, w, bOff, r0 + 16, col0 + 16, m, n, flags, c11);
+        blockedStore(c, cOff, w, bOff, r0 + 16, col0 + 32, m, n, flags, c12);
+        blockedStore(c, cOff, w, bOff, r0 + 16, col0 + 48, m, n, flags, c13);
+        blockedStore(c, cOff, w, bOff, r0 + 16, col0 + 64, m, n, flags, c14);
+        blockedStore(c, cOff, w, bOff, r0 + 16, col0 + 80, m, n, flags, c15);
+        blockedStore(c, cOff, w, bOff, r0 + 16, col0 + 96, m, n, flags, c16);
+        blockedStore(c, cOff, w, bOff, r0 + 16, col0 + 112, m, n, flags, c17);
+        blockedStore(c, cOff, w, bOff, r0 + 32, col0, m, n, flags, c20);
+        blockedStore(c, cOff, w, bOff, r0 + 32, col0 + 16, m, n, flags, c21);
+        blockedStore(c, cOff, w, bOff, r0 + 32, col0 + 32, m, n, flags, c22);
+        blockedStore(c, cOff, w, bOff, r0 + 32, col0 + 48, m, n, flags, c23);
+        blockedStore(c, cOff, w, bOff, r0 + 32, col0 + 64, m, n, flags, c24);
+        blockedStore(c, cOff, w, bOff, r0 + 32, col0 + 80, m, n, flags, c25);
+        blockedStore(c, cOff, w, bOff, r0 + 32, col0 + 96, m, n, flags, c26);
+        blockedStore(c, cOff, w, bOff, r0 + 32, col0 + 112, m, n, flags, c27);
+        blockedStore(c, cOff, w, bOff, r0 + 48, col0, m, n, flags, c30);
+        blockedStore(c, cOff, w, bOff, r0 + 48, col0 + 16, m, n, flags, c31);
+        blockedStore(c, cOff, w, bOff, r0 + 48, col0 + 32, m, n, flags, c32);
+        blockedStore(c, cOff, w, bOff, r0 + 48, col0 + 48, m, n, flags, c33);
+        blockedStore(c, cOff, w, bOff, r0 + 48, col0 + 64, m, n, flags, c34);
+        blockedStore(c, cOff, w, bOff, r0 + 48, col0 + 80, m, n, flags, c35);
+        blockedStore(c, cOff, w, bOff, r0 + 48, col0 + 96, m, n, flags, c36);
+        blockedStore(c, cOff, w, bOff, r0 + 48, col0 + 112, m, n, flags, c37);
+    }
+
+    /** One output element of {@link #gemmBlocked} and {@link #gemmBlockedWide}: bias, SiLU or ReLU, accumulate, store. */
     private static void blockedStore(FloatArray c, int cOff, FloatArray w, int bOff, int row, int col, int m, int n, int flags,
             float acc) {
         if (row < m && col < n) {

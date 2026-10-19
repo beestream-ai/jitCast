@@ -23,8 +23,8 @@ import uk.ac.manchester.tornado.api.enums.TornadoVMBackendType;
  *
  * <ul>
  *   <li>{@code TILED}: {@link Kernels#gemm}, FP32, any backend.
- *   <li>{@code BLOCKED}: {@link Kernels#gemmBlocked} from a minimum row count and {@link Kernels#gemm}
- *       below it, FP32, any backend.
+ *   <li>{@code BLOCKED}: {@link Kernels#gemmBlockedWide} for the largest GEMMs, {@link Kernels#gemmBlocked}
+ *       from a minimum row count and {@link Kernels#gemm} below it, FP32, any backend.
  *   <li>{@code HALF}: {@link Kernels#gemmHalf}, FP16 inputs with FP32 accumulation and output, any
  *       backend.
  *   <li>{@code CUBLAS}, {@code CUBLAS_TF32}: cuBLAS SGEMM in FP32 or TF32 (CUDA).
