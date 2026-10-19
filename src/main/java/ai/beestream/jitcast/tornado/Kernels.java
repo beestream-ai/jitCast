@@ -62,16 +62,17 @@ public final class Kernels {
         int row = ctx.groupIdy * TILE + ly;
         int colBase = ctx.groupIdx * TILE;
         float[] as = ctx.allocateFloatLocalArray(TILE * TILE);
-        float[] ws = ctx.allocateFloatLocalArray(TILE * TILE);
+        // W's tile K-major with a padded pitch: conflict-free reads across lx
+        float[] ws = ctx.allocateFloatLocalArray((TILE + 1) * TILE);
         float acc = 0f;
         for (int kt = 0; kt < k; kt += TILE) {
             int ka = kt + lx;
             as[ly * TILE + lx] = (row < m && ka < k) ? a.get(aOff + row * k + ka) : 0f;
             int wr = colBase + ly;
-            ws[ly * TILE + lx] = (wr < n && ka < k) ? w.get(wOff + wr * k + ka) : 0f;
+            ws[lx * (TILE + 1) + ly] = (wr < n && ka < k) ? w.get(wOff + wr * k + ka) : 0f;
             ctx.localBarrier();
             for (int j = 0; j < TILE; j++) {
-                acc += as[ly * TILE + j] * ws[lx * TILE + j];
+                acc += as[ly * TILE + j] * ws[j * (TILE + 1) + lx];
             }
             ctx.localBarrier();
         }
@@ -100,6 +101,11 @@ public final class Kernels {
     /** Threads per dimension of a {@link #gemmHalf} work-group. */
     public static final int HGEMM_THREADS = 16;
     /**
+     * Row pitch of the staged slices: K-major, one padding element per row, so the threads of a
+     * SIMD group read consecutive local addresses and store without bank conflicts.
+     */
+    static final int HGEMM_PITCH = HGEMM_TILE + 1;
+    /**
      * {@code C[m, n] (+)= act(A[m, :] · W[n, :] + b[n])} with FP16 {@code A} (the producer's
      * twin) and FP16 {@code W} ({@code [N, K]}), accumulated and written in FP32, plus the FP16
      * twin of {@code C} when {@code twin == 1}. The portable counterpart of
@@ -107,8 +113,8 @@ public final class Kernels {
      * cores. Flags and epilogue order as {@link #gemm} (bias, SiLU or ReLU, then accumulate).
      *
      * <p>Register-blocked: each work-group stages a 64 × 16 slice of A and of W in local memory
-     * (converted to FP32 once), and each thread accumulates a 4 × 4 block whose rows and columns
-     * are 16 apart, so the stores of a warp are contiguous. Global work
+     * (converted to FP32 once, K-major with a padded pitch), and each thread accumulates a 4 × 4
+     * block whose rows and columns are 16 apart, so the stores of a warp are contiguous. Global work
      * {@code (⌈N/64⌉·16, ⌈M/64⌉·16)}, local {@code (16, 16)}.
      */
     public static void gemmHalf(KernelContext ctx, HalfFloatArray a, HalfFloatArray wh, FloatArray c, FloatArray w, int bOff,
@@ -118,8 +124,8 @@ public final class Kernels {
         int tid = ly * HGEMM_THREADS + lx;
         int rowBase = ctx.groupIdy * HGEMM_TILE;
         int colBase = ctx.groupIdx * HGEMM_TILE;
-        float[] as = ctx.allocateFloatLocalArray(HGEMM_TILE * HGEMM_K);
-        float[] ws = ctx.allocateFloatLocalArray(HGEMM_TILE * HGEMM_K);
+        float[] as = ctx.allocateFloatLocalArray(HGEMM_PITCH * HGEMM_K);
+        float[] ws = ctx.allocateFloatLocalArray(HGEMM_PITCH * HGEMM_K);
         float c00 = 0f, c01 = 0f, c02 = 0f, c03 = 0f;
         float c10 = 0f, c11 = 0f, c12 = 0f, c13 = 0f;
         float c20 = 0f, c21 = 0f, c22 = 0f, c23 = 0f;
@@ -129,28 +135,30 @@ public final class Kernels {
             for (int e = 0; e < 4; e++) {
                 int idx = tid + e * HGEMM_THREADS * HGEMM_THREADS;
                 int r = idx / HGEMM_K;
-                int ka = kt + idx % HGEMM_K;
+                int kk0 = idx % HGEMM_K;
+                int ka = kt + kk0;
                 float av = 0f;
                 if (rowBase + r < m && ka < k) {
                     av = a.get((rowBase + r) * k + ka).getFloat32();
                 }
-                as[idx] = av;
+                as[kk0 * HGEMM_PITCH + r] = av;
                 float wv = 0f;
                 if (colBase + r < n && ka < k) {
                     wv = wh.get((colBase + r) * k + ka).getFloat32();
                 }
-                ws[idx] = wv;
+                ws[kk0 * HGEMM_PITCH + r] = wv;
             }
             ctx.localBarrier();
             for (int kk = 0; kk < HGEMM_K; kk++) {
-                float a0 = as[ly * HGEMM_K + kk];
-                float a1 = as[(ly + 16) * HGEMM_K + kk];
-                float a2 = as[(ly + 32) * HGEMM_K + kk];
-                float a3 = as[(ly + 48) * HGEMM_K + kk];
-                float b0 = ws[lx * HGEMM_K + kk];
-                float b1 = ws[(lx + 16) * HGEMM_K + kk];
-                float b2 = ws[(lx + 32) * HGEMM_K + kk];
-                float b3 = ws[(lx + 48) * HGEMM_K + kk];
+                int o = kk * HGEMM_PITCH;
+                float a0 = as[o + ly];
+                float a1 = as[o + ly + 16];
+                float a2 = as[o + ly + 32];
+                float a3 = as[o + ly + 48];
+                float b0 = ws[o + lx];
+                float b1 = ws[o + lx + 16];
+                float b2 = ws[o + lx + 32];
+                float b3 = ws[o + lx + 48];
                 c00 += a0 * b0;
                 c01 += a0 * b1;
                 c02 += a0 * b2;
@@ -230,8 +238,8 @@ public final class Kernels {
         int tid = ly * HGEMM_THREADS + lx;
         int rowBase = ctx.groupIdy * HGEMM_TILE;
         int colBase = ctx.groupIdx * HGEMM_TILE;
-        float[] as = ctx.allocateFloatLocalArray(HGEMM_TILE * HGEMM_K);
-        float[] ws = ctx.allocateFloatLocalArray(HGEMM_TILE * HGEMM_K);
+        float[] as = ctx.allocateFloatLocalArray(HGEMM_PITCH * HGEMM_K);
+        float[] ws = ctx.allocateFloatLocalArray(HGEMM_PITCH * HGEMM_K);
         float c00 = 0f, c01 = 0f, c02 = 0f, c03 = 0f;
         float c10 = 0f, c11 = 0f, c12 = 0f, c13 = 0f;
         float c20 = 0f, c21 = 0f, c22 = 0f, c23 = 0f;
@@ -241,28 +249,30 @@ public final class Kernels {
             for (int e = 0; e < 4; e++) {
                 int idx = tid + e * HGEMM_THREADS * HGEMM_THREADS;
                 int r = idx / HGEMM_K;
-                int ka = kt + idx % HGEMM_K;
+                int kk0 = idx % HGEMM_K;
+                int ka = kt + kk0;
                 float av = 0f;
                 if (rowBase + r < m && ka < k) {
                     av = a.get(aOff + (rowBase + r) * k + ka);
                 }
-                as[idx] = av;
+                as[kk0 * HGEMM_PITCH + r] = av;
                 float wv = 0f;
                 if (colBase + r < n && ka < k) {
                     wv = w.get(wOff + (colBase + r) * k + ka);
                 }
-                ws[idx] = wv;
+                ws[kk0 * HGEMM_PITCH + r] = wv;
             }
             ctx.localBarrier();
             for (int kk = 0; kk < HGEMM_K; kk++) {
-                float a0 = as[ly * HGEMM_K + kk];
-                float a1 = as[(ly + 16) * HGEMM_K + kk];
-                float a2 = as[(ly + 32) * HGEMM_K + kk];
-                float a3 = as[(ly + 48) * HGEMM_K + kk];
-                float b0 = ws[lx * HGEMM_K + kk];
-                float b1 = ws[(lx + 16) * HGEMM_K + kk];
-                float b2 = ws[(lx + 32) * HGEMM_K + kk];
-                float b3 = ws[(lx + 48) * HGEMM_K + kk];
+                int o = kk * HGEMM_PITCH;
+                float a0 = as[o + ly];
+                float a1 = as[o + ly + 16];
+                float a2 = as[o + ly + 32];
+                float a3 = as[o + ly + 48];
+                float b0 = ws[o + lx];
+                float b1 = ws[o + lx + 16];
+                float b2 = ws[o + lx + 32];
+                float b3 = ws[o + lx + 48];
                 c00 += a0 * b0;
                 c01 += a0 * b1;
                 c02 += a0 * b2;
