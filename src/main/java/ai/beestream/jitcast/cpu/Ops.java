@@ -76,6 +76,11 @@ public final class Ops {
             x[i] = silu(x[i]);
         }
     }
+    public static void reluInPlace(float[] x) {
+        for (int i = 0; i < x.length; i++) {
+            x[i] = Math.max(x[i], 0f);
+        }
+    }
     public static void addInPlace(float[] acc, float[] x) {
         for (int i = 0; i < acc.length; i++) {
             acc[i] += x[i];

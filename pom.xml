@@ -92,6 +92,8 @@
                         <tirex.golden.gpu>${tirex.golden.gpu}</tirex.golden.gpu>
                         <timestral.checkpoint>${timestral.checkpoint}</timestral.checkpoint>
                         <timestral.golden>${timestral.golden}</timestral.golden>
+                        <chronos2.checkpoint>${chronos2.checkpoint}</chronos2.checkpoint>
+                        <chronos2.golden>${chronos2.golden}</chronos2.golden>
                     </systemPropertyVariables>
                 </configuration>
             </plugin>
