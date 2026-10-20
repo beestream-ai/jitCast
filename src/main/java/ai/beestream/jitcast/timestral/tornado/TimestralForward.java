@@ -133,6 +133,13 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
     private final Map<Shape, Plan> plans = new LinkedHashMap<>(16, 0.75f, true);
     private TornadoDevice device;
     private final GemmMode gemmMode;
+    /**
+     * Time attention as cuBLAS batched GEMMs plus a masked softmax ({@code -Dtimestral.tornado.attention=cublas},
+     * with a cuBLAS GEMM mode) instead of {@link TimestralKernels#timeAttention}; the scores of one
+     * chunk of (row, head) batches take at most {@code -Dtimestral.tornado.attentionScoreBytes} (512 MB).
+     */
+    private final boolean blasAttention;
+    private final long attentionScoreBytes = Long.getLong("timestral.tornado.attentionScoreBytes", 512L << 20);
     private final boolean cudaGraph;
 
     public TimestralForward(TimestralConfig config, TimestralPacked weights) {
@@ -150,6 +157,7 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
         this.invFreq = CpuTimestral.inverseFrequencies(config);
         this.maxCachedPlans = Math.max(1, maxCachedPlans);
         this.gemmMode = GemmMode.parse(System.getProperty("timestral.tornado.gemm", "auto")).resolve(device());
+        this.blasAttention = gemmMode.cublas() && "cublas".equalsIgnoreCase(System.getProperty("timestral.tornado.attention", "kernel"));
         this.cudaGraph = Boolean.parseBoolean(System.getProperty("timestral.tornado.cudaGraph", String.valueOf(gemmMode.cublas())));
     }
 
@@ -353,10 +361,14 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
                         items(s + "rope", tokens * heads * (dh / 2));
                         g.task(s + "rope", TimestralKernels::rope, ctx, big, pos, table, tokens, heads, dh, d);
                         written(big);
-                        grid.addWorkerGrid(G + "." + s + "attn", group(rows * heads * qTiles * TimestralKernels.ATTN_THREADS,
-                                TimestralKernels.ATTN_THREADS));
-                        g.task(s + "attn", TimestralKernels::timeAttention, ctx, big, att, keyValid, known, rows, enc,
-                                enc - (shape.covariates() ? h : 0), n, heads, dh, d);
+                        if (blasAttention) {
+                            timeAttentionBlas(s, rows, enc, enc - (shape.covariates() ? h : 0), n, heads, dh, d);
+                        } else {
+                            grid.addWorkerGrid(G + "." + s + "attn", group(rows * heads * qTiles * TimestralKernels.ATTN_THREADS,
+                                    TimestralKernels.ATTN_THREADS));
+                            g.task(s + "attn", TimestralKernels::timeAttention, ctx, big, att, keyValid, known, rows, enc,
+                                    enc - (shape.covariates() ? h : 0), n, heads, dh, d);
+                        }
                     } else {
                         grid.addWorkerGrid(G + "." + s + "attn", group(n * heads * rTiles * TimestralKernels.ATTN_THREADS,
                                 TimestralKernels.ATTN_THREADS));
@@ -496,6 +508,47 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
             if (silu) {
                 items(name + "_silu", m * n);
                 g.task(name + "_silu", Kernels::biasSilu, ctx, c, w, bias ? l.b() : -1, m, n, noTwin, 0);
+            }
+        }
+
+        /** Heads-major q, k, v and output, and the scores, of one chunk of {@link #timeAttentionBlas}. */
+        FloatArray qh, kh, vh, oh, scores;
+
+        /**
+         * Time attention as cuBLAS batched GEMMs, FP32: per chunk of batches (row, head), q, k and v are
+         * copied heads-major, {@code S = q·kᵀ·scale} is one strided-batched SGEMM, the masked softmax
+         * runs in place on S, and {@code o = S·v} is a second one. Chunks keep S within
+         * {@code attentionScoreBytes}.
+         */
+        private void timeAttentionBlas(String s, int rows, int enc, int ll, int n, int heads, int dh, int d) {
+            int batches = rows * heads;
+            int chunk = (int) Math.max(1, Math.min(batches, attentionScoreBytes / (4L * n * n)));
+            if (scores == null) {
+                qh = new FloatArray(chunk * n * dh);
+                kh = new FloatArray(chunk * n * dh);
+                vh = new FloatArray(chunk * n * dh);
+                oh = new FloatArray(chunk * n * dh);
+                scores = new FloatArray(chunk * n * n);
+                g.transferToDevice(DataTransferMode.FIRST_EXECUTION, qh, kh, vh, oh, scores);
+            }
+            float scale = (float) (1.0 / Math.sqrt(dh));
+            long nd = (long) n * dh, nn = (long) n * n;
+            for (int b0 = 0, c = 0; b0 < batches; b0 += chunk, c++) {
+                String p = s + "attn" + c + "_";
+                items(p + "split", chunk * n * dh);
+                g.task(p + "split", TimestralKernels::splitHeads, ctx, big, qh, kh, vh, b0, chunk, rows, n, heads, dh, d);
+                // column-major: S_cm[key, query] = (k_cm)ᵀ·q_cm, i.e. row-major S[query][key]
+                g.libraryTask(p + "qk", CuBlas::cublasSgemmStridedBatched, 1, 0, n, n, dh, scale, kh, dh, nd, qh, dh, nd, 0f, scores,
+                        n, nn, chunk);
+                grid.addWorkerGrid(G + "." + p + "softmax", group(chunk * n * TimestralKernels.SOFTMAX_THREADS,
+                        TimestralKernels.SOFTMAX_THREADS));
+                g.task(p + "softmax", TimestralKernels::attentionSoftmax, ctx, scores, keyValid, known, b0, chunk, rows, enc, ll, n,
+                        heads);
+                // column-major: o_cm[j, query] = v_cm·S_cm, i.e. row-major o[query][j] = Σ_key S[query][key]·v[key][j]
+                g.libraryTask(p + "pv", CuBlas::cublasSgemmStridedBatched, 0, 0, dh, n, n, 1f, vh, dh, nd, scores, n, nn, 0f, oh, dh,
+                        nd, chunk);
+                items(p + "merge", chunk * n * dh);
+                g.task(p + "merge", TimestralKernels::mergeHeads, ctx, oh, att, b0, chunk, rows, n, heads, dh, d);
             }
         }
 
