@@ -139,7 +139,7 @@ mode. Speed-ups are over the reference.
 
 jitcast on Metal with its default GEMMs (register-blocked FP32), against the reference on the CPU
 and on MPS (its forecasts there match the CPU run within 9e-6), in ms; the fastest of each row in
-bold:
+bold. Measured before the time attention took blocks of keys:
 
 | Workload | small ref. CPU | small ref. MPS | small jitcast Metal | base ref. CPU | base ref. MPS | base jitcast Metal |
 |---|---|---|---|---|---|---|
@@ -170,23 +170,24 @@ in FP16):
 
 | Workload | small ref. | small jitcast FP32 | small jitcast FP16 | base ref. | base jitcast FP32 | base jitcast FP16 |
 |---|---|---|---|---|---|---|
-| 1 series | 5.17 | **1.61 (3.2×)** | 0.97 (5.3×) | 8.77 | **4.84 (1.8×)** | 2.18 (4.0×) |
-| 8 series | 5.72 | **4.48 (1.3×)** | 2.60 (2.2×) | 18.24 | **16.27 (1.1×)** | 7.88 (2.3×) |
-| 32 series | 15.43 | **15.02 (1.0×)** | 8.80 (1.8×) | **58.97** | 59.33 (0.99×) | 29.07 (2.0×) |
-| 128 series | 68.74 | **57.58 (1.2×)** | 37.12 (1.9×) | 270.00 | **241.83 (1.1×)** | 118.25 (2.3×) |
-| 512 series | 306.88 | **239.44 (1.3×)** | 148.94 (2.1×) | 1,122.82 | **933.96 (1.2×)** | 466.79 (2.4×) |
-| 1 series, H = 1,024 | 4.89 | **1.89 (2.6×)** | 1.28 (3.8×) | 8.92 | **6.46 (1.4×)** | 3.11 (2.9×) |
-| 1 series, H = 2,048 (unrolled) | **15.08** | 16.93 (0.89×) | 15.00 (1.01×) | **43.60** | 52.28 (0.83×) | 30.41 (1.4×) |
-| 8 series, 8,192-step context | **15.63** | 22.79 (0.69×) | 17.14 (0.91×) | **62.32** | 82.15 (0.76×) | 52.64 (1.2×) |
-| 8 series × (2 past + 2 known) | 19.43 | **18.88 (1.03×)** | 11.71 (1.7×) | 74.78 | **74.67 (1.00×)** | 37.53 (2.0×) |
+| 1 series | 4.87 | **1.40 (3.47×)** | 0.76 (6.37×) | 8.82 | **4.47 (1.97×)** | 1.78 (4.96×) |
+| 8 series | 5.65 | **4.09 (1.38×)** | 2.19 (2.58×) | 18.25 | **15.18 (1.20×)** | 6.75 (2.70×) |
+| 32 series | 15.46 | **13.87 (1.11×)** | 7.44 (2.08×) | 59.76 | **57.05 (1.05×)** | 25.35 (2.36×) |
+| 128 series | 68.91 | **54.12 (1.27×)** | 33.46 (2.06×) | 272.73 | **233.88 (1.17×)** | 108.77 (2.51×) |
+| 512 series | 307.78 | **222.44 (1.38×)** | 135.35 (2.27×) | 1,127.79 | **898.09 (1.26×)** | 423.31 (2.66×) |
+| 1 series, H = 1,024 | 4.89 | **1.61 (3.04×)** | 0.99 (4.93×) | 9.02 | **5.79 (1.56×)** | 2.41 (3.75×) |
+| 1 series, H = 2,048 (unrolled) | 15.09 | **14.88 (1.01×)** | 12.48 (1.21×) | **43.75** | 44.96 (0.97×) | 24.82 (1.76×) |
+| 8 series, 8,192-step context | **15.61** | 17.19 (0.91×) | 11.22 (1.39×) | **62.82** | 68.66 (0.91×) | 37.18 (1.69×) |
+| 8 series × (2 past + 2 known) | 19.54 | **17.48 (1.12×)** | 9.54 (2.05×) | 75.57 | **71.97 (1.05×)** | 33.69 (2.24×) |
 
-- In FP32 jitcast is fastest on small batches and short contexts, where the reference's time is
-  launch and Python overhead, and level with it or ahead up to 512 series.
-- With long token sequences (the 8,192-step context, 517 tokens per row, and the unrolled horizon)
-  the reference is faster. Not profiled yet; the likely cost is jitcast's time attention, which
-  stages one key at a time and grows with the square of the row's tokens.
-- FP16 GEMMs (`-Dchronos2.tornado.gemm=cublas-fp16`) halve jitcast's time at large batches; the
-  default is FP32.
+- In FP32 jitcast is fastest on small batches and short contexts (up to 3.5×), where the
+  reference's time is launch and Python overhead, and ahead of it by 1.05–1.4× up to 512 series.
+- With long token sequences the two are within 10%: the reference is ahead on the 8,192-step
+  context (517 tokens per row) and level on the unrolled horizon. There the time attention, which
+  takes blocks of 32 keys, is 30% of jitcast's device time (`chronos-2`), and the GEMMs most of the
+  rest.
+- FP16 GEMMs (`-Dchronos2.tornado.gemm=cublas-fp16`) make jitcast faster than the reference on
+  every workload, by 1.2–6.4×; the default is FP32.
 
 ### Reproducing
 
