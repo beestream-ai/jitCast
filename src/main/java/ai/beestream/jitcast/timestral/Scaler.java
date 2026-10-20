@@ -93,29 +93,32 @@ public final class Scaler {
     }
 
     /**
-     * Whole-row statistics of a known-future covariate ({@code instance_norm_stats}), in float as the
-     * reference computes them: {@code {loc, scale, binary}}. A row whose observed values are all 0 or
+     * Whole-row statistics of a known-future covariate ({@code instance_norm_stats}), rounded to float
+     * as the reference rounds them: {@code {loc, scale, binary}}. A row whose observed values are all 0 or
      * 1 is an indicator and keeps {@code loc = 0, scale = 1} (and skips the asinh).
      */
     public static float[] instanceNorm(float[] x, boolean[] observed, float minimumScale) {
-        float n = 0, sum = 0;
+        // float32 results as the reference's, from sums kept in double: PyTorch's float32 reductions
+        // are close to exact, and on a near-constant row a sequential float sum moves loc by enough
+        // ulps to show after the division by its small scale
+        double n = 0, sum = 0;
         boolean zeroOne = true, any = false;
         for (int i = 0; i < x.length; i++) {
             if (observed[i]) {
-                n += 1f;
+                n += 1;
                 sum += x[i];
                 any = true;
             }
             zeroOne &= x[i] == 0f || x[i] == 1f || !observed[i];
         }
-        n = Math.max(n, 1f);
-        float loc = sum / n;
-        float ss = 0;
+        n = Math.max(n, 1);
+        float loc = (float) (sum / n);
+        double ss = 0;
         for (int i = 0; i < x.length; i++) {
             float d = observed[i] ? x[i] - loc : 0f;
-            ss += d * d;
+            ss += (double) d * d;
         }
-        float scale = Math.max((float) Math.sqrt(ss / n), minimumScale);
+        float scale = Math.max((float) Math.sqrt((float) (ss / n)), minimumScale);
         boolean binary = zeroOne && any;
         return binary ? new float[] {0f, 1f, 1f} : new float[] {loc, scale, 0f};
     }
