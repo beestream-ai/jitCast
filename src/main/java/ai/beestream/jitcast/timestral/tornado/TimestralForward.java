@@ -136,13 +136,16 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
     /**
      * Time attention as cuBLAS batched GEMMs plus a masked softmax instead of
      * {@link TimestralKernels#timeAttention} ({@code -Dtimestral.tornado.attention}): {@code auto} with a
-     * cuBLAS GEMM mode from {@code blasAttentionMinTokens} tokens per row (128), where the scores'
-     * quadratic cost outweighs the extra copies; {@code cublas} always (with a cuBLAS GEMM mode);
+     * cuBLAS GEMM mode for blocks of at least {@code blasAttentionMinTokens} tokens per row (128) and at
+     * most {@code blasAttentionMaxRows} rows (8): long rows, where the kernel's one-key-at-a-time loop
+     * is slowest, but few of them, since the batched GEMMs compute and move every score, masked or not,
+     * and lose to the kernel on large batches; {@code cublas} always (with a cuBLAS GEMM mode);
      * {@code kernel} never. The scores of one chunk of (row, head) batches take at most
      * {@code -Dtimestral.tornado.attentionScoreBytes} (512 MB).
      */
     private final String attentionMode = System.getProperty("timestral.tornado.attention", "auto").toLowerCase();
     private final int blasAttentionMinTokens = Integer.getInteger("timestral.tornado.blasAttentionMinTokens", 128);
+    private final int blasAttentionMaxRows = Integer.getInteger("timestral.tornado.blasAttentionMaxRows", 8);
     private final long attentionScoreBytes = Long.getLong("timestral.tornado.attentionScoreBytes", 512L << 20);
     private final boolean cudaGraph;
 
@@ -276,7 +279,8 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
         if (!gemmMode.cublas() || attentionMode.equals("kernel")) {
             return false;
         }
-        return attentionMode.equals("cublas") || shape.encoder() + shape.horizon() >= blasAttentionMinTokens;
+        return attentionMode.equals("cublas")
+                || shape.encoder() + shape.horizon() >= blasAttentionMinTokens && shape.rows() <= blasAttentionMaxRows;
     }
 
     /** The (row, head) batches per chunk of the cuBLAS time attention. */

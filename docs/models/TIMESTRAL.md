@@ -98,7 +98,7 @@ TimestralPipeline p = engine.pipeline().withOptions(
 | `timestral.tornado.splitKTarget` | `320` | A 64 × 64 simdgroup GEMM with fewer tiles than this also splits K across work-groups (`1`: off) |
 | `timestral.tornado.splitKMax` | `16` | The most K slices of a split GEMM |
 | `timestral.tornado.cudaGraph` | `true` with cuBLAS | Capture the task graph once and replay it as a CUDA graph |
-| `timestral.tornado.attention` | `auto` | Time attention: `auto` uses cuBLAS FP32 batched GEMMs with a cuBLAS GEMM mode from `blasAttentionMinTokens` (128) tokens per row, TornadoVM's attention kernel otherwise; `cublas` or `kernel` force one |
+| `timestral.tornado.attention` | `auto` | Time attention: `auto` uses cuBLAS FP32 batched GEMMs with a cuBLAS GEMM mode for blocks of at least `blasAttentionMinTokens` (128) tokens per row and at most `blasAttentionMaxRows` (8) rows, TornadoVM's attention kernel otherwise; `cublas` or `kernel` force one |
 | `timestral.tornado.attentionScoreBytes` | `536870912` (512 MB) | The most memory the cuBLAS time attention's scores take at once |
 | `timestral.tornado.plans` | `8` | Block shapes kept compiled (least recently used are evicted) |
 | `timestral.tornado.planBytes` | `8589934592` (8 GiB) | The most host memory the cached plans' buffers take together; the least recently used plans are evicted first |
