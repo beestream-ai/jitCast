@@ -99,6 +99,7 @@ TimestralPipeline p = engine.pipeline().withOptions(
 | `timestral.tornado.splitKMax` | `16` | The most K slices of a split GEMM |
 | `timestral.tornado.cudaGraph` | `true` with cuBLAS | Capture the task graph once and replay it as a CUDA graph |
 | `timestral.tornado.plans` | `8` | Block shapes kept compiled (least recently used are evicted) |
+| `timestral.tornado.planBytes` | `8589934592` (8 GiB) | The most host memory the cached plans' buffers take together; the least recently used plans are evicted first |
 | `timestral.tornado.profile` | `false` | Print TornadoVM's per-task kernel times after every execution |
 | `timestral.timing` | `false` | Print the time of each host and device phase per forecast (analysis only) |
 | `timestral.maxTokens` | `131072` | The most tokens one forward pass takes; forecasts do not depend on the split |

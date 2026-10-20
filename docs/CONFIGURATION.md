@@ -105,6 +105,7 @@ Some kernels adapt to the device's maximum work-group size (for example 256 on O
 | `timestral.tornado.splitKMax` | `16` | The most K slices of a split GEMM |
 | `timestral.tornado.cudaGraph` | `true` with cuBLAS, `false` otherwise | Capture the plan's task graph once and replay it as a CUDA graph |
 | `timestral.tornado.plans` | `8` | Block shapes kept compiled (rows, encoder tokens, horizon patches, covariates); least recently used are evicted |
+| `timestral.tornado.planBytes` | `8589934592` (8 GiB) | The most host memory the cached plans' buffers take together; the least recently used plans are evicted until a new plan fits, and a plan larger than this still runs alone |
 | `timestral.tornado.profile` | `false`, `true` | Print TornadoVM's per-task kernel times after every execution (analysis only) |
 | `timestral.timing` | `false`, `true` | Print the time of each host and device phase per forecast (analysis only) |
 | `timestral.maxTokens` | `131072` | The most tokens (rows × patches) one forward pass takes; forecasts do not depend on the split |

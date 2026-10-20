@@ -124,6 +124,12 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
     private final Quantiles quantiles;
     private final float[] invFreq;
     private final int maxCachedPlans;
+    /**
+     * The most host memory the cached plans' buffers may take together ({@code -Dtimestral.tornado.planBytes},
+     * 8 GiB): the least recently used plans are evicted until a new one fits, so a few long-context
+     * shapes do not exhaust the JVM's direct memory. A plan larger than the budget still runs, alone.
+     */
+    private final long maxPlanBytes = Long.getLong("timestral.tornado.planBytes", 8L << 30);
     private final Map<Shape, Plan> plans = new LinkedHashMap<>(16, 0.75f, true);
     private TornadoDevice device;
     private final GemmMode gemmMode;
@@ -229,7 +235,8 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
         Plan plan = plans.get(shape);
         if (plan == null) {
             // evict before building, so the old plan's device buffers are freed first
-            while (!plans.isEmpty() && plans.size() >= maxCachedPlans) {
+            long need = planBytes(shape);
+            while (!plans.isEmpty() && (plans.size() >= maxCachedPlans || cachedBytes() + need > maxPlanBytes)) {
                 Shape eldest = plans.keySet().iterator().next();
                 plans.remove(eldest).close();
             }
@@ -243,6 +250,29 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
         float[][][] out = prep.finish(config, lay, quantiles, raw);
         Timing.add("fwd.finish", t);
         return out;
+    }
+
+    private long cachedBytes() {
+        long sum = 0;
+        for (Shape s : plans.keySet()) {
+            sum += planBytes(s);
+        }
+        return sum;
+    }
+
+    /** The host memory of one plan's buffers (those {@link Plan} allocates for its shape). */
+    long planBytes(Shape shape) {
+        TimestralConfig c = config;
+        long rows = shape.rows(), enc = shape.encoder(), h = shape.horizon(), n = enc + h;
+        long d = c.dModel(), ps = c.patchSize(), f = c.mlpHiddenDim(), q = c.numQuantiles();
+        long tokens = rows * n, encTokens = rows * enc, decTokens = rows * h;
+        long floats = encTokens * 2 * ps + encTokens * d + 5 * tokens * d + tokens * Math.max(Math.max(3 * d, 2 * f), 4 * d)
+                + tokens * f + decTokens * d + decTokens * ps * q + (2 * enc + h) * c.headDim();
+        long ints = tokens + encTokens + 4 * rows;
+        if (gemmMode == GemmMode.SIMDGROUP) {
+            floats += 2L * splitKTarget * Kernels.MMA_WIDE * Kernels.MMA_WIDE;
+        }
+        return 4 * (floats + ints);
     }
 
     @Override
