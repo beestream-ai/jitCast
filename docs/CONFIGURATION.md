@@ -104,6 +104,9 @@ Some kernels adapt to the device's maximum work-group size (for example 256 on O
 | `timestral.tornado.splitKTarget` | `320` | Split K: a 64 × 64 simdgroup GEMM with fewer tiles than this also splits K across work-groups (into slices of at least 128) and adds the partial tiles in a second kernel, so GEMMs with few rows fill the GPU. `1` turns it off |
 | `timestral.tornado.splitKMax` | `16` | The most K slices of a split GEMM |
 | `timestral.tornado.cudaGraph` | `true` with cuBLAS, `false` otherwise | Capture the plan's task graph once and replay it as a CUDA graph |
+| `timestral.tornado.attention` | `auto`, `kernel`, `cublas` | Time attention. `auto`: with a cuBLAS GEMM mode, as cuBLAS FP32 batched GEMMs (scores, then the masked softmax, then the weighted values) from `blasAttentionMinTokens` tokens per row, and TornadoVM's attention kernel under that and on other backends. `cublas`: always with a cuBLAS GEMM mode; `kernel`: never |
+| `timestral.tornado.blasAttentionMinTokens` | `128` | The fewest tokens per row (patches of context plus horizon) that use the cuBLAS time attention under `auto` |
+| `timestral.tornado.attentionScoreBytes` | `536870912` (512 MB) | The most memory the cuBLAS time attention's scores take at once; larger blocks run in chunks of (row, head) batches |
 | `timestral.tornado.plans` | `8` | Block shapes kept compiled (rows, encoder tokens, horizon patches, covariates); least recently used are evicted |
 | `timestral.tornado.planBytes` | `8589934592` (8 GiB) | The most host memory the cached plans' buffers take together; the least recently used plans are evicted until a new plan fits, and a plan larger than this still runs alone |
 | `timestral.tornado.profile` | `false`, `true` | Print TornadoVM's per-task kernel times after every execution (analysis only) |

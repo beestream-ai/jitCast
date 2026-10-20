@@ -61,6 +61,8 @@ Timestral's own kernels are in [`TimestralKernels.java`](../src/main/java/ai/bee
 | [`assembleTokens`](../src/main/java/ai/beestream/jitcast/timestral/tornado/TimestralKernels.java#L53) | Each row's encoder tokens (the patch embedding) followed by its decoder tokens (the forecast query) |
 | [`rope`](../src/main/java/ai/beestream/jitcast/timestral/tornado/TimestralKernels.java#L77) | Partial RoPE on q and k in place, from a host-built cos/sin table indexed by position |
 | [`timeAttention`](../src/main/java/ai/beestream/jitcast/timestral/tornado/TimestralKernels.java#L114) | Flash-style attention along time per row and head, 16 queries per work-group, with the causal, key-validity and context/horizon masks |
+| [`splitHeads`](../src/main/java/ai/beestream/jitcast/timestral/tornado/TimestralKernels.java#L342), [`mergeHeads`](../src/main/java/ai/beestream/jitcast/timestral/tornado/TimestralKernels.java#L443) | Copy q, k, v to heads-major arrays and the outputs back, around the cuBLAS time attention (CUDA, long contexts) |
+| [`attentionSoftmax`](../src/main/java/ai/beestream/jitcast/timestral/tornado/TimestralKernels.java#L369) | The masks of `timeAttention` and the softmax, in place on the scores of the cuBLAS time attention |
 | [`variateAttention`](../src/main/java/ai/beestream/jitcast/timestral/tornado/TimestralKernels.java#L233) | Flash-style attention across the rows of each series per token slot, with the covariate firewalls |
 | [`gate`](../src/main/java/ai/beestream/jitcast/timestral/tornado/TimestralKernels.java#L335) | The attention output's sigmoid gate |
 | [`gatherDecoder`](../src/main/java/ai/beestream/jitcast/timestral/tornado/TimestralKernels.java#L343) | The decoder tokens, for the quantile head |

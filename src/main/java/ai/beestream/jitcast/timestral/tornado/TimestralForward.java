@@ -134,11 +134,15 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
     private TornadoDevice device;
     private final GemmMode gemmMode;
     /**
-     * Time attention as cuBLAS batched GEMMs plus a masked softmax ({@code -Dtimestral.tornado.attention=cublas},
-     * with a cuBLAS GEMM mode) instead of {@link TimestralKernels#timeAttention}; the scores of one
-     * chunk of (row, head) batches take at most {@code -Dtimestral.tornado.attentionScoreBytes} (512 MB).
+     * Time attention as cuBLAS batched GEMMs plus a masked softmax instead of
+     * {@link TimestralKernels#timeAttention} ({@code -Dtimestral.tornado.attention}): {@code auto} with a
+     * cuBLAS GEMM mode from {@code blasAttentionMinTokens} tokens per row (128), where the scores'
+     * quadratic cost outweighs the extra copies; {@code cublas} always (with a cuBLAS GEMM mode);
+     * {@code kernel} never. The scores of one chunk of (row, head) batches take at most
+     * {@code -Dtimestral.tornado.attentionScoreBytes} (512 MB).
      */
-    private final boolean blasAttention;
+    private final String attentionMode = System.getProperty("timestral.tornado.attention", "auto").toLowerCase();
+    private final int blasAttentionMinTokens = Integer.getInteger("timestral.tornado.blasAttentionMinTokens", 128);
     private final long attentionScoreBytes = Long.getLong("timestral.tornado.attentionScoreBytes", 512L << 20);
     private final boolean cudaGraph;
 
@@ -157,7 +161,6 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
         this.invFreq = CpuTimestral.inverseFrequencies(config);
         this.maxCachedPlans = Math.max(1, maxCachedPlans);
         this.gemmMode = GemmMode.parse(System.getProperty("timestral.tornado.gemm", "auto")).resolve(device());
-        this.blasAttention = gemmMode.cublas() && "cublas".equalsIgnoreCase(System.getProperty("timestral.tornado.attention", "kernel"));
         this.cudaGraph = Boolean.parseBoolean(System.getProperty("timestral.tornado.cudaGraph", String.valueOf(gemmMode.cublas())));
     }
 
@@ -268,6 +271,20 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
         return sum;
     }
 
+    /** Whether a block shape runs its time attention as cuBLAS batched GEMMs. */
+    boolean blasAttention(Shape shape) {
+        if (!gemmMode.cublas() || attentionMode.equals("kernel")) {
+            return false;
+        }
+        return attentionMode.equals("cublas") || shape.encoder() + shape.horizon() >= blasAttentionMinTokens;
+    }
+
+    /** The (row, head) batches per chunk of the cuBLAS time attention. */
+    int attentionChunk(Shape shape) {
+        long n = shape.encoder() + shape.horizon();
+        return (int) Math.max(1, Math.min((long) shape.rows() * config.numHeads(), attentionScoreBytes / (4 * n * n)));
+    }
+
     /** The host memory of one plan's buffers (those {@link Plan} allocates for its shape). */
     long planBytes(Shape shape) {
         TimestralConfig c = config;
@@ -279,6 +296,10 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
         long ints = tokens + encTokens + 4 * rows;
         if (gemmMode == GemmMode.SIMDGROUP) {
             floats += 2L * splitKTarget * Kernels.MMA_WIDE * Kernels.MMA_WIDE;
+        }
+        if (blasAttention(shape)) {
+            long chunk = attentionChunk(shape);
+            floats += chunk * n * n + 4 * chunk * n * c.headDim();
         }
         return 4 * (floats + ints);
     }
@@ -361,7 +382,7 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
                         items(s + "rope", tokens * heads * (dh / 2));
                         g.task(s + "rope", TimestralKernels::rope, ctx, big, pos, table, tokens, heads, dh, d);
                         written(big);
-                        if (blasAttention) {
+                        if (blasAttention(shape)) {
                             timeAttentionBlas(s, rows, enc, enc - (shape.covariates() ? h : 0), n, heads, dh, d);
                         } else {
                             grid.addWorkerGrid(G + "." + s + "attn", group(rows * heads * qTiles * TimestralKernels.ATTN_THREADS,
@@ -522,7 +543,7 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
          */
         private void timeAttentionBlas(String s, int rows, int enc, int ll, int n, int heads, int dh, int d) {
             int batches = rows * heads;
-            int chunk = (int) Math.max(1, Math.min(batches, attentionScoreBytes / (4L * n * n)));
+            int chunk = attentionChunk(shape);
             if (scores == null) {
                 qh = new FloatArray(chunk * n * dh);
                 kh = new FloatArray(chunk * n * dh);
