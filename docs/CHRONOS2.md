@@ -218,8 +218,8 @@ $JITCAST -Djitcast.tornado.device=1:0 -Dchronos2.tornado.gemm=cublas-fp16 ai.bee
 - Categorical covariates (target-encoded in the reference) are not supported; encode them as
   numbers first.
 - Only float32 checkpoints with the ReLU feed-forward layer, non-overlapping patches and equal input
-  and output patch sizes load; every published Chronos-2 checkpoint is one. Heads must be at most
-  128 wide and a multiple of 8 (all are 64).
+  and output patch sizes load; every published Chronos-2 checkpoint is one. On the device, heads
+  must be 8 to 64 wide and divide 128 (all are 64).
 - Validated on `chronos-2` and `chronos-2-small`. `autogluon/chronos-2-synth` shares their
   architecture and loads with the same code, but has no goldens.
 

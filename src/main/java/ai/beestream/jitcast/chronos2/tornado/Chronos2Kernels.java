@@ -29,7 +29,8 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
  * <p>Activations are row-major {@code [rows · tokens · width]}, each row's context tokens, then
  * {@code [REG]}, then its future tokens; {@code q|k|v} is heads-major per token. The attention
  * kernels follow the Timestral ones (flash style, one work-group per block of queries), without
- * the {@code 1/√d_kv} scaling, as the reference. Every kernel is a {@link KernelContext} kernel
+ * the {@code 1/√d_kv} scaling, as the reference; the time attention takes blocks of keys at a
+ * time. Every kernel is a {@link KernelContext} kernel
  * launched with an explicit worker grid; element-wise ones map {@code ctx.globalIdx} to one item and
  * bounds-check it.
  */
@@ -41,8 +42,18 @@ public final class Chronos2Kernels {
     public static final int ATTN_THREADS = 128;
     /** Threads that share one query's dot product. */
     static final int LANES = ATTN_THREADS / ATTN_QUERIES;
-    /** The widest attention head the kernels support. */
+    /** The widest attention head the group attention supports. */
     public static final int MAX_HEAD_DIM = 128;
+    /** Keys per block of {@link #timeAttention}. */
+    public static final int KEY_BLOCK = 32;
+    /** The widest attention head {@link #timeAttention} supports (its local memory fits Metal's 32 KB). */
+    public static final int BLOCK_HEAD_DIM = 64;
+    /** Pitches of {@link #timeAttention}'s staged vectors and scores: one padding element, so lanes hit distinct banks. */
+    static final int HEAD_PITCH = BLOCK_HEAD_DIM + 1;
+    static final int SCORE_PITCH = KEY_BLOCK + 1;
+    /** A masked score, and the threshold above which a score is a key's. */
+    static final float MASKED = -3.4e38f;
+    static final float VALID = -3.0e38f;
 
     private Chronos2Kernels() {}
 
@@ -104,11 +115,13 @@ public final class Chronos2Kernels {
     }
 
     /**
-     * Attention along time, flash style: one work-group of {@link #ATTN_THREADS} threads per
-     * (row, head, {@link #ATTN_QUERIES} consecutive query tokens). Each key's k and v are loaded once
-     * into local memory for every query of the block; {@link #LANES} threads form one query's dot
-     * product, its first lane applies the mask and the online softmax, and thread {@code j < dh}
-     * accumulates output dimension {@code j} of every query.
+     * Attention along time, flash style over blocks of keys: one work-group of {@link #ATTN_THREADS}
+     * threads per (row, head, {@link #ATTN_QUERIES} consecutive query tokens). For each block of
+     * {@link #KEY_BLOCK} keys the work-group stages their k and v in local memory, each thread
+     * computes the scores of one query against {@code KEY_BLOCK / 8} keys, one thread per query folds
+     * the block into the online softmax, and every thread accumulates one output dimension of
+     * {@code dh / 8} queries. Heads must be at most {@link #BLOCK_HEAD_DIM} wide and divide
+     * {@link #ATTN_THREADS}.
      *
      * <p>Every query of a row reads every valid key of the row ({@code live [r·n + k]}), in both
      * directions. Writes {@code out [(r·n + t)·inner + head·dh + j]}.
@@ -123,76 +136,115 @@ public final class Chronos2Kernels {
         int r = wg / (tiles * heads);
         int q0 = tile * ATTN_QUERIES;
         int qn = TornadoMath.min(ATTN_QUERIES, n - q0);
-        float[] qs = ctx.allocateFloatLocalArray(ATTN_QUERIES * MAX_HEAD_DIM);
-        float[] kv = ctx.allocateFloatLocalArray(2 * MAX_HEAD_DIM);
-        float[] part = ctx.allocateFloatLocalArray(ATTN_THREADS);
+        float[] qs = ctx.allocateFloatLocalArray(ATTN_QUERIES * HEAD_PITCH);
+        float[] ks = ctx.allocateFloatLocalArray(KEY_BLOCK * HEAD_PITCH);
+        float[] vs = ctx.allocateFloatLocalArray(KEY_BLOCK * HEAD_PITCH);
+        float[] sc = ctx.allocateFloatLocalArray(ATTN_QUERIES * SCORE_PITCH);
         float[] mRun = ctx.allocateFloatLocalArray(ATTN_QUERIES);
         float[] lRun = ctx.allocateFloatLocalArray(ATTN_QUERIES);
         float[] corr = ctx.allocateFloatLocalArray(ATTN_QUERIES);
-        float[] pw = ctx.allocateFloatLocalArray(ATTN_QUERIES);
         float[] acc = new float[ATTN_QUERIES];
-        for (int qq = 0; qq < ATTN_QUERIES; qq++) {
-            acc[qq] = 0f;
+        for (int i = tid; i < ATTN_QUERIES * dh; i += ATTN_THREADS) {
+            int qq = i / dh;
+            int e = i - qq * dh;
+            float v = 0f;
             if (qq < qn) {
-                for (int e = tid; e < dh; e += ATTN_THREADS) {
-                    qs[qq * MAX_HEAD_DIM + e] = qkv.get((r * n + q0 + qq) * 3 * inner + hh * dh + e);
-                }
+                v = qkv.get((r * n + q0 + qq) * 3 * inner + hh * dh + e);
             }
+            qs[qq * HEAD_PITCH + e] = v;
         }
         if (tid < ATTN_QUERIES) {
-            mRun[tid] = -3.4e38f;
+            mRun[tid] = MASKED;
             lRun[tid] = 0f;
         }
-        int q = tid / LANES;
-        int lane = tid - q * LANES;
-        int per = dh / LANES;
-        ctx.localBarrier();
-        for (int k = 0; k < n; k++) {
-            if (tid < dh) {
-                int ko = (r * n + k) * 3 * inner + hh * dh + tid;
-                kv[tid] = qkv.get(ko + inner);
-                kv[MAX_HEAD_DIM + tid] = qkv.get(ko + 2 * inner);
-            }
-            ctx.localBarrier();
-            float partial = 0f;
-            for (int e = lane * per; e < lane * per + per; e++) {
-                partial += qs[q * MAX_HEAD_DIM + e] * kv[e];
-            }
-            part[tid] = partial;
-            ctx.localBarrier();
-            if (lane == 0 && q < qn) {
-                float dot = 0f;
-                for (int l = 0; l < LANES; l++) {
-                    dot += part[q * LANES + l];
-                }
-                if (live.get(r * n + k) != 0) {
-                    float mn = TornadoMath.max(mRun[q], dot);
-                    float c = TornadoMath.exp(mRun[q] - mn);
-                    float e = TornadoMath.exp(dot - mn);
-                    lRun[q] = lRun[q] * c + e;
-                    mRun[q] = mn;
-                    corr[q] = c;
-                    pw[q] = e;
-                } else {
-                    corr[q] = 1f;
-                    pw[q] = 0f;
-                }
-            }
-            ctx.localBarrier();
-            if (tid < dh) {
-                float vj = kv[MAX_HEAD_DIM + tid];
-                for (int qq = 0; qq < ATTN_QUERIES; qq++) {
-                    if (qq < qn) {
-                        acc[qq] = acc[qq] * corr[qq] + pw[qq] * vj;
-                    }
-                }
-            }
+        for (int qq = 0; qq < ATTN_QUERIES; qq++) {
+            acc[qq] = 0f;
         }
-        if (tid < dh) {
-            for (int qq = 0; qq < ATTN_QUERIES; qq++) {
-                if (qq < qn) {
-                    out.set((r * n + q0 + qq) * inner + hh * dh + tid, acc[qq] / lRun[qq]);
+        // scores: query sq against keys sl, sl + 8, ...; output: dimension pe of queries pg·qpt ..
+        int sq = tid / 8;
+        int sl = tid - sq * 8;
+        int qpt = dh / 8;
+        int pg = tid / dh;
+        int pe = tid - pg * dh;
+        ctx.localBarrier();
+        for (int k0 = 0; k0 < n; k0 += KEY_BLOCK) {
+            for (int i = tid; i < KEY_BLOCK * dh; i += ATTN_THREADS) {
+                int j = i / dh;
+                int e = i - j * dh;
+                float kv = 0f;
+                float vv = 0f;
+                if (k0 + j < n) {
+                    int ko = (r * n + k0 + j) * 3 * inner + hh * dh + e;
+                    kv = qkv.get(ko + inner);
+                    vv = qkv.get(ko + 2 * inner);
                 }
+                ks[j * HEAD_PITCH + e] = kv;
+                vs[j * HEAD_PITCH + e] = vv;
+            }
+            ctx.localBarrier();
+            for (int i = 0; i < KEY_BLOCK / 8; i++) {
+                int j = sl + 8 * i;
+                float dot = 0f;
+                for (int e = 0; e < dh; e++) {
+                    dot += qs[sq * HEAD_PITCH + e] * ks[j * HEAD_PITCH + e];
+                }
+                int ok = 0;
+                if (k0 + j < n) {
+                    ok = live.get(r * n + k0 + j);
+                }
+                float s = MASKED;
+                if (ok != 0) {
+                    s = dot;
+                }
+                sc[sq * SCORE_PITCH + j] = s;
+            }
+            ctx.localBarrier();
+            if (tid < ATTN_QUERIES) {
+                float bmax = MASKED;
+                for (int j = 0; j < KEY_BLOCK; j++) {
+                    bmax = TornadoMath.max(bmax, sc[tid * SCORE_PITCH + j]);
+                }
+                float m = mRun[tid];
+                float mn = TornadoMath.max(m, bmax);
+                float c = 1f;
+                if (bmax > VALID) {
+                    c = TornadoMath.exp(m - mn);
+                }
+                float sum = 0f;
+                for (int j = 0; j < KEY_BLOCK; j++) {
+                    float sv = sc[tid * SCORE_PITCH + j];
+                    float pv = 0f;
+                    if (sv > VALID) {
+                        pv = TornadoMath.exp(sv - mn);
+                    }
+                    sc[tid * SCORE_PITCH + j] = pv;
+                    sum += pv;
+                }
+                lRun[tid] = lRun[tid] * c + sum;
+                mRun[tid] = mn;
+                corr[tid] = c;
+            }
+            ctx.localBarrier();
+            for (int i = 0; i < qpt; i++) {
+                acc[i] = acc[i] * corr[pg * qpt + i];
+            }
+            for (int j = 0; j < KEY_BLOCK; j++) {
+                float vj = vs[j * HEAD_PITCH + pe];
+                for (int i = 0; i < qpt; i++) {
+                    acc[i] += sc[(pg * qpt + i) * SCORE_PITCH + j] * vj;
+                }
+            }
+            ctx.localBarrier();
+        }
+        for (int i = 0; i < qpt; i++) {
+            int qq = pg * qpt + i;
+            if (qq < qn) {
+                float l = lRun[qq];
+                float v = 0f;
+                if (l > 0f) {
+                    v = acc[i] / l;
+                }
+                out.set((r * n + q0 + qq) * inner + hh * dh + pe, v);
             }
         }
     }

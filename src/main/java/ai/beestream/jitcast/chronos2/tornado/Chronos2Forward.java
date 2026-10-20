@@ -93,7 +93,8 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
     }
 
     public Chronos2Forward(Chronos2Config config, Chronos2Packed weights, int maxCachedPlans) {
-        if (config.dKv() > Chronos2Kernels.MAX_HEAD_DIM || config.dKv() % Chronos2Kernels.LANES != 0) {
+        if (config.dKv() > Chronos2Kernels.BLOCK_HEAD_DIM || Chronos2Kernels.ATTN_THREADS % config.dKv() != 0
+                || config.dKv() % Chronos2Kernels.LANES != 0) {
             throw new IllegalArgumentException("unsupported attention head width " + config.dKv());
         }
         this.config = config;

@@ -57,8 +57,8 @@ Chronos-2's own kernels are in [`Chronos2Kernels.java`](../src/main/java/ai/bees
 
 | Kernel | What it computes |
 |---|---|
-| [`assembleTokens`](../src/main/java/ai/beestream/jitcast/chronos2/tornado/Chronos2Kernels.java#L54) | Each row's context tokens, the `[REG]` token and its future tokens |
-| [`rope`](../src/main/java/ai/beestream/jitcast/chronos2/tornado/Chronos2Kernels.java#L81) | RoPE on q and k in place, from a host-built cos/sin table indexed by token |
-| [`timeAttention`](../src/main/java/ai/beestream/jitcast/chronos2/tornado/Chronos2Kernels.java#L116) | Flash-style bidirectional attention along time per row and head, 16 queries per work-group, over the valid keys, unscaled |
-| [`groupAttention`](../src/main/java/ai/beestream/jitcast/chronos2/tornado/Chronos2Kernels.java#L207) | Flash-style attention across the rows of each group per token slot, over the rows whose token is a valid key |
-| [`gatherFuture`](../src/main/java/ai/beestream/jitcast/chronos2/tornado/Chronos2Kernels.java#L303) | The future tokens, for the output patch embedding |
+| [`assembleTokens`](../src/main/java/ai/beestream/jitcast/chronos2/tornado/Chronos2Kernels.java#L65) | Each row's context tokens, the `[REG]` token and its future tokens |
+| [`rope`](../src/main/java/ai/beestream/jitcast/chronos2/tornado/Chronos2Kernels.java#L92) | RoPE on q and k in place, from a host-built cos/sin table indexed by token |
+| [`timeAttention`](../src/main/java/ai/beestream/jitcast/chronos2/tornado/Chronos2Kernels.java#L129) | Flash-style bidirectional attention along time per row and head, 16 queries per work-group and blocks of 32 keys staged in local memory, over the valid keys, unscaled |
+| [`groupAttention`](../src/main/java/ai/beestream/jitcast/chronos2/tornado/Chronos2Kernels.java#L259) | Flash-style attention across the rows of each group per token slot, over the rows whose token is a valid key |
+| [`gatherFuture`](../src/main/java/ai/beestream/jitcast/chronos2/tornado/Chronos2Kernels.java#L355) | The future tokens, for the output patch embedding |
