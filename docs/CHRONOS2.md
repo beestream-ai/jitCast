@@ -170,24 +170,24 @@ in FP16):
 
 | Workload | small ref. | small jitcast FP32 | small jitcast FP16 | base ref. | base jitcast FP32 | base jitcast FP16 |
 |---|---|---|---|---|---|---|
-| 1 series | 4.87 | **1.40 (3.47×)** | 0.76 (6.37×) | 8.82 | **4.47 (1.97×)** | 1.78 (4.96×) |
-| 8 series | 5.65 | **4.09 (1.38×)** | 2.19 (2.58×) | 18.25 | **15.18 (1.20×)** | 6.75 (2.70×) |
-| 32 series | 15.46 | **13.87 (1.11×)** | 7.44 (2.08×) | 59.76 | **57.05 (1.05×)** | 25.35 (2.36×) |
-| 128 series | 68.91 | **54.12 (1.27×)** | 33.46 (2.06×) | 272.73 | **233.88 (1.17×)** | 108.77 (2.51×) |
-| 512 series | 307.78 | **222.44 (1.38×)** | 135.35 (2.27×) | 1,127.79 | **898.09 (1.26×)** | 423.31 (2.66×) |
-| 1 series, H = 1,024 | 4.89 | **1.61 (3.04×)** | 0.99 (4.93×) | 9.02 | **5.79 (1.56×)** | 2.41 (3.75×) |
-| 1 series, H = 2,048 (unrolled) | 15.09 | **14.88 (1.01×)** | 12.48 (1.21×) | **43.75** | 44.96 (0.97×) | 24.82 (1.76×) |
-| 8 series, 8,192-step context | **15.61** | 17.19 (0.91×) | 11.22 (1.39×) | **62.82** | 68.66 (0.91×) | 37.18 (1.69×) |
-| 8 series × (2 past + 2 known) | 19.54 | **17.48 (1.12×)** | 9.54 (2.05×) | 75.57 | **71.97 (1.05×)** | 33.69 (2.24×) |
+| 1 series | 5.34 | **1.38 (3.87×)** | 0.75 (7.14×) | 8.70 | **4.41 (1.97×)** | 1.72 (5.06×) |
+| 8 series | 5.77 | **4.09 (1.41×)** | 2.15 (2.68×) | 18.22 | **15.02 (1.21×)** | 6.65 (2.74×) |
+| 32 series | 15.49 | **13.64 (1.14×)** | 7.47 (2.07×) | 59.77 | **56.60 (1.06×)** | 24.97 (2.39×) |
+| 128 series | 68.92 | **53.42 (1.29×)** | 33.01 (2.09×) | 272.62 | **232.52 (1.17×)** | 106.73 (2.55×) |
+| 512 series | 308.26 | **220.93 (1.40×)** | 137.03 (2.25×) | 1,127.57 | **890.12 (1.27×)** | 415.28 (2.72×) |
+| 1 series, H = 1,024 | 5.11 | **1.59 (3.22×)** | 0.96 (5.30×) | 8.94 | **5.75 (1.56×)** | 2.37 (3.77×) |
+| 1 series, H = 2,048 (unrolled) | 15.36 | **14.58 (1.05×)** | 12.21 (1.26×) | **43.83** | 44.10 (0.99×) | 24.69 (1.78×) |
+| 8 series, 8,192-step context | **15.77** | 16.90 (0.93×) | 10.84 (1.45×) | **62.81** | 67.20 (0.93×) | 35.86 (1.75×) |
+| 8 series × (2 past + 2 known) | 19.57 | **17.41 (1.12×)** | 9.44 (2.07×) | 75.58 | **71.50 (1.06×)** | 33.21 (2.28×) |
 
-- In FP32 jitcast is fastest on small batches and short contexts (up to 3.5×), where the
+- In FP32 jitcast is fastest on small batches and short contexts (up to 3.9×), where the
   reference's time is launch and Python overhead, and ahead of it by 1.05–1.4× up to 512 series.
 - With long token sequences the two are within 10%: the reference is ahead on the 8,192-step
   context (517 tokens per row) and level on the unrolled horizon. There the time attention, which
-  takes blocks of 32 keys, is 30% of jitcast's device time (`chronos-2`), and the GEMMs most of the
+  takes blocks of 32 keys, is 28% of jitcast's device time (`chronos-2`), and the GEMMs most of the
   rest.
 - FP16 GEMMs (`-Dchronos2.tornado.gemm=cublas-fp16`) make jitcast faster than the reference on
-  every workload, by 1.2–6.4×; the default is FP32.
+  every workload, by 1.3–7.1×; the default is FP32.
 
 ### Reproducing
 
