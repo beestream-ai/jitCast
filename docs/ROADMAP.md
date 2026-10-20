@@ -10,8 +10,9 @@ Planned work on jitcast, and the TornadoVM issues that limit it today. The curre
 1. **Chronos-2** (Amazon): in progress. Its time and cross-variate attention are close to Timestral's.
 2. **Further candidates**: TimesFM, Toto, Moirai 2, TTM, Sundial, checked against the GIFT-Eval
    leaderboard and each model's weight licence before porting.
-3. **Benchmark parity for Timestral**: GIFT-Eval and fev-bench scored through Mistral's or the
-   benchmarks' own harnesses, as for TiRex-2.
+3. **GIFT-Eval parity for Timestral** (fev-bench is done: [VALIDATION.md](VALIDATION.md#timestral)).
+4. **Timestral's long-context attention**: its time attention walks the keys one at a time, which
+   makes the longest fev-bench tasks slower than in PyTorch.
 
 ## Engine
 
