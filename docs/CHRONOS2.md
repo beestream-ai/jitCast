@@ -132,13 +132,14 @@ python scripts/chronos2/dump_golden.py --src chronos-forecasting/src --ckpt chro
 
 End-to-end `predict()` / `forecast()`, the median of repeated calls after warm-up, on the same
 inputs for both engines (`bench_reference.py workloads`: contexts of 2,048 steps and a horizon of 64
-unless stated). jitcast runs on TornadoVM develop on Metal with its default GEMMs (register-blocked
-FP32); Amazon's reference on PyTorch 2.14 in eager mode, on the CPU and on MPS (its forecasts there
-match the CPU run within 9e-6).
+unless stated). jitcast runs on TornadoVM develop; Amazon's reference on PyTorch 2.14 in eager
+mode. Speed-ups are over the reference.
 
 ### Apple M4 Pro
 
-In ms; the fastest of each row in bold:
+jitcast on Metal with its default GEMMs (register-blocked FP32), against the reference on the CPU
+and on MPS (its forecasts there match the CPU run within 9e-6), in ms; the fastest of each row in
+bold:
 
 | Workload | small ref. CPU | small ref. MPS | small jitcast Metal | base ref. CPU | base ref. MPS | base jitcast Metal |
 |---|---|---|---|---|---|---|
@@ -160,6 +161,33 @@ series). The register-blocked FP32 GEMMs reach about 2 TFLOP/s on these shapes (
 64 × 128 tiles of `gemmBlockedWide`, from 1,024 rows), against about 3.2 TFLOP/s for the whole forward pass on MPS, whose GEMMs can use Apple's simdgroup matrix
 instructions; jitcast's kernels use scalar FMAs.
 
+### NVIDIA GeForce RTX 5070 Ti
+
+jitcast on CUDA with its default GEMMs (cuBLAS FP32, CUDA graphs) and with cuBLAS FP16, against the
+reference on PyTorch CUDA (FP32), in ms, with the speed-up over the reference (TornadoVM develop,
+CUDA 13.0, driver 580; jitcast's forecasts are within 4.5e-5 of the reference in FP32 and 5.1e-3
+in FP16):
+
+| Workload | small ref. | small jitcast FP32 | small jitcast FP16 | base ref. | base jitcast FP32 | base jitcast FP16 |
+|---|---|---|---|---|---|---|
+| 1 series | 5.17 | **1.61 (3.2×)** | 0.97 (5.3×) | 8.77 | **4.84 (1.8×)** | 2.18 (4.0×) |
+| 8 series | 5.72 | **4.48 (1.3×)** | 2.60 (2.2×) | 18.24 | **16.27 (1.1×)** | 7.88 (2.3×) |
+| 32 series | 15.43 | **15.02 (1.0×)** | 8.80 (1.8×) | **58.97** | 59.33 (0.99×) | 29.07 (2.0×) |
+| 128 series | 68.74 | **57.58 (1.2×)** | 37.12 (1.9×) | 270.00 | **241.83 (1.1×)** | 118.25 (2.3×) |
+| 512 series | 306.88 | **239.44 (1.3×)** | 148.94 (2.1×) | 1,122.82 | **933.96 (1.2×)** | 466.79 (2.4×) |
+| 1 series, H = 1,024 | 4.89 | **1.89 (2.6×)** | 1.28 (3.8×) | 8.92 | **6.46 (1.4×)** | 3.11 (2.9×) |
+| 1 series, H = 2,048 (unrolled) | **15.08** | 16.93 (0.89×) | 15.00 (1.01×) | **43.60** | 52.28 (0.83×) | 30.41 (1.4×) |
+| 8 series, 8,192-step context | **15.63** | 22.79 (0.69×) | 17.14 (0.91×) | **62.32** | 82.15 (0.76×) | 52.64 (1.2×) |
+| 8 series × (2 past + 2 known) | 19.43 | **18.88 (1.03×)** | 11.71 (1.7×) | 74.78 | **74.67 (1.00×)** | 37.53 (2.0×) |
+
+- In FP32 jitcast is fastest on small batches and short contexts, where the reference's time is
+  launch and Python overhead, and level with it or ahead up to 512 series.
+- With long token sequences (the 8,192-step context, 517 tokens per row, and the unrolled horizon)
+  the reference is faster. Not profiled yet; the likely cost is jitcast's time attention, which
+  stages one key at a time and grows with the square of the row's tokens.
+- FP16 GEMMs (`-Dchronos2.tornado.gemm=cublas-fp16`) halve jitcast's time at large batches; the
+  default is FP32.
+
 ### Reproducing
 
 ```bash
@@ -168,6 +196,8 @@ python scripts/chronos2/bench_reference.py run --src chronos-forecasting/src --c
     --workloads workloads.safetensors --device mps --out reference.json        # or cpu, cuda
 $JITCAST -Djitcast.tornado.device=1:0 ai.beestream.jitcast.bench.Chronos2Bench --checkpoint chronos-2 \
     --workloads workloads.safetensors --engine tornado --out jitcast.json
+# on CUDA (see INSTALL.md#nvidia-extras for cuBLAS 13 on Blackwell)
+$JITCAST -Djitcast.tornado.device=1:0 -Dchronos2.tornado.gemm=cublas-fp16 ai.beestream.jitcast.bench.Chronos2Bench ...
 ```
 
 ## Options

@@ -115,7 +115,7 @@ and benchmark-suite tables and the method are in [docs/PERFORMANCE.md](docs/PERF
 | [VALIDATION.md](docs/VALIDATION.md) | How the implementation was checked, from an executable spec to GIFT-Eval and fev-bench |
 | [PERFORMANCE.md](docs/PERFORMANCE.md) | The comparison with NXAI's engine on an NVIDIA A100: method, results, charts |
 | [TIMESTRAL.md](docs/TIMESTRAL.md) | Timestral: quick start, how it maps onto jitcast, validation, performance on Apple silicon, options |
-| [CHRONOS2.md](docs/CHRONOS2.md) | Chronos-2: quick start, how it maps onto jitcast, validation, performance on Apple silicon, options |
+| [CHRONOS2.md](docs/CHRONOS2.md) | Chronos-2: quick start, how it maps onto jitcast, validation, performance (Apple silicon, RTX 5070 Ti), options |
 | [KERNELS.md](docs/KERNELS.md) | Every kernel, with source links and their hybrid alternatives |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Architecture, code layout and scripts |
 | [ROADMAP.md](docs/ROADMAP.md) | Planned work, and the TornadoVM issues that limit jitcast today |
