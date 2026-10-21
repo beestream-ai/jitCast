@@ -93,8 +93,7 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
     }
 
     public Chronos2Forward(Chronos2Config config, Chronos2Packed weights, int maxCachedPlans) {
-        if (config.dKv() > Chronos2Kernels.BLOCK_HEAD_DIM || Chronos2Kernels.ATTN_THREADS % config.dKv() != 0
-                || config.dKv() % Chronos2Kernels.LANES != 0) {
+        if (config.dKv() > Chronos2Kernels.BLOCK_HEAD_DIM || config.dKv() % 16 != 0) {
             throw new IllegalArgumentException("unsupported attention head width " + config.dKv());
         }
         this.config = config;
@@ -246,7 +245,7 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
             g.task("assemble", Chronos2Kernels::assembleTokens, ctx, emb, w, Math.max(weights.reg(), 0), x, rows, nc, reg, n, d);
             written(x);
 
-            int qTiles = (n + Chronos2Kernels.ATTN_QUERIES - 1) / Chronos2Kernels.ATTN_QUERIES;
+            int qTiles = (n + Chronos2Kernels.TIME_QUERIES - 1) / Chronos2Kernels.TIME_QUERIES;
             int rTiles = (rows + Chronos2Kernels.ATTN_QUERIES - 1) / Chronos2Kernels.ATTN_QUERIES;
             for (int li = 0; li < weights.layers().size(); li++) {
                 Chronos2Packed.Layer layer = weights.layers().get(li);

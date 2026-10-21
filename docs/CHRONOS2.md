@@ -183,8 +183,7 @@ in FP16):
 - In FP32 jitcast is fastest on small batches and short contexts (up to 3.9×), where the
   reference's time is launch and Python overhead, and ahead of it by 1.05–1.4× up to 512 series.
 - With long token sequences the two are within 10%: the reference is ahead on the 8,192-step
-  context (517 tokens per row) and level on the unrolled horizon. There the time attention, which
-  takes blocks of 32 keys, is 28% of jitcast's device time (`chronos-2`), and the GEMMs most of the
+  context (517 tokens per row) and level on the unrolled horizon. There the time attention is 28% of jitcast's device time (`chronos-2`), and the GEMMs most of the
   rest.
 - FP16 GEMMs (`-Dchronos2.tornado.gemm=cublas-fp16`) make jitcast faster than the reference on
   every workload, by 1.3–7.1×; the default is FP32.
@@ -220,7 +219,7 @@ $JITCAST -Djitcast.tornado.device=1:0 -Dchronos2.tornado.gemm=cublas-fp16 ai.bee
   numbers first.
 - Only float32 checkpoints with the ReLU feed-forward layer, non-overlapping patches and equal input
   and output patch sizes load; every published Chronos-2 checkpoint is one. On the device, heads
-  must be 8 to 64 wide and divide 128 (all are 64).
+  must be 16 to 64 wide, in multiples of 16 (all are 64).
 - Validated on `chronos-2` and `chronos-2-small`. `autogluon/chronos-2-synth` shares their
   architecture and loads with the same code, but has no goldens.
 
