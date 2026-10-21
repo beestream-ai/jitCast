@@ -102,6 +102,11 @@ public final class ForecastPipeline {
         if (horizon < 1) {
             throw new IllegalArgumentException("horizon must be >= 1, got " + horizon);
         }
+        for (TimeSeries ts : series) {
+            if (ts.hasCategorical()) {
+                throw new IllegalArgumentException("TiRex-2 does not take categorical covariates");
+            }
+        }
         // like TiRex2._predict_once, a horizon beyond futureLen is truncated to it
         int h = Math.min(horizon, config.futureLen());
         List<Forecast> out = new ArrayList<>(series.size());

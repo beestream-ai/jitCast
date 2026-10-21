@@ -16,6 +16,7 @@
 package ai.beestream.jitcast.tornado;
 
 import uk.ac.manchester.tornado.api.KernelContext;
+import uk.ac.manchester.tornado.api.types.matrix.Matrix8x8Float;
 import uk.ac.manchester.tornado.api.math.TornadoMath;
 import uk.ac.manchester.tornado.api.tile.DType;
 import uk.ac.manchester.tornado.api.tile.PartitionView;
@@ -467,6 +468,286 @@ public final class Kernels {
                 v += c.get(ci);
             }
             c.set(ci, v);
+        }
+    }
+
+    /** Output tile edge of {@link #gemmSimdgroup}: a work-group of 4 SIMD groups computes 32 × 32. */
+    public static final int MMA_TILE = 32;
+    /** The K slice {@link #gemmSimdgroup} stages in threadgroup memory. */
+    public static final int MMA_K = 32;
+    /** Threads per work-group of {@link #gemmSimdgroup}: 4 SIMD groups of 32. */
+    public static final int MMA_THREADS = 128;
+
+    /**
+     * {@link #gemm} on Apple's matrix units (Metal only, {@code simdgroup_float8x8}), FP32 throughout:
+     * {@code C[m, n] (+)= act(A[m, :] · W[n, :] + b[n])} with {@code A} at {@code aOff}, {@code W}
+     * ({@code [N, K]}) at {@code wOff} and {@code b} at {@code bOff} in the packed weights.
+     *
+     * <p>One work-group of {@link #MMA_THREADS} threads per 32 × 32 output tile; each of its four SIMD
+     * groups owns a 16 × 16 quadrant as 2 × 2 accumulator fragments of 8 × 8. Each K slice of A and of
+     * W is staged in threadgroup memory, zero-padded past {@code m}, {@code n} and {@code k}, so any
+     * shape works; W's rows are read transposed. The tile goes back through threadgroup memory for
+     * the epilogue of {@link #gemm} (bias, SiLU, then accumulate). Global work
+     * {@code ⌈M/32⌉·⌈N/32⌉·128}, local 128.
+     */
+    public static void gemmSimdgroup(KernelContext ctx, FloatArray a, int aOff, FloatArray w, int wOff, int bOff, FloatArray c,
+            int m, int n, int k, int flags) {
+        int tid = ctx.localIdx;
+        int tilesN = (n + MMA_TILE - 1) / MMA_TILE;
+        int tile = ctx.groupIdx;
+        int rowBase = (tile / tilesN) * MMA_TILE;
+        int colBase = (tile % tilesN) * MMA_TILE;
+        int sg = tid / 32;
+        int qr = (sg / 2) * 16;
+        int qc = (sg % 2) * 16;
+        float[] as = ctx.allocateFloatLocalArray(MMA_TILE * MMA_K);
+        float[] ws = ctx.allocateFloatLocalArray(MMA_TILE * MMA_K);
+        float[] cs = ctx.allocateFloatLocalArray(MMA_TILE * MMA_TILE);
+        Matrix8x8Float acc00 = ctx.simdgroupMatrixZero();
+        Matrix8x8Float acc01 = ctx.simdgroupMatrixZero();
+        Matrix8x8Float acc10 = ctx.simdgroupMatrixZero();
+        Matrix8x8Float acc11 = ctx.simdgroupMatrixZero();
+        for (int kt = 0; kt < k; kt += MMA_K) {
+            for (int e = tid; e < MMA_TILE * MMA_K; e += MMA_THREADS) {
+                int r = e / MMA_K;
+                int kk = kt + e - r * MMA_K;
+                float av = 0f;
+                if (rowBase + r < m && kk < k) {
+                    av = a.get(aOff + (rowBase + r) * k + kk);
+                }
+                as[e] = av;
+                float wv = 0f;
+                if (colBase + r < n && kk < k) {
+                    wv = w.get(wOff + (colBase + r) * k + kk);
+                }
+                ws[e] = wv;
+            }
+            ctx.localBarrier();
+            for (int kk = 0; kk < MMA_K; kk += 8) {
+                Matrix8x8Float a0 = ctx.simdgroupMatrixLoad(as, qr * MMA_K + kk, MMA_K);
+                Matrix8x8Float a1 = ctx.simdgroupMatrixLoad(as, (qr + 8) * MMA_K + kk, MMA_K);
+                Matrix8x8Float b0 = ctx.simdgroupMatrixLoadTransposed(ws, qc * MMA_K + kk, MMA_K);
+                Matrix8x8Float b1 = ctx.simdgroupMatrixLoadTransposed(ws, (qc + 8) * MMA_K + kk, MMA_K);
+                acc00 = ctx.simdgroupMatrixMultiplyAccumulate(a0, b0, acc00);
+                acc01 = ctx.simdgroupMatrixMultiplyAccumulate(a0, b1, acc01);
+                acc10 = ctx.simdgroupMatrixMultiplyAccumulate(a1, b0, acc10);
+                acc11 = ctx.simdgroupMatrixMultiplyAccumulate(a1, b1, acc11);
+            }
+            ctx.localBarrier();
+        }
+        ctx.simdgroupMatrixStore(acc00, cs, qr * MMA_TILE + qc, MMA_TILE);
+        ctx.simdgroupMatrixStore(acc01, cs, qr * MMA_TILE + qc + 8, MMA_TILE);
+        ctx.simdgroupMatrixStore(acc10, cs, (qr + 8) * MMA_TILE + qc, MMA_TILE);
+        ctx.simdgroupMatrixStore(acc11, cs, (qr + 8) * MMA_TILE + qc + 8, MMA_TILE);
+        ctx.localBarrier();
+        for (int e = tid; e < MMA_TILE * MMA_TILE; e += MMA_THREADS) {
+            int r = e / MMA_TILE;
+            int col = e - r * MMA_TILE;
+            blockedStore(c, 0, w, bOff, rowBase + r, colBase + col, m, n, flags, cs[e]);
+        }
+    }
+
+    /** Output tile edge of {@link #gemmSimdgroupWide}: a work-group of 4 SIMD groups computes 64 × 64. */
+    public static final int MMA_WIDE = 64;
+
+    /**
+     * {@link #gemmSimdgroup} with 64 × 64 output tiles, for GEMMs with enough rows to fill the GPU:
+     * each of the four SIMD groups owns a 32 × 32 quadrant as 4 × 4 accumulator fragments, so every
+     * fragment of A and W it loads feeds four multiply-accumulates. A tile that lies inside
+     * {@code m} and {@code n} (with {@code k} a multiple of 8) loads its fragments straight from
+     * device memory; an edge tile stages each K slice of A and W in threadgroup memory, zero-padded,
+     * so nothing is read past {@code m}, {@code n} or {@code k}. Same arguments and epilogue as
+     * {@link #gemmSimdgroup}.
+     *
+     * <p>Split K: with {@code kSlice < k} the work-groups also split K into slices of {@code kSlice}
+     * (a multiple of 8), and each writes its raw partial tile to {@code c} at {@code slice·m·n},
+     * without the epilogue, for {@link #splitKSum} to add up. With {@code kSlice ≥ k} it is one slice
+     * and the kernel writes the result itself. Global work {@code ⌈K/kSlice⌉·⌈M/64⌉·⌈N/64⌉·128},
+     * local 128.
+     */
+    public static void gemmSimdgroupWide(KernelContext ctx, FloatArray a, int aOff, FloatArray w, int wOff, int bOff,
+            FloatArray c, int m, int n, int k, int flags, int kSlice) {
+        int tid = ctx.localIdx;
+        int tilesN = (n + MMA_WIDE - 1) / MMA_WIDE;
+        int tiles = ((m + MMA_WIDE - 1) / MMA_WIDE) * tilesN;
+        int slice = ctx.groupIdx / tiles;
+        int tile = ctx.groupIdx - slice * tiles;
+        int k0 = slice * kSlice;
+        int k1 = TornadoMath.min(k, k0 + kSlice);
+        int rowBase = (tile / tilesN) * MMA_WIDE;
+        int colBase = (tile % tilesN) * MMA_WIDE;
+        int sg = tid / 32;
+        int sr = (sg / 2) * 32;
+        int sc = (sg % 2) * 32;
+        float[] sh = ctx.allocateFloatLocalArray(2 * MMA_WIDE * MMA_K);
+        int inside = (rowBase + MMA_WIDE <= m ? 1 : 0) * (colBase + MMA_WIDE <= n ? 1 : 0) * (k % 8 == 0 ? 1 : 0) * (kSlice % 8 == 0 ? 1 : 0);
+        // each path keeps its own accumulators and leaves them in threadgroup memory: TornadoVM's Metal
+        // backend does not merge simdgroup matrices correctly where the two paths join
+        if (inside == 1) {
+            Matrix8x8Float acc00 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc01 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc02 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc03 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc10 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc11 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc12 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc13 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc20 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc21 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc22 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc23 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc30 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc31 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc32 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc33 = ctx.simdgroupMatrixZero();
+            int ar = aOff + (rowBase + sr) * k;
+            int wr = wOff + (colBase + sc) * k;
+            for (int kk = k0; kk < k1; kk += 8) {
+                Matrix8x8Float a0 = ctx.simdgroupMatrixLoad(a, ar + 0 * k + kk, k);
+                Matrix8x8Float a1 = ctx.simdgroupMatrixLoad(a, ar + 8 * k + kk, k);
+                Matrix8x8Float a2 = ctx.simdgroupMatrixLoad(a, ar + 16 * k + kk, k);
+                Matrix8x8Float a3 = ctx.simdgroupMatrixLoad(a, ar + 24 * k + kk, k);
+                Matrix8x8Float b0 = ctx.simdgroupMatrixLoadTransposed(w, wr + 0 * k + kk, k);
+                Matrix8x8Float b1 = ctx.simdgroupMatrixLoadTransposed(w, wr + 8 * k + kk, k);
+                Matrix8x8Float b2 = ctx.simdgroupMatrixLoadTransposed(w, wr + 16 * k + kk, k);
+                Matrix8x8Float b3 = ctx.simdgroupMatrixLoadTransposed(w, wr + 24 * k + kk, k);
+                acc00 = ctx.simdgroupMatrixMultiplyAccumulate(a0, b0, acc00);
+                acc01 = ctx.simdgroupMatrixMultiplyAccumulate(a0, b1, acc01);
+                acc02 = ctx.simdgroupMatrixMultiplyAccumulate(a0, b2, acc02);
+                acc03 = ctx.simdgroupMatrixMultiplyAccumulate(a0, b3, acc03);
+                acc10 = ctx.simdgroupMatrixMultiplyAccumulate(a1, b0, acc10);
+                acc11 = ctx.simdgroupMatrixMultiplyAccumulate(a1, b1, acc11);
+                acc12 = ctx.simdgroupMatrixMultiplyAccumulate(a1, b2, acc12);
+                acc13 = ctx.simdgroupMatrixMultiplyAccumulate(a1, b3, acc13);
+                acc20 = ctx.simdgroupMatrixMultiplyAccumulate(a2, b0, acc20);
+                acc21 = ctx.simdgroupMatrixMultiplyAccumulate(a2, b1, acc21);
+                acc22 = ctx.simdgroupMatrixMultiplyAccumulate(a2, b2, acc22);
+                acc23 = ctx.simdgroupMatrixMultiplyAccumulate(a2, b3, acc23);
+                acc30 = ctx.simdgroupMatrixMultiplyAccumulate(a3, b0, acc30);
+                acc31 = ctx.simdgroupMatrixMultiplyAccumulate(a3, b1, acc31);
+                acc32 = ctx.simdgroupMatrixMultiplyAccumulate(a3, b2, acc32);
+                acc33 = ctx.simdgroupMatrixMultiplyAccumulate(a3, b3, acc33);
+            }
+            ctx.simdgroupMatrixStore(acc00, sh, (sr + 0) * MMA_WIDE + sc + 0, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc01, sh, (sr + 0) * MMA_WIDE + sc + 8, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc02, sh, (sr + 0) * MMA_WIDE + sc + 16, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc03, sh, (sr + 0) * MMA_WIDE + sc + 24, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc10, sh, (sr + 8) * MMA_WIDE + sc + 0, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc11, sh, (sr + 8) * MMA_WIDE + sc + 8, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc12, sh, (sr + 8) * MMA_WIDE + sc + 16, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc13, sh, (sr + 8) * MMA_WIDE + sc + 24, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc20, sh, (sr + 16) * MMA_WIDE + sc + 0, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc21, sh, (sr + 16) * MMA_WIDE + sc + 8, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc22, sh, (sr + 16) * MMA_WIDE + sc + 16, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc23, sh, (sr + 16) * MMA_WIDE + sc + 24, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc30, sh, (sr + 24) * MMA_WIDE + sc + 0, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc31, sh, (sr + 24) * MMA_WIDE + sc + 8, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc32, sh, (sr + 24) * MMA_WIDE + sc + 16, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc33, sh, (sr + 24) * MMA_WIDE + sc + 24, MMA_WIDE);
+        } else {
+            Matrix8x8Float acc00 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc01 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc02 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc03 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc10 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc11 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc12 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc13 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc20 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc21 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc22 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc23 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc30 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc31 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc32 = ctx.simdgroupMatrixZero();
+            Matrix8x8Float acc33 = ctx.simdgroupMatrixZero();
+            for (int kt = k0; kt < k1; kt += MMA_K) {
+                for (int e = tid; e < MMA_WIDE * MMA_K; e += MMA_THREADS) {
+                    int r = e / MMA_K;
+                    int kk = kt + e - r * MMA_K;
+                    float av = 0f;
+                    if (rowBase + r < m && kk < k1) {
+                        av = a.get(aOff + (rowBase + r) * k + kk);
+                    }
+                    sh[e] = av;
+                    float wv = 0f;
+                    if (colBase + r < n && kk < k1) {
+                        wv = w.get(wOff + (colBase + r) * k + kk);
+                    }
+                    sh[MMA_WIDE * MMA_K + e] = wv;
+                }
+                ctx.localBarrier();
+                for (int kk = 0; kk < MMA_K; kk += 8) {
+                    Matrix8x8Float a0 = ctx.simdgroupMatrixLoad(sh, (sr + 0) * MMA_K + kk, MMA_K);
+                    Matrix8x8Float a1 = ctx.simdgroupMatrixLoad(sh, (sr + 8) * MMA_K + kk, MMA_K);
+                    Matrix8x8Float a2 = ctx.simdgroupMatrixLoad(sh, (sr + 16) * MMA_K + kk, MMA_K);
+                    Matrix8x8Float a3 = ctx.simdgroupMatrixLoad(sh, (sr + 24) * MMA_K + kk, MMA_K);
+                    Matrix8x8Float b0 = ctx.simdgroupMatrixLoadTransposed(sh, MMA_WIDE * MMA_K + (sc + 0) * MMA_K + kk, MMA_K);
+                    Matrix8x8Float b1 = ctx.simdgroupMatrixLoadTransposed(sh, MMA_WIDE * MMA_K + (sc + 8) * MMA_K + kk, MMA_K);
+                    Matrix8x8Float b2 = ctx.simdgroupMatrixLoadTransposed(sh, MMA_WIDE * MMA_K + (sc + 16) * MMA_K + kk, MMA_K);
+                    Matrix8x8Float b3 = ctx.simdgroupMatrixLoadTransposed(sh, MMA_WIDE * MMA_K + (sc + 24) * MMA_K + kk, MMA_K);
+                    acc00 = ctx.simdgroupMatrixMultiplyAccumulate(a0, b0, acc00);
+                    acc01 = ctx.simdgroupMatrixMultiplyAccumulate(a0, b1, acc01);
+                    acc02 = ctx.simdgroupMatrixMultiplyAccumulate(a0, b2, acc02);
+                    acc03 = ctx.simdgroupMatrixMultiplyAccumulate(a0, b3, acc03);
+                    acc10 = ctx.simdgroupMatrixMultiplyAccumulate(a1, b0, acc10);
+                    acc11 = ctx.simdgroupMatrixMultiplyAccumulate(a1, b1, acc11);
+                    acc12 = ctx.simdgroupMatrixMultiplyAccumulate(a1, b2, acc12);
+                    acc13 = ctx.simdgroupMatrixMultiplyAccumulate(a1, b3, acc13);
+                    acc20 = ctx.simdgroupMatrixMultiplyAccumulate(a2, b0, acc20);
+                    acc21 = ctx.simdgroupMatrixMultiplyAccumulate(a2, b1, acc21);
+                    acc22 = ctx.simdgroupMatrixMultiplyAccumulate(a2, b2, acc22);
+                    acc23 = ctx.simdgroupMatrixMultiplyAccumulate(a2, b3, acc23);
+                    acc30 = ctx.simdgroupMatrixMultiplyAccumulate(a3, b0, acc30);
+                    acc31 = ctx.simdgroupMatrixMultiplyAccumulate(a3, b1, acc31);
+                    acc32 = ctx.simdgroupMatrixMultiplyAccumulate(a3, b2, acc32);
+                    acc33 = ctx.simdgroupMatrixMultiplyAccumulate(a3, b3, acc33);
+                }
+                ctx.localBarrier();
+            }
+            ctx.simdgroupMatrixStore(acc00, sh, (sr + 0) * MMA_WIDE + sc + 0, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc01, sh, (sr + 0) * MMA_WIDE + sc + 8, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc02, sh, (sr + 0) * MMA_WIDE + sc + 16, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc03, sh, (sr + 0) * MMA_WIDE + sc + 24, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc10, sh, (sr + 8) * MMA_WIDE + sc + 0, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc11, sh, (sr + 8) * MMA_WIDE + sc + 8, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc12, sh, (sr + 8) * MMA_WIDE + sc + 16, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc13, sh, (sr + 8) * MMA_WIDE + sc + 24, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc20, sh, (sr + 16) * MMA_WIDE + sc + 0, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc21, sh, (sr + 16) * MMA_WIDE + sc + 8, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc22, sh, (sr + 16) * MMA_WIDE + sc + 16, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc23, sh, (sr + 16) * MMA_WIDE + sc + 24, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc30, sh, (sr + 24) * MMA_WIDE + sc + 0, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc31, sh, (sr + 24) * MMA_WIDE + sc + 8, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc32, sh, (sr + 24) * MMA_WIDE + sc + 16, MMA_WIDE);
+            ctx.simdgroupMatrixStore(acc33, sh, (sr + 24) * MMA_WIDE + sc + 24, MMA_WIDE);
+        }
+        ctx.localBarrier();
+        for (int e = tid; e < MMA_WIDE * MMA_WIDE; e += MMA_THREADS) {
+            int r = e / MMA_WIDE;
+            int col = e - r * MMA_WIDE;
+            if (kSlice >= k) {
+                blockedStore(c, 0, w, bOff, rowBase + r, colBase + col, m, n, flags, sh[e]);
+            } else if (rowBase + r < m && colBase + col < n) {
+                c.set(slice * m * n + (rowBase + r) * n + colBase + col, sh[e]);
+            }
+        }
+    }
+
+    /**
+     * The second half of a split-K {@link #gemmSimdgroupWide}: {@code C = act(Σ_s part[s] + b) (+ C)}
+     * over its {@code slices} partial tiles, with the epilogue of {@link #gemm}. One thread per output.
+     */
+    public static void splitKSum(KernelContext ctx, FloatArray part, int slices, FloatArray w, int bOff, FloatArray c, int m,
+            int n, int flags) {
+        int id = ctx.globalIdx;
+        if (id < m * n) {
+            float sum = 0f;
+            for (int sl = 0; sl < slices; sl++) {
+                sum += part.get(sl * m * n + id);
+            }
+            int row = id / n;
+            blockedStore(c, 0, w, bOff, row, id - row * n, m, n, flags, sum);
         }
     }
 

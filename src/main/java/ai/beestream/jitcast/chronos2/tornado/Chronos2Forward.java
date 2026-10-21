@@ -58,9 +58,9 @@ import uk.ac.manchester.tornado.cublas.CuBlas;
  *
  * <p>The device is {@code -Djitcast.tornado.device=<driver>:<device>}, or the default one. GEMMs run
  * as {@code -Dchronos2.tornado.gemm} says ({@link GemmMode}; {@code auto} by default: cuBLAS in
- * FP32 on CUDA, the register-blocked FP32 kernel elsewhere). The blocked kernel takes GEMMs from
- * {@code -Dchronos2.tornado.blockedMinRows} rows (128 by default) and the tiled kernel the smaller
- * ones. With cuBLAS the task graph is captured and replayed as a CUDA graph
+ * FP32 on CUDA, Apple's simdgroup matrices on Metal, the register-blocked FP32 kernel elsewhere).
+ * The blocked kernel takes GEMMs from {@code -Dchronos2.tornado.blockedMinRows} rows (128 by
+ * default) and the tiled kernel the smaller ones. With cuBLAS the task graph is captured and replayed as a CUDA graph
  * ({@code -Dchronos2.tornado.cudaGraph}, on by default with cuBLAS).
  */
 public final class Chronos2Forward implements ModelForward, AutoCloseable {
@@ -74,7 +74,27 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
     private final int blockedMinRows = Integer.getInteger("chronos2.tornado.blockedMinRows", 128);
 
     /** The fewest rows a GEMM needs to run on {@link Kernels#gemmBlockedWide}, whose 64 × 128 tiles leave the GPU idle below that. */
-    private final int wideMinRows = Integer.getInteger("chronos2.tornado.wideMinRows", 1024);
+    private final int blockedWideMinRows = Integer.getInteger("chronos2.tornado.wideMinRows", 1024);
+
+    /** The fewest GEMM rows that use {@link Kernels#gemmSimdgroupWide} rather than {@link Kernels#gemmSimdgroup}. */
+    private final int simdgroupWideMinRows = Integer.getInteger("chronos2.tornado.simdgroupWideMinRows", 64);
+
+    /**
+     * Split K: a 64 × 64 simdgroup GEMM with fewer tiles than {@code splitKTarget} work-groups also
+     * splits K, into at most {@code splitKMax} slices of at least {@link #SPLIT_K_MIN} each, so that
+     * GEMMs with few rows still fill the GPU. 1 turns it off.
+     */
+    private final int splitKTarget = Integer.getInteger("chronos2.tornado.splitKTarget", 320);
+    private final int splitKMax = Math.max(1, Integer.getInteger("chronos2.tornado.splitKMax", 16));
+    static final int SPLIT_K_MIN = 128;
+
+    /** The number of K slices for a GEMM of {@code tiles} 64 × 64 tiles over {@code k}. */
+    int splitK(int tiles, int k) {
+        if (tiles >= splitKTarget) {
+            return 1;
+        }
+        return Math.max(1, Math.min(Math.min(splitKMax, (splitKTarget + tiles - 1) / tiles), k / SPLIT_K_MIN));
+    }
 
     /** One compiled shape. */
     public record Shape(int rows, int contextPatches, int outputPatches) {}
@@ -203,6 +223,7 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
         final FloatArray tok, emb, x, hn, big, att, y, dec, raw, table;
         final IntArray live, groupStart, groupEnd;
         final HalfFloatArray noTwin = new HalfFloatArray(1);
+        FloatArray part;
         final TornadoExecutionPlan exec;
         final GridScheduler grid = new GridScheduler();
         final KernelContext ctx = new KernelContext();
@@ -311,14 +332,36 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
             }
             int f = flags | (l.b() >= 0 ? Kernels.BIAS : 0);
             WorkerGrid wg;
-            if (gemmMode == GemmMode.HALF) {
+            if (gemmMode == GemmMode.SIMDGROUP) {
+                boolean wide = m >= simdgroupWideMinRows;
+                int t = wide ? Kernels.MMA_WIDE : Kernels.MMA_TILE;
+                int tiles = ((m + t - 1) / t) * ((l.out() + t - 1) / t);
+                wg = group(tiles * Kernels.MMA_THREADS, Kernels.MMA_THREADS);
+                int slices = wide ? splitK(tiles, l.in()) : 1;
+                if (slices > 1) {
+                    int kSlice = ((l.in() + slices - 1) / slices + Kernels.MMA_K - 1) / Kernels.MMA_K * Kernels.MMA_K;
+                    slices = (l.in() + kSlice - 1) / kSlice;
+                    FloatArray p = partials();
+                    grid.addWorkerGrid(G + "." + name, group(slices * tiles * Kernels.MMA_THREADS, Kernels.MMA_THREADS));
+                    g.task(name, Kernels::gemmSimdgroupWide, ctx, a, 0, w, l.w(), 0, p, m, l.out(), l.in(), 0, kSlice);
+                    items(name + "_sum", m * l.out());
+                    g.task(name + "_sum", Kernels::splitKSum, ctx, p, slices, w, Math.max(l.b(), 0), c, m, l.out(), f);
+                    written(c);
+                    return;
+                }
+                if (wide) {
+                    g.task(name, Kernels::gemmSimdgroupWide, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, m, l.out(), l.in(), f, l.in());
+                } else {
+                    g.task(name, Kernels::gemmSimdgroup, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, m, l.out(), l.in(), f);
+                }
+            } else if (gemmMode == GemmMode.HALF) {
                 HalfFloatArray ah = half(name, a, m * l.in());
                 HalfFloatArray wh = halfWeight(l);
                 int t = Kernels.HGEMM_TILE, threads = Kernels.HGEMM_THREADS;
                 wg = new WorkerGrid2D((l.out() + t - 1) / t * threads, (m + t - 1) / t * threads);
                 wg.setLocalWork(threads, threads, 1);
                 g.task(name, Kernels::gemmHalf, ctx, ah, wh, c, w, Math.max(l.b(), 0), m, l.out(), l.in(), f, noTwin, 0);
-            } else if (gemmMode == GemmMode.BLOCKED && m >= wideMinRows) {
+            } else if (gemmMode == GemmMode.BLOCKED && m >= blockedWideMinRows) {
                 int tr = Kernels.WIDE_ROWS, tc = Kernels.WIDE_COLS, threads = Kernels.HGEMM_THREADS;
                 wg = new WorkerGrid2D((l.out() + tc - 1) / tc * threads, (m + tr - 1) / tr * threads);
                 wg.setLocalWork(threads, threads, 1);
@@ -399,6 +442,19 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
                 g.transferToDevice(DataTransferMode.FIRST_EXECUTION, wh);
             }
             return wh;
+        }
+
+        /**
+         * The split-K partial tiles, shared by every split GEMM of the plan (they run one after another).
+         * A split GEMM has fewer tiles than the target and at most ⌈target / tiles⌉ slices, so its
+         * partials take fewer than two targets' worth of tiles.
+         */
+        private FloatArray partials() {
+            if (part == null) {
+                part = new FloatArray(2 * splitKTarget * Kernels.MMA_WIDE * Kernels.MMA_WIDE);
+                g.transferToDevice(DataTransferMode.FIRST_EXECUTION, part);
+            }
+            return part;
         }
 
         /** A task has written {@code buf}: its FP16 copy is stale. */

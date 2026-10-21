@@ -17,6 +17,7 @@ package ai.beestream.jitcast.tornado;
 
 import uk.ac.manchester.tornado.api.common.TornadoDevice;
 import uk.ac.manchester.tornado.api.enums.TornadoVMBackendType;
+import uk.ac.manchester.tornado.api.runtime.TornadoRuntimeProvider;
 
 /**
  * How a family's GEMMs run.
@@ -27,14 +28,17 @@ import uk.ac.manchester.tornado.api.enums.TornadoVMBackendType;
  *       from a minimum row count and {@link Kernels#gemm} below it, FP32, any backend.
  *   <li>{@code HALF}: {@link Kernels#gemmHalf}, FP16 inputs with FP32 accumulation and output, any
  *       backend.
+ *   <li>{@code SIMDGROUP}: {@link Kernels#gemmSimdgroup}, FP32 on Apple's matrix units (Metal).
  *   <li>{@code CUBLAS}, {@code CUBLAS_TF32}: cuBLAS SGEMM in FP32 or TF32 (CUDA).
  *   <li>{@code CUBLAS_FP16}: cuBLAS GemmEx with FP16 inputs, FP32 accumulation and output, on tensor
  *       cores (CUDA).
- *   <li>{@code AUTO}: {@code CUBLAS} on a CUDA device, {@code BLOCKED} elsewhere.
+ *   <li>{@code AUTO}: {@code CUBLAS} on a CUDA device; {@code SIMDGROUP} on a Metal device that is
+ *       also TornadoVM's default device (TornadoVM compiles matrix-unit kernels for its default
+ *       backend: run with {@code -Dtornado.metal.priority=100}); {@code BLOCKED} elsewhere.
  * </ul>
  */
 public enum GemmMode {
-    AUTO, TILED, BLOCKED, HALF, CUBLAS, CUBLAS_TF32, CUBLAS_FP16;
+    AUTO, TILED, BLOCKED, HALF, SIMDGROUP, CUBLAS, CUBLAS_TF32, CUBLAS_FP16;
 
     /** Parses {@code tiled}, {@code cublas-fp16} and so on. */
     public static GemmMode parse(String v) {
@@ -46,7 +50,14 @@ public enum GemmMode {
         if (this != AUTO) {
             return this;
         }
-        return device.getTornadoVMBackend() == TornadoVMBackendType.CUDA ? CUBLAS : BLOCKED;
+        if (device.getTornadoVMBackend() == TornadoVMBackendType.CUDA) {
+            return CUBLAS;
+        }
+        if (device.getTornadoVMBackend() == TornadoVMBackendType.METAL && TornadoRuntimeProvider.getTornadoRuntime()
+                .getDefaultDevice().getTornadoVMBackend() == TornadoVMBackendType.METAL) {
+            return SIMDGROUP;
+        }
+        return BLOCKED;
     }
 
     /** Whether the GEMMs run in cuBLAS, which needs the CUDA backend. */

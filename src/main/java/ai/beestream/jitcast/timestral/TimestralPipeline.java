@@ -34,7 +34,7 @@ import ai.beestream.jitcast.host.SignFlip;
  *
  * <p>A series' forecast does not depend on the other series of its batch: rows are right-aligned,
  * so patch boundaries count from the forecast start, and time positions from each series' first
- * observation. Categorical covariates are not supported.
+ * observation. Categorical covariates are target-encoded first ({@link TargetEncoding}).
  */
 public final class TimestralPipeline {
 
@@ -126,16 +126,18 @@ public final class TimestralPipeline {
 
     private List<Forecast> forecastWindow(List<TimeSeries> series, int horizon) {
         for (TimeSeries ts : series) {
-            if ((ts.pastCount() > 0 || ts.futureCount() > 0) && !config.covariateEnabled()) {
+            if (ts.rows() > ts.targets() && !config.covariateEnabled()) {
                 throw new IllegalArgumentException("this checkpoint was not trained with covariates");
             }
-            if (ts.futureCount() > 0 && !config.supportsKnownCovariates()) {
+            if (ts.futureCount() + ts.futureCategoricalCount() > 0 && !config.supportsKnownCovariates()) {
                 throw new IllegalArgumentException("this checkpoint cannot condition on known-future covariates");
             }
         }
-        List<float[][][]> a = forecastRaw(series, horizon, 1f);
+        // categorical covariates become numeric ones, encoded once against the series' own target
+        List<TimeSeries> encoded = series.stream().map(ts -> TargetEncoding.apply(ts, horizon, options.maxContext())).toList();
+        List<float[][][]> a = forecastRaw(encoded, horizon, 1f);
         if (options.symmetricAveraging()) {
-            List<float[][][]> b = forecastRaw(series, horizon, -1f);
+            List<float[][][]> b = forecastRaw(encoded, horizon, -1f);
             for (int s = 0; s < a.size(); s++) {
                 SignFlip.average(a.get(s), b.get(s), complement, horizon);
             }
@@ -334,9 +336,7 @@ public final class TimestralPipeline {
         }
         max = max == Float.NEGATIVE_INFINITY ? 0f : max;
         min = min == Float.POSITIVE_INFINITY ? 0f : min;
-        float[] loc = new float[row.length], scale = new float[row.length];
-        Scaler.causalPatchLocScale(row, mask, config.patchSize(), config.minimumScale(), loc, scale);
-        float s = scale[row.length - 1] * options.capK();
+        float s = Scaler.lastLocScale(row, mask, config.minimumScale())[1] * options.capK();
         return new float[] {min - s, max + s};
     }
 
@@ -419,14 +419,12 @@ public final class TimestralPipeline {
             return;
         }
         int median = config.medianIndex();
-        int t = context[0].length;
         IntStream.range(0, q.length).parallel().forEach(i -> {
             if (role != null && role[i] != BlockInput.TARGET) {
                 return;
             }
-            float[] loc = new float[t], scale = new float[t];
-            Scaler.causalPatchLocScale(context[i], mask[i], ps, config.minimumScale(), loc, scale);
-            float loc0 = loc[t - 1], scale0 = scale[t - 1];
+            float[] last = Scaler.lastLocScale(context[i], mask[i], config.minimumScale());
+            float loc0 = last[0], scale0 = last[1];
             double[][] sinhMedian = new double[nPred][ps];
             for (int j = 0; j < nPred; j++) {
                 for (int s = 0; s < ps; s++) {

@@ -42,7 +42,7 @@ public final class SeriesWindows {
             long tokens = 0;
             while (end < n && end - start < batchSize) {
                 TimeSeries ts = series.get(end);
-                long t = (long) (ts.targets() + ts.pastCount() + ts.futureCount()) * patches;
+                long t = (long) ts.rows() * patches;
                 if (end > start && tokens + t > maxTokens) {
                     break;
                 }

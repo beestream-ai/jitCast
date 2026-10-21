@@ -331,6 +331,128 @@ public final class TimestralKernels {
         }
     }
 
+    /** Threads per work-group of {@link #attentionSoftmax}. */
+    public static final int SOFTMAX_THREADS = 128;
+
+    /**
+     * Copies the q, k and v of the batches {@code b0 .. b0 + count} (batch {@code b = row·heads + head})
+     * from the token-major {@code qkv} into heads-major {@code [b − b0][token][dh]} arrays, for time
+     * attention as batched GEMMs; batches past {@code rows·heads} are zero. One thread per element.
+     */
+    public static void splitHeads(KernelContext ctx, FloatArray qkv, FloatArray qh, FloatArray kh, FloatArray vh, int b0, int count,
+            int rows, int n, int heads, int dh, int d) {
+        int id = ctx.globalIdx;
+        if (id < count * n * dh) {
+            int e = id % dh;
+            int t = (id / dh) % n;
+            int b = b0 + id / (n * dh);
+            float q = 0f;
+            float k = 0f;
+            float v = 0f;
+            if (b < rows * heads) {
+                int base = ((b / heads) * n + t) * 3 * d + (b % heads) * dh + e;
+                q = qkv.get(base);
+                k = qkv.get(base + d);
+                v = qkv.get(base + 2 * d);
+            }
+            qh.set(id, q);
+            kh.set(id, k);
+            vh.set(id, v);
+        }
+    }
+
+    /**
+     * Masked softmax of time-attention scores in place: {@code p [(b − b0)·n + query]·n + key]}, scaled
+     * scores in, probabilities out, 0 where {@code BlockLayout.timeAllowed} forbids the key (the masks
+     * of {@link #timeAttention}). One work-group of {@link #SOFTMAX_THREADS} per (batch, query).
+     */
+    public static void attentionSoftmax(KernelContext ctx, FloatArray p, IntArray keyValid, IntArray known, int b0, int count,
+            int rows, int enc, int ll, int n, int heads) {
+        int wg = ctx.groupIdx;
+        int tid = ctx.localIdx;
+        float[] red = ctx.allocateFloatLocalArray(SOFTMAX_THREADS);
+        int lb = wg / n;
+        int qi = wg - lb * n;
+        int b = b0 + lb;
+        int r = TornadoMath.min(b / heads, rows - 1);
+        int isKnown = known.get(r);
+        int base = (lb * n + qi) * n;
+        float mx = -3.4e38f;
+        for (int k = tid; k < n; k += SOFTMAX_THREADS) {
+            int valid = 0;
+            if (k < enc) {
+                valid = keyValid.get(r * enc + k);
+            }
+            // int masks, not short-circuit conditions (works around a TornadoVM codegen issue)
+            int allowed;
+            if (qi < enc) {
+                int self = k == qi ? 1 : 0;
+                int causal = k <= qi ? 1 : 0;
+                int before = k < enc ? 1 : 0;
+                allowed = before * TornadoMath.max(self, valid * TornadoMath.max(causal, isKnown));
+            } else {
+                int ctxKey = (k < ll ? 1 : 0) * valid;
+                int decKey = (k >= enc ? 1 : 0) * (k <= qi ? 1 : 0);
+                allowed = TornadoMath.max(ctxKey, decKey);
+            }
+            float sc = p.get(base + k);
+            if (allowed != 0) {
+                mx = TornadoMath.max(mx, sc);
+            } else {
+                p.set(base + k, -3.4e38f);
+            }
+        }
+        red[tid] = mx;
+        ctx.localBarrier();
+        for (int s = SOFTMAX_THREADS / 2; s > 0; s /= 2) {
+            if (tid < s) {
+                red[tid] = TornadoMath.max(red[tid], red[tid + s]);
+            }
+            ctx.localBarrier();
+        }
+        float m = red[0];
+        ctx.localBarrier();
+        float sum = 0f;
+        for (int k = tid; k < n; k += SOFTMAX_THREADS) {
+            float sc = p.get(base + k);
+            float e = 0f;
+            if (sc > -3.0e38f) {
+                e = TornadoMath.exp(sc - m);
+            }
+            p.set(base + k, e);
+            sum += e;
+        }
+        red[tid] = sum;
+        ctx.localBarrier();
+        for (int s = SOFTMAX_THREADS / 2; s > 0; s /= 2) {
+            if (tid < s) {
+                red[tid] = red[tid] + red[tid + s];
+            }
+            ctx.localBarrier();
+        }
+        float inv = 1f / red[0];
+        for (int k = tid; k < n; k += SOFTMAX_THREADS) {
+            p.set(base + k, p.get(base + k) * inv);
+        }
+    }
+
+    /**
+     * Writes the heads-major attention outputs {@code oh [(b − b0)·n + token]·dh + j]} of the batches
+     * {@code b0 .. b0 + count} back to {@code out [(row·n + token)·d + head·dh + j]}. One thread per element.
+     */
+    public static void mergeHeads(KernelContext ctx, FloatArray oh, FloatArray out, int b0, int count, int rows, int n, int heads,
+            int dh, int d) {
+        int id = ctx.globalIdx;
+        if (id < count * n * dh) {
+            int e = id % dh;
+            int t = (id / dh) % n;
+            int b = b0 + id / (n * dh);
+            if (b < rows * heads) {
+                out.set(((b / heads) * n + t) * d + (b % heads) * dh + e, oh.get(id));
+            }
+        }
+    }
+
     /** {@code att[i] ·= sigmoid(g[i])} for the first {@code count} elements (the attention output gate). */
     public static void gate(KernelContext ctx, FloatArray att, FloatArray g, int count) {
         int i = ctx.globalIdx;

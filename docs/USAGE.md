@@ -10,55 +10,96 @@ JITCAST="java @$TORNADOVM_HOME/tornado-argfile --add-modules jdk.incubator.vecto
 
 ## From Java
 
+Every model is a `ForecastEngine`: one call forecasts a batch of series, each with its targets and
+optional covariates, and returns quantiles per target.
+
 ```java
-try (ForecastEngine engine = TornadoTiRex2Engine.load(Path.of("tirex2.safetensors"))) {
+try (ForecastEngine engine = TornadoTimestralEngine.load(Path.of("Timestral-5M"))) {   // or TornadoTiRex2Engine
     List<TimeSeries> series = List.of(
-            TimeSeries.univariate(values),                        // float[] history, NaN = missing
-            new TimeSeries(targets, pastCovariates, futureCovariates));  // [V][T], [Vp][T], [Vf][T+H]
-    List<Forecast> forecasts = engine.forecast(series, 64);       // horizon 64
-    float[] median = forecasts.get(0).median(0);                  // values[target][quantile][step]
+            TimeSeries.univariate(values),                                  // float[] history, NaN = missing
+            new TimeSeries(targets, pastCovariates, futureCovariates));     // [V][T], [Vp][T], [Vf][T+H]
+    List<Forecast> forecasts = engine.forecast(series, 64);                 // horizon 64
+    float[] median = forecasts.get(0).median(0);                            // values[target][quantile][step]
+    float[] levels = forecasts.get(0).levels();                             // the model's quantile levels
 }
 ```
 
-`CpuTiRex2Engine` is the same API on the CPU reference. Engine options are JVM properties (`-Dtirex.tornado.*`, see [CONFIGURATION.md](CONFIGURATION.md)), for example:
+| Model | TornadoVM engine | CPU reference | Loads |
+|---|---|---|---|
+| [TiRex-2](models/TIREX2.md) | `tirex2.tornado.TornadoTiRex2Engine` | `tirex2.cpu.CpuTiRex2Engine` | one converted `.safetensors` file |
+| [Timestral](models/TIMESTRAL.md) | `timestral.tornado.TornadoTimestralEngine` | `timestral.cpu.CpuTimestralEngine` | a checkpoint directory (`config.json` + `model.safetensors`) |
+| [Chronos-2](models/CHRONOS2.md) | `chronos2.tornado.TornadoChronos2Engine` | `chronos2.cpu.CpuChronos2Engine` | a checkpoint directory (`config.json` + `model.safetensors`) |
+
+- **Quantiles.** TiRex-2 gives 9 levels (0.1 … 0.9), Timestral 21 (0.01 … 0.99), Chronos-2 its
+  checkpoint's (21 for `chronos-2`, 13 for `chronos-2-small`).
+- **Horizons.** TiRex-2 forecasts up to its checkpoint's future length. Timestral forecasts any
+  horizon, block by block; Chronos-2 any horizon, past 1,024 steps by its long-horizon unrolling.
+- **Batches.** A forecast call is split into forward passes by series count and by a token budget
+  (rows × patches); a series' forecast does not depend on the rest of its batch (except with
+  Chronos-2's cross-learning, which forecasts a batch jointly).
+- **Options.** Engine options are JVM properties ([CONFIGURATION.md](CONFIGURATION.md)), for example:
 
 ```bash
-$JITCAST -Djitcast.tornado.device=0:0 -Dtirex.tornado.gemm=cublas-auto my.App
+$JITCAST -Djitcast.tornado.device=1:0 -Dtimestral.tornado.gemm=cublas my.App
 ```
 
-## Benchmark, cold start and harness server
+## Benchmarks
+
+Each model has a benchmark that times end-to-end `forecast()` on the same inputs as its reference
+engine; the reference side writes the shared workload file.
 
 ```bash
-# the shared benchmark inputs (the same file drives the NXAI baseline)
+# TiRex-2: latency and throughput (univariate batches, multivariate series × covariates)
 python scripts/bench_nxai.py workloads --out workloads.safetensors
-
-# latency and throughput: univariate batches and multivariate series × covariates
 $JITCAST -Dtirex.tornado.gemm=cublas-auto ai.beestream.jitcast.bench.TiRexBench \
     --weights tirex2.safetensors --workloads workloads.safetensors --engine tornado \
     --scenarios throughput,multivariate --batches 1,8,64,512 --mv-batches 1,32 --covariates 15 --out results.jsonl
 
-# cold start: process start → first forecast, split into runtime init, load, first and second forecast
+# TiRex-2: cold start (process start → first forecast) and the harness server for NXAI's Python harnesses
 BENCH_EXEC_START_NS=$(date +%s%N) $JITCAST ai.beestream.jitcast.bench.TiRexColdStart \
     --weights tirex2.safetensors --workloads workloads.safetensors --out cold.jsonl
-
-# forecasts over a local socket, for NXAI's Python harnesses (scripts/tirex_tornado.py is the client)
 $JITCAST ai.beestream.jitcast.bench.TiRexServer --weights tirex2.safetensors --port-file port.txt
+
+# Timestral: 1–512 series, a long horizon, a long context and covariates
+python scripts/timestral/bench_reference.py workloads --out ts-workloads.safetensors
+$JITCAST ai.beestream.jitcast.bench.TimestralBench --checkpoint Timestral-5M \
+    --workloads ts-workloads.safetensors --engine tornado --out timestral.json
+
+# Chronos-2: the Timestral workloads plus a 2,048-step horizon
+python scripts/chronos2/bench_reference.py workloads --out c2-workloads.safetensors
+$JITCAST ai.beestream.jitcast.bench.Chronos2Bench --checkpoint chronos-2 \
+    --workloads c2-workloads.safetensors --engine tornado --out chronos2.json
 ```
 
-`TiRexBench` options: `--engine tornado|cpu`, `--scenarios`, `--batches`, `--mv-batches`, `--covariates`, `--horizon` (64), `--reps` (30), `--warmup` (5), `--budget` (3 s per point), `--max-batch` (1024), `--config` (a label).
-
-Timestral's engines, benchmark and tests are in [TIMESTRAL.md](TIMESTRAL.md).
+`TiRexBench` options: `--engine tornado|cpu`, `--scenarios`, `--batches`, `--mv-batches`,
+`--covariates`, `--horizon` (64), `--reps` (30), `--warmup` (5), `--budget` (3 s per point),
+`--max-batch` (1024), `--config` (a label). `TimestralBench` options: `--engine tornado|cpu`,
+`--scenarios`, `--reps` (20), `--warmup` (3), `--budget` (5 s per point); `Chronos2Bench` takes the
+same. The method and the results are in [PERFORMANCE.md](PERFORMANCE.md).
 
 ## Tests
 
+The CPU references and host pipelines run against goldens recorded from each reference engine; the
+accelerated tests (`*AccelTest`, profile `accel-tests`) run every kernel against its CPU operator
+and the device engines against the goldens. Tests whose goldens are not configured are skipped.
+
 ```bash
-# CPU reference and host pipeline against the goldens (skipped unless both paths are set)
-./mvnw test -Dtirex.weights=tirex2.safetensors -Dtirex.golden=golden-cpu
-# device: each kernel against the CPU operator, and the whole engine against the goldens
-./mvnw test -Paccel-tests -Dtest='*AccelTest' -Djitcast.tornado.device=1:0 \
-    -Dtirex.weights=tirex2.safetensors -Dtirex.golden=golden-cpu -Dtirex.golden.gpu=golden-cuda
+# CPU: every model
+./mvnw test -Dtirex.weights=tirex2.safetensors -Dtirex.golden=golden-cpu \
+    -Dtimestral.checkpoint=Timestral-5M -Dtimestral.golden=golden-5m \
+    -Dchronos2.checkpoint=chronos-2 -Dchronos2.golden=golden-c2
+# device: kernels and engines (in this profile CUDA is backend 0 on machines that also have OpenCL)
+./mvnw test -Paccel-tests -Djitcast.tornado.device=0:0 \
+    -Dtirex.weights=tirex2.safetensors -Dtirex.golden=golden-cpu -Dtirex.golden.gpu=golden-cuda \
+    -Dtimestral.checkpoint=Timestral-5M -Dtimestral.golden=golden-5m \
+    -Dchronos2.checkpoint=chronos-2 -Dchronos2.golden=golden-c2
 ```
 
-FP32 configurations must stay within 1e-4 of the FP32 goldens. Configurations that use FP16 or TF32 anywhere may be, per case, no further from them than NXAI's own GPU path is: `-Dtirex.golden.gpu` points at NXAI's CUDA goldens (`dump_golden.py --device cuda`, recorded on the GPU under test), and without it those checks are skipped. Record both golden sets on the same machine: `dump_golden.py` generates the inputs on the host, and their last bits differ between CPU architectures; the tests check that the two sets have identical inputs.
+| Model | Goldens | Recorded by |
+|---|---|---|
+| TiRex-2 | `-Dtirex.weights`, `-Dtirex.golden` (and `-Dtirex.golden.gpu` for the reduced-precision checks) | `scripts/dump_golden.py`, with NXAI's package: `git clone https://github.com/NX-AI/tirex-2 && pip install -e ./tirex-2` |
+| Timestral | `-Dtimestral.checkpoint`, `-Dtimestral.golden` | `scripts/timestral/dump_golden.py --src <timestral>/src --ckpt <dir> --out <dir>`, from a clone of `mistralai/timestral` |
+| Chronos-2 | `-Dchronos2.checkpoint`, `-Dchronos2.golden` | `scripts/chronos2/dump_golden.py --src <chronos-forecasting>/src --ckpt <dir> --out <dir>`, from a clone of `amazon-science/chronos-forecasting` (with `transformers`, `einops` and `pandas`) |
 
-The goldens come from `scripts/dump_golden.py`, (see [VALIDATION.md](VALIDATION.md)), which needs NXAI's package: `git clone https://github.com/NX-AI/tirex-2 && pip install -e ./tirex-2`.
+The tolerances and what each test checks are in [VALIDATION.md](VALIDATION.md). With cuBLAS, the
+Timestral-209M tests need `-Dtornado.device.memory=40GB` (the profile's default is 8 GB).

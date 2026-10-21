@@ -133,6 +133,9 @@ public final class Chronos2Pipeline {
         int ctx = Math.min(options.contextLength(), config.contextLength());
         List<Prepared> prepared = new ArrayList<>(series.size());
         for (TimeSeries ts : series) {
+            if (ts.hasCategorical()) {
+                throw new IllegalArgumentException("Chronos-2 does not support categorical covariates; encode them as numbers");
+            }
             prepared.add(prepare(ts, horizon, ctx));
         }
         List<Forecast> out = new ArrayList<>(series.size());

@@ -26,9 +26,10 @@ public final class SignFlip {
 
     private SignFlip() {}
 
-    /** The series with every target and covariate value negated. */
+    /** The series with every target and numeric covariate value negated; category codes are kept. */
     public static TimeSeries negate(TimeSeries ts) {
-        return new TimeSeries(neg(ts.target()), neg(ts.pastCovariates()), neg(ts.futureCovariates()));
+        return new TimeSeries(neg(ts.target()), neg(ts.pastCovariates()), neg(ts.futureCovariates()), ts.pastCategorical(),
+                ts.futureCategorical());
     }
 
     private static float[][] neg(float[][] m) {
