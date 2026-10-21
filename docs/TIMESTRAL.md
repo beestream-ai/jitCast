@@ -153,6 +153,31 @@ reference on PyTorch CUDA (FP32), in ms:
   its GEMMs but in the rest of a block (its attention kernels and the host steps), still to profile.
 - FP16 GEMMs change the forecasts (see *Accuracy of the FP16 modes*); FP32 is the default.
 
+### NVIDIA GeForce RTX 5070 Ti
+
+jitcast on CUDA with its default GEMMs (cuBLAS FP32, CUDA graphs) and with cuBLAS FP16, against the
+reference on PyTorch CUDA (FP32, eager), in ms (TornadoVM develop, CUDA 13.0, driver 580). The
+209M FP32 runs keep two block shapes compiled (`-Dtimestral.tornado.plans=2`): with the default
+eight, their device buffers outgrow the card's 16 GB. Every forecast is within 1.5e-5 of the
+reference in FP32.
+
+| Workload | 5M reference | 5M jitcast FP32 | 5M jitcast FP16 | 28M reference | 28M jitcast FP32 | 28M jitcast FP16 | 123M reference | 123M jitcast FP32 | 123M jitcast FP16 | 209M reference | 209M jitcast FP32 | 209M jitcast FP16 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 series | 9.2 | **2.0 (4.5×)** | 1.8 (5.2×) | 10.8 | **3.8 (2.8×)** | 2.4 (4.5×) | 17.5 | **8.7 (2.0×)** | 4.2 (4.2×) | 21.0 | **11.2 (1.9×)** | 5.1 (4.1×) |
+| 8 series | 9.2 | **6.1 (1.5×)** | 3.3 (2.8×) | 13.9 | **9.6 (1.4×)** | 6.8 (2.0×) | 29.2 | **21.9 (1.3×)** | 11.4 (2.6×) | 40.6 | **32.9 (1.2×)** | 15.1 (2.7×) |
+| 32 series | 10.6 | **6.5 (1.6×)** | 4.7 (2.3×) | 22.2 | **18.5 (1.2×)** | 10.7 (2.1×) | 67.6 | **60.1 (1.1×)** | 27.0 (2.5×) | 105.0 | **96.7 (1.09×)** | 39.5 (2.7×) |
+| 128 series | 20.3 | **19.5 (1.04×)** | 14.7 (1.4×) | 71.1 | **63.7 (1.1×)** | 35.8 (2.0×) | 261.3 | **231.8 (1.1×)** | 108.6 (2.4×) | 424.4 | **377.5 (1.1×)** | 162.9 (2.6×) |
+| 512 series | 88.8 | **77.6 (1.1×)** | 60.9 (1.5×) | 339.8 | **247.2 (1.4×)** | 152.0 (2.2×) | 1,219.3 | **953.2 (1.3×)** | 436.4 (2.8×) | 1,940.9 | **1,549.6 (1.3×)** | 659.9 (2.9×) |
+| 1 series, H = 1,024 | 14.6 | **3.3 (4.4×)** | 3.1 (4.7×) | 16.8 | **5.7 (2.9×)** | 3.6 (4.7×) | 23.9 | **10.5 (2.3×)** | 5.7 (4.2×) | 28.0 | **14.3 (2.0×)** | 7.1 (3.9×) |
+| 8 series, 8,192-step context | 11.7 | **10.1 (1.2×)** | 8.9 (1.3×) | 23.8 | **23.0 (1.03×)** | 16.0 (1.5×) | 70.9 | **69.3 (1.02×)** | 36.8 (1.9×) | 109.3 | **108.1 (1.01×)** | 53.3 (2.1×) |
+| 8 series × (2 past + 2 known) | 18.9 | **8.6 (2.2×)** | 5.8 (3.3×) | 47.7 | **22.4 (2.1×)** | 13.4 (3.6×) | 166.3 | **79.1 (2.1×)** | 35.0 (4.7×) | 266.4 | **124.3 (2.1×)** | 53.5 (5.0×) |
+
+- jitcast is faster than the reference on every workload in FP32, by 1.01–4.5×, and in FP16 by
+  1.3–5.2×. The reference's floor of about 9–11 ms per call (launch and Python overhead) dominates
+  small batches.
+- The gains are smallest on the 8,192-step context (1.01–1.2× in FP32), where both engines are
+  bound by the same GEMMs.
+
 ### Apple M4 Pro
 
 The reference's scaler and refine step compute in float64, which PyTorch's MPS backend does not
