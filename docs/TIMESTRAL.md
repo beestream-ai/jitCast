@@ -163,19 +163,19 @@ the reference's CPU and MPS runs:
 
 | Workload | 5M ref. CPU | 5M ref. MPS | 5M jitcast Metal | 28M ref. CPU | 28M ref. MPS | 28M jitcast Metal | 209M ref. CPU | 209M ref. MPS | 209M jitcast Metal |
 |---|---|---|---|---|---|---|---|---|---|
-| 1 series | 10.0 | 14.9 | **5.1 (2.0×)** | 22.8 | 22.8 | **18.0 (1.3×)** | 108.0 | **53.6** | 113.8 (0.47×) |
-| 8 series | 33.6 | 23.1 | **12.3 (1.9×)** | 73.9 | **44.4** | 49.1 (0.90×) | 272.6 | **173.2** | 324.5 (0.53×) |
-| 32 series | 68.9 | 47.6 | **39.7 (1.2×)** | 176.3 | **110.2** | 164.2 (0.67×) | 861.0 | **531.7** | 1,156.9 (0.46×) |
-| 128 series | 184.7 | **121.1** | 139.8 (0.87×) | 560.5 | **388.6** | 627.9 (0.62×) | 3,287.0 | **2,201.9** | 4,577.1 (0.48×) |
-| 512 series | 809.1 | 625.6 | **592.0 (1.06×)** | 2,551.8 | **1,939.4** | 2,494.2 (0.78×) | 12,830.4 | **10,372.6** | 18,226.2 (0.57×) |
-| 1 series, H = 1,024 | 12.0 | 17.9 | **6.7 (1.8×)** | 41.2 | 25.7 | **22.0 (1.2×)** | 125.3 | **55.7** | 139.5 (0.40×) |
-| 8 series, 8,192-step context | 72.9 | 48.9 | **41.0 (1.2×)** | 179.8 | **119.2** | 171.5 (0.69×) | 854.9 | **557.0** | 1,194.0 (0.47×) |
-| 8 series × covariates | 123.8 | 85.7 | **48.4 (1.8×)** | 384.9 | 250.9 | **210.7 (1.2×)** | 1,944.6 | **1,363.6** | 1,500.7 (0.91×) |
+| 1 series | 10.0 | 14.9 | **4.9 (2.0×)** | 22.8 | 22.8 | **13.4 (1.7×)** | 108.0 | **53.6** | 81.8 (0.66×) |
+| 8 series | 33.6 | 23.1 | **10.7 (2.2×)** | 73.9 | 44.4 | **41.9 (1.06×)** | 272.6 | **173.2** | 279.0 (0.62×) |
+| 32 series | 68.9 | 47.6 | **33.2 (1.4×)** | 176.3 | **110.2** | 139.3 (0.79×) | 861.0 | **531.7** | 948.9 (0.56×) |
+| 128 series | 184.7 | 121.1 | **115.6 (1.05×)** | 560.5 | **388.6** | 494.0 (0.79×) | 3,287.0 | **2,201.9** | 3,671.3 (0.60×) |
+| 512 series | 809.1 | 625.6 | **451.0 (1.4×)** | 2,551.8 | **1,939.4** | 1,942.1 (1.00×) | 12,830.4 | **10,372.6** | 13,911.9 (0.75×) |
+| 1 series, H = 1,024 | 12.0 | 17.9 | **6.5 (1.8×)** | 41.2 | 25.7 | **16.9 (1.5×)** | 125.3 | **55.7** | 102.0 (0.55×) |
+| 8 series, 8,192-step context | 72.9 | 48.9 | **37.1 (1.3×)** | 179.8 | **119.2** | 144.1 (0.83×) | 854.9 | **557.0** | 996.8 (0.56×) |
+| 8 series × covariates | 123.8 | 85.7 | **41.1 (2.1×)** | 384.9 | 250.9 | **174.9 (1.4×)** | 1,944.6 | 1,363.6 | **1,184.9 (1.2×)** |
 
-On Metal about 95% of jitcast's device time is in its GEMMs, which reach about half the throughput of
-the matrix multiplications PyTorch's MPS backend calls; FP16 (`half`) does not change that. Closing
-the gap needs a GEMM on Apple's matrix hardware, which TornadoVM's Metal backend does not expose to
-jitcast today.
+On Metal most of jitcast's device time is in its GEMMs. Register-blocked FP32 with conflict-free
+staging (and 64 × 128 tiles from 1,024 rows) reaches about 2 TFLOP/s there, below the matrix
+multiplications PyTorch's MPS backend calls; closing the gap needs a GEMM on Apple's matrix
+hardware, which jitcast's kernels do not use.
 
 ### Reproducing
 

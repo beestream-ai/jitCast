@@ -139,22 +139,22 @@ mode. Speed-ups are over the reference.
 
 jitcast on Metal with its default GEMMs (register-blocked FP32), against the reference on the CPU
 and on MPS (its forecasts there match the CPU run within 9e-6), in ms; the fastest of each row in
-bold. Measured before the time attention took blocks of keys:
+bold:
 
 | Workload | small ref. CPU | small ref. MPS | small jitcast Metal | base ref. CPU | base ref. MPS | base jitcast Metal |
 |---|---|---|---|---|---|---|
-| 1 series | 16.2 | **8.3** | 8.5 | 45.1 | **19.8** | 30.8 |
-| 8 series | 39.9 | **31.5** | 34.3 | 129.3 | **103.2** | 157.9 |
-| 32 series | 115.6 | **81.3** | 121.6 | 414.5 | **302.5** | 552.9 |
-| 128 series | 457.6 | **328.0** | 476.2 | 1,720.4 | **1,202.8** | 2,166.6 |
-| 512 series | 1,942.7 | **1,514.5** | 1,878.3 | 7,133.4 | **5,494.1** | 8,530.0 |
-| 1 series, H = 1,024 | 18.1 | **10.0** | 10.2 | 48.3 | **25.8** | 39.4 |
-| 1 series, H = 2,048 (unrolled) | 91.0 | **66.8** | 90.0 | 308.9 | **222.4** | 381.0 |
-| 8 series, 8,192-step context | 127.3 | **106.2** | 149.0 | 479.3 | **387.4** | 644.4 |
-| 8 series × (2 past + 2 known) | 143.8 | **101.9** | 150.5 | 547.9 | **379.4** | 688.8 |
+| 1 series | 16.2 | **8.3** | 8.6 | 45.1 | **19.8** | 30.0 |
+| 8 series | 39.9 | **31.5** | 34.4 | 129.3 | **103.2** | 151.4 |
+| 32 series | 115.6 | **81.3** | 123.6 | 414.5 | **302.5** | 542.4 |
+| 128 series | 457.6 | **328.0** | 476.8 | 1,720.4 | **1,202.8** | 2,112.2 |
+| 512 series | 1,942.7 | **1,514.5** | 1,891.8 | 7,133.4 | **5,494.1** | 8,505.4 |
+| 1 series, H = 1,024 | 18.1 | **10.0** | 10.1 | 48.3 | **25.8** | 36.9 |
+| 1 series, H = 2,048 (unrolled) | 91.0 | **66.8** | 90.2 | 308.9 | **222.4** | 360.0 |
+| 8 series, 8,192-step context | 127.3 | **106.2** | 141.1 | 479.3 | **387.4** | 580.9 |
+| 8 series × (2 past + 2 known) | 143.8 | **101.9** | 157.2 | 547.9 | **379.4** | 680.6 |
 
 On Apple silicon the reference on MPS is faster than jitcast on every workload, by 1.0–1.5× on
-`chronos-2-small` and 1.5–1.8× on `chronos-2`. TornadoVM's profiler
+`chronos-2-small` and 1.4–1.8× on `chronos-2`. TornadoVM's profiler
 (`-Dchronos2.tornado.profile=true`) puts about 90% of jitcast's device time in the GEMMs and 6% in
 the attention kernels, with the device busy for about 94% of the wall time (`chronos-2`, 32
 series). The register-blocked FP32 GEMMs reach about 2 TFLOP/s on these shapes (2.15 for the
