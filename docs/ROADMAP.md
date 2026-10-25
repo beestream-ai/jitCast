@@ -49,7 +49,6 @@ Planned work on jitcast, and the TornadoVM issues that limit it today. The curre
    - Lower host memory: drop the host weight copies after upload, or map them straight from the
      safetensors file.
    - TiRex-2: re-check the server's restart guard (`--max-shapes`) on TornadoVM 7.1.0.
-   - Timestral: categorical covariates (target encoding on the host, as in the reference).
 
 ## Evaluation
 
