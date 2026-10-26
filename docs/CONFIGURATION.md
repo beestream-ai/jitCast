@@ -80,9 +80,9 @@ These are TiRex-2's modes; Timestral's are [below](#timestral).
 
 | Platform | Recommended flags | Why |
 |---|---|---|
-| **NVIDIA** (tested: A100) | `-Dtirex.tornado.gemm=cublas-auto` (CUDA graphs are the default), plus the cuBLAS 13 shim on machines that also have CUDA 12 cuBLAS | The fastest configuration: cuBLAS FP16 tensor-core GEMMs |
+| **NVIDIA** (tested: A100, A10) | `-Dtirex.tornado.gemm=cublas-auto` (CUDA graphs are the default), plus, with TornadoVM 7.3.1 or earlier, the cuBLAS 13 shim on machines that also have CUDA 12 cuBLAS | The fastest configuration: cuBLAS FP16 tensor-core GEMMs |
 | NVIDIA, closest to FP32 | `-Dtirex.tornado.gemm=cublas -Dtirex.tornado.slstmR=fp32` | FP32 GEMMs; slower than `cublas-auto` at large batches, where the FP16 tensor-core GEMMs pay off |
-| NVIDIA, no vendor libraries | `-Dtirex.tornado.gemm=half`, or `cutile` (toolkit 13.3+; it does not run on the A100 with TornadoVM 7.1.0 yet) | TornadoVM's own FP16 GEMM |
+| NVIDIA, no vendor libraries | `-Dtirex.tornado.gemm=cutile` (TornadoVM `develop`, toolkit 13.3+), or `half` | TornadoVM's own FP16 GEMMs; `cutile` on tensor cores is 2.3× faster than `half` at one series on an A10 |
 | **Apple Silicon** (tested: M4 Pro), Metal or OpenCL | `-Dtirex.tornado.gemm=half`, on either backend | `half` is faster than `tiled` from small batches up; Metal and OpenCL run the same kernels |
 | NVIDIA with OpenCL | `-Dtirex.tornado.gemm=half` | Works, but use CUDA where you can: OpenCL `half` is slower than CUDA `half` and has no vendor libraries or CUDA graphs |
 | Other OpenCL devices | `-Dtirex.tornado.gemm=half` (or `tiled` for FP32) | Portable; not tuned |
@@ -90,7 +90,7 @@ These are TiRex-2's modes; Timestral's are [below](#timestral).
 
 ### Kernel choices by device
 
-The register-resident sLSTM kernel (`slstmR=fp16-reg`) needs 512 threads per work-group with up to 128 registers each, and whether the compiler fits it depends on the GPU: it does for CUDA compute capability 12 and Apple GPUs, not for an A100 (sm_80), where CUDA refuses to launch it (`CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES`) and NVIDIA's OpenCL returns wrong results without an error. The default, `slstmR=auto`, therefore uses it only on CUDA devices of compute capability 12 and up and on Apple GPUs, and the streamed FP16 kernel elsewhere; OpenCL does not report the compute capability, so on other OpenCL devices it stays with the streamed kernel. Setting `slstmR` explicitly overrides this. `cutile` does not run on the A100 with TornadoVM 7.1.0: TornadoVM fails to parse `TileContext.checkShape` ("Unable to build sketch for method: gemmHalfTile").
+The register-resident sLSTM kernel (`slstmR=fp16-reg`) needs 512 threads per work-group with up to 128 registers each, and whether the compiler fits it depends on the GPU: it does for CUDA compute capability 12 and Apple GPUs, not for an A100 (sm_80), where CUDA refuses to launch it (`CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES`) and NVIDIA's OpenCL returns wrong results without an error. The default, `slstmR=auto`, therefore uses it only on CUDA devices of compute capability 12 and up and on Apple GPUs, and the streamed FP16 kernel elsewhere; OpenCL does not report the compute capability, so on other OpenCL devices it stays with the streamed kernel. Setting `slstmR` explicitly overrides this. `cutile` needs TornadoVM `develop`: releases up to 7.3.1 fail to parse `TileContext.checkShape` ("Unable to build sketch for method: gemmHalfTile").
 
 Some kernels adapt to the device's maximum work-group size (for example 256 on OpenCL on macOS, 1024 on Metal and CUDA). The fused sLSTM norm kernel needs 512 threads and is skipped on smaller devices.
 

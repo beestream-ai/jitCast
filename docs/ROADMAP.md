@@ -53,8 +53,8 @@ Planned work on jitcast, and the TornadoVM issues that limit it today. The curre
 ## Evaluation
 
 - TiRex-2: re-measure Metal and OpenCL on TornadoVM 7.1.0; GIFT-Eval parity in multivariate mode.
-- CUDA Tile (`cutile`), once TornadoVM can compile it, and then tuning its GEMM: it was about 5×
-  slower than cuBLAS per GEMM when it last ran.
+- CUDA Tile (`cutile`): tuning its GEMM. It runs on TornadoVM `develop`, at 0.5–0.9× the speed of
+  `cublas-auto` on an A10, and its first call per shape compiles for about 40 s.
 - `torch.compile` baselines for Timestral (the current reference runs are eager).
 - Chronos-2: the A100, and Metal with the simdgroup GEMMs (its Apple silicon numbers are on the
   portable GEMMs).
@@ -63,14 +63,15 @@ Planned work on jitcast, and the TornadoVM issues that limit it today. The curre
 
 | Issue | Effect on jitcast | Workaround in jitcast |
 |---|---|---|
-| The Tile API's `TileContext.checkShape` cannot be compiled into a kernel (its message uses string concatenation) | `gemm=cutile` fails on TornadoVM 7.1.0 | use `cublas-auto` or `half` |
+| The Tile API's `TileContext.checkShape` cannot be compiled into a kernel (its message uses string concatenation) | `gemm=cutile` fails on TornadoVM 7.3.1 and earlier; fixed on `develop` | use `develop`, or `cublas-auto` or `half` |
+| On `develop`, an assertion in the runtime (`TornadoVMInterpreter.rewindBufferToBegin`) fails for any device but a backend's first | the accelerated tests fail on a second GPU when assertions are on (the results are correct) | run the tests on the first device, or with `-DenableAssertions=false` |
 | Device numbering differs between JVMs launched with and without the test profile, on SDKs with several backends | the accelerated tests can pick a different backend than the benchmarks | set `-Djitcast.tornado.device` per JVM (`TEST_CUDA_DEVICE` in the evaluation scripts) |
 | A kernel that cannot launch for lack of registers fails silently on NVIDIA's OpenCL | wrong results instead of an error | `slstmR=auto` avoids the register-resident sLSTM kernel there |
 | Metal's dispatch spin wait | up to 2× slower on Metal | jitcast turns it off by default |
-| Simdgroup matrices that meet after an if/else are merged wrongly (Metal): the copy from one branch runs on every path | a kernel that keeps its accumulators across such a join gets the other branch's values | `gemmSimdgroupWide` stores each branch's accumulators to threadgroup memory before the join |
+| Simdgroup matrices that meet after an if/else are merged wrongly (Metal): the copy from one branch runs on every path | a kernel that keeps its accumulators across such a join gets the other branch's values (TornadoVM 7.3.1 and earlier; fixed on `develop`) | `gemmSimdgroupWide` stores each branch's accumulators to threadgroup memory before the join |
 | No float64 on Apple GPUs | statistics that need float64 run on the host | Timestral's scaler and refine step run on the host |
 | Fast math folds NaN checks away (Metal) | in-kernel NaN tests do not work | the host uploads NaN as 0 plus a mask |
-| The cuBLAS provider prefers CUDA 12 libraries over CUDA 13 | slow fallback GEMM kernels on newer GPUs | a library shim directory ([INSTALL.md](INSTALL.md#nvidia-extras)) |
+| The cuBLAS provider prefers CUDA 12 libraries over CUDA 13 | slow fallback GEMM kernels on newer GPUs (TornadoVM 7.3.1 and earlier; fixed on `develop`) | a library shim directory ([INSTALL.md](INSTALL.md#nvidia-extras)) |
 | cuBLAS library tasks take whole arrays, with no element offsets | each GEMM weight needs its own array (about 300 MB extra) | separate weight arrays |
 | No device buffers shared across execution plans | weights are uploaded once per cached plan | fewer cached plans (`--plans`) |
 | Grid sizes are not checked against device limits, and errors lose their cause | launch failures are hard to diagnose | — |

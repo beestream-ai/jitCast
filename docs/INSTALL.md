@@ -7,8 +7,12 @@
 - **JDK 22 or newer.** jitcast is tested with JDK 25. It builds with `--release 22` and uses
   TornadoVM's `jdk22plus` SDK family.
 - **A TornadoVM SDK**, version 7.3.1 or newer, for the backend you want (jitcast builds against
-  the 7.3.1 API, and Timestral's Metal GEMMs use its simdgroup matrices). TiRex-2 was validated and
-  benchmarked on the 7.1.0 release; Timestral on TornadoVM's `develop` branch (7.3.2-dev).
+  the 7.3.1 API, and Timestral's Metal GEMMs use its simdgroup matrices).
+- **Recommended: TornadoVM's `develop` branch (7.3.2-dev)**, which compiles kernels with TC, TornadoVM's
+  own compiler, in place of Graal. Every model passes its golden tests on it, it is up to 1.36× faster
+  than 7.3.1 at small batches, and it runs the CUDA Tile GEMM (`cutile`) that 7.3.1 cannot compile
+  ([PERFORMANCE.md](PERFORMANCE.md#tornadovm-develop-against-731)). It has no prebuilt SDK yet: build it
+  as below.
 - **Python 3.11+ with PyTorch**, only for converting TiRex-2 checkpoints, recording goldens and running
   the reference engines as baselines. Create the venv with that interpreter (`python3.11 -m venv`): a
   plain `python3` can be older.
@@ -41,7 +45,7 @@ jitcast with:
 ```bash
 git clone --depth 1 -b develop https://github.com/beehive-lab/TornadoVM && cd TornadoVM   # or -b v7.3.1
 python3 -m venv .venv && . .venv/bin/activate && pip install requests tqdm
-export JVMCI_SOURCE_JDK=<a JDK 21 home>         # the jdk22plus SDK bundles a JVMCI module built from JDK 21
+export JVMCI_SOURCE_JDK=<a JDK 21 home>         # releases up to 7.3.1 only: they bundle a JVMCI module built from JDK 21
 make jdk22plus BACKEND=cuda,opencl              # or BACKEND=metal,opencl on macOS
 export TORNADOVM_HOME=$(ls -d dist/*/tornadovm-*)
 $TORNADOVM_HOME/bin/tornado --devices
@@ -64,12 +68,14 @@ Metal `1:0`, with the portable register-blocked GEMMs. A backend's priority is
 
 ### NVIDIA extras
 
-- **cuBLAS 13 on Blackwell.** TornadoVM's cuBLAS provider loads `libcublas.so.12` first. If a CUDA 12.0
+- **cuBLAS 13 on Blackwell** (TornadoVM 7.3.1 and earlier; `develop` loads the newest CUDA libraries
+  first and needs no shim). TornadoVM's cuBLAS provider loads `libcublas.so.12` first. If a CUDA 12.0
   cuBLAS is installed next to CUDA 13, it silently runs generic, non-tensor-core kernels on sm_120.
   Point `LD_LIBRARY_PATH` at a directory where `lib{cublas,cublasLt,cudart}.so.12` link to the CUDA 13
   libraries; `scripts/eval/cublas13_shim.sh <dir>` builds such a shim, and `scripts/eval/tornado_run.sh`
   uses it when `CUBLAS_SHIM=<dir>` is set.
-- **CUDA Tile (`cutile`)** needs toolkit 13.3+. A user-space install is enough:
+- **CUDA Tile (`cutile`)** needs TornadoVM `develop` (7.3.1 fails to compile its GEMM) and toolkit
+  13.3+. A user-space install is enough:
   `pip install 'cuda-tile[tileiras]'` into a venv, then pass
   `-Dtornado.cuda.nvcc=<venv>/lib/python3.*/site-packages/nvidia/cu13/bin/nvcc`. The first run
   compiles each GEMM task with `tileiras`, which takes 2–3 minutes per plan layout; after that the CUDA

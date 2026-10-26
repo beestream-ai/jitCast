@@ -39,7 +39,7 @@ one Java API.
 
 | Platform | Backend | TiRex-2 | Timestral | Chronos-2 |
 |---|---|---|---|---|
-| NVIDIA GPU | CUDA | validated, benchmarked (A100) | validated, benchmarked (A100, RTX 5070 Ti) | validated, benchmarked (RTX 5070 Ti) |
+| NVIDIA GPU | CUDA | validated, benchmarked (A100, A10) | validated, benchmarked (A100, RTX 5070 Ti, A10) | validated, benchmarked (RTX 5070 Ti, A10) |
 | NVIDIA GPU | OpenCL | validated (A100) | validated (A100) | not tested |
 | Apple Silicon | Metal or OpenCL | validated (M4 Pro) | validated, benchmarked (M4 Pro) | validated, benchmarked (M4 Pro) |
 | Other OpenCL GPUs (Intel, AMD) | OpenCL | expected to work, not tested | expected to work, not tested | expected to work, not tested |
@@ -50,7 +50,8 @@ The options and the recommended flags per platform are in [docs/CONFIGURATION.md
 ## Quick start
 
 You need JDK 22+ and a TornadoVM SDK (7.3.1 or newer, `jdk22plus` family); the full guide is in
-[docs/INSTALL.md](docs/INSTALL.md).
+[docs/INSTALL.md](docs/INSTALL.md). TornadoVM's `develop` branch, with its new TC compiler, is
+recommended: up to 1.36× faster at small batches, and it runs the CUDA Tile GEMM.
 
 ```bash
 # 1. a JDK and TornadoVM (or download an SDK from tornadovm.org/downloads)
