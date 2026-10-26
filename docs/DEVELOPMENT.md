@@ -76,7 +76,7 @@ golden tests read their paths from system properties and are skipped when those 
 |---|---|
 | **TiRex-2** | |
 | `convert_ckpt.py` | `model.ckpt` + `model-config.yaml` → one `tirex2.safetensors` (FP32, aliases removed, config in the metadata) |
-| `spec_forward.py` | An explicit PyTorch spec of `forward()` (basic ops only, no xlstm/flashrnn) checked stage by stage against the goldens; the Java reference is a port of it |
+| `spec_forward.py` | An explicit PyTorch spec of `forward()` (basic ops only, no mLSTM or FlashRNN kernels) checked stage by stage against the goldens; the Java reference is a port of it |
 | `dump_golden.py` | Runs the NXAI model on 13 cases and saves the inputs, the batch passed to `forward()`, the activations of every stage, the raw model output and the final forecasts |
 | `bench_nxai.py` | NXAI baseline: `workloads` (shared inputs), `run` (latency/throughput, e2e + forward-only), `coldstart` |
 | `setup_reference.sh` | The whole reference setup on a CUDA machine, in a work directory: venv, CUDA-kernel check, conversion, CPU + CUDA goldens, NXAI baseline, cold start |

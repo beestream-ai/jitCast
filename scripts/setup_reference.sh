@@ -18,7 +18,9 @@
 #
 #   setup_reference.sh <workdir>
 #
-# PYTHON picks the interpreter (default python3.11), TORCH_INDEX the PyTorch wheel index (default CUDA 13.0).
+# PYTHON picks the interpreter (default python3.11), TORCH_INDEX the PyTorch wheel index (default CUDA 13.0),
+# TIREX_REF the tirex-2 tag or commit (default v0.4.0). Triton builds a C helper, so the interpreter needs its
+# development headers (a uv-managed Python has them).
 # Re-runnable: each step skips work that is already done. Results land in <workdir>/results; the work
 # directory is then the one scripts/eval/acc_setup.sh, eval_nvidia.sh and acc_run.sh take.
 set -euo pipefail
@@ -27,6 +29,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 WORK="${1:?usage: setup_reference.sh <workdir>}"; mkdir -p "$WORK"; WORK=$(cd "$WORK" && pwd)
 PY="${PYTHON:-python3.11}"
 TORCH_INDEX="${TORCH_INDEX:-https://download.pytorch.org/whl/cu130}"
+TIREX_REF="${TIREX_REF:-v0.4.0}"
 mkdir -p "$WORK/results"
 cd "$WORK"
 
@@ -47,6 +50,7 @@ if ! python -c "import tirex2" 2>/dev/null; then
     pip install -q --upgrade pip
     pip install -q torch --index-url "$TORCH_INDEX"
     [ -d tirex-2 ] || git clone -q https://github.com/NX-AI/tirex-2
+    git -C tirex-2 checkout -q "$TIREX_REF"
     pip install -q -e ./tirex-2 safetensors pytest
 fi
 
@@ -55,13 +59,13 @@ fi
     echo "host: $(hostname)"
     nvidia-smi --query-gpu=name,driver_version,memory.total,compute_cap --format=csv,noheader
     nvcc --version | tail -1
-    python -c "import torch,triton,flashrnn,xlstm,tirex2;print('torch',torch.__version__,'cuda',torch.version.cuda,'triton',triton.__version__)"
-    pip list 2>/dev/null | grep -i -E '^(torch|triton|xlstm|flashrnn|tirex-2|numpy) '
+    python -c "import torch,triton,flashrnn,tirex2;print('torch',torch.__version__,'cuda',torch.version.cuda,'triton',triton.__version__)"
+    pip list 2>/dev/null | grep -i -E '^(torch|triton|xlstm|mlstm.kernels|flashrnn|tirex-2|numpy) '
     (cd tirex-2 && echo "tirex-2 commit: $(git rev-parse --short HEAD)")
 } | tee results/env.txt
 
 # 2. Do the NXAI CUDA kernels build and run on this GPU? ------------------------------------
-# FlashRNN compiles its fused sLSTM kernel with nvcc on first use; mLSTM uses xlstm's Triton kernels.
+# FlashRNN compiles its fused sLSTM kernel with nvcc on first use; mLSTM uses Triton kernels (mlstm_kernels; xlstm before tirex-2 0.4.0).
 log "CUDA kernel check (FlashRNN nvcc build + Triton mLSTM)"
 python - <<'EOF' 2>&1 | tee results/cuda_kernel_check.txt
 import time, torch
