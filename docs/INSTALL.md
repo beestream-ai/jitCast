@@ -15,7 +15,9 @@
   as below.
 - **Python 3.11+ with PyTorch**, only for converting TiRex-2 checkpoints, recording goldens and running
   the reference engines as baselines. Create the venv with that interpreter (`python3.11 -m venv`): a
-  plain `python3` can be older.
+  plain `python3` can be older. NXAI's Triton kernels compile a C helper, so the interpreter needs its
+  development headers (`Python.h`); a distribution Python without them fails at the first CUDA
+  forecast, and a uv-managed one (`uv python install 3.12`) has them.
 
 ## Install TornadoVM
 

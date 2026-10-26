@@ -22,6 +22,7 @@ The kernels every model family uses are in [`Kernels.java`](../src/main/java/ai/
 | [`gemmHalfTile`](../src/main/java/ai/beestream/jitcast/tornado/Kernels.java#L767) | The FP16 GEMM in the CUDA Tile API (`mma` on tensor cores, masked tiles) | is itself the CUDA-only variant |
 | [`rmsNorm`](../src/main/java/ai/beestream/jitcast/tornado/Kernels.java#L792) | RMSNorm per row; FP16 twin | — |
 | [`swiGlu`](../src/main/java/ai/beestream/jitcast/tornado/Kernels.java#L820) | `SiLU(gate) · up` for the fused up-gate projection; FP16 twin | — |
+| [`swiGluHalf`](../src/main/java/ai/beestream/jitcast/tornado/Kernels.java#L835) | `swiGlu` on FP16 input and output, computed in FP32 (TiRex-2's FFN with `ffnHalf`) | — |
 | [`addInPlace`](../src/main/java/ai/beestream/jitcast/tornado/Kernels.java#L846) | Residual add | — |
 | [`biasFill`](../src/main/java/ai/beestream/jitcast/tornado/Kernels.java#L854) | Writes the bias into C before a cuBLAS GEMM with β = 1 | helper for the cuBLAS path |
 | [`siluInPlace`](../src/main/java/ai/beestream/jitcast/tornado/Kernels.java#L863) | SiLU after a cuBLAS GEMM; FP16 twin | helper for the cuBLAS path |

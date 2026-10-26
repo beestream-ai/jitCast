@@ -13,8 +13,10 @@ Planned work on jitcast, and the TornadoVM issues that limit it today. The curre
 2. **Further candidates**: TimesFM, Toto, Moirai 2, TTM, Sundial, checked against the GIFT-Eval
    leaderboard and each model's weight licence before porting.
 3. **GIFT-Eval parity for Timestral** (fev-bench is done: [VALIDATION.md](VALIDATION.md#timestral)).
-4. **Timestral's long-context attention**: its time attention walks the keys one at a time, which
-   makes the longest fev-bench tasks slower than in PyTorch. Chronos-2's time attention takes blocks of
+4. **Timestral's long-context attention**: its time attention kernel walks the keys one at a time,
+   which makes the longest fev-bench tasks slower than in PyTorch. On CUDA, small batches of long rows
+   already go to cuBLAS batched GEMMs (`timestral.tornado.attention`); the kernel is used everywhere
+   else. Chronos-2's time attention takes blocks of
    32 keys with register tiles, 2.6× faster than one key at a time on 517-token rows; the same
    structure would apply to Timestral's kernel.
 
@@ -35,12 +37,12 @@ Planned work on jitcast, and the TornadoVM issues that limit it today. The curre
 4. **One plan for every batch size.** Each new batch shape builds its own plan (kernel compilation,
    buffer allocation, weight upload, CUDA graph capture: 0.4–2 s), and `TiRexServer` restarts after
    `--max-shapes` shapes. Allocating the buffers once for the largest batch and passing the row count
-   at run time removes the rebuilds; padding Timestral's contexts with leading empty patches to shared
-   sizes would do the same for its block shapes.
+   at run time removes the rebuilds. Timestral already pads its block shapes to shared sizes
+   (`timestral.tornado.buckets`), which bounds its plans without removing the rebuilds.
 5. **Share the weights across plans.** Every cached plan uploads its own weights (about 630 MB for
    TiRex-2), which limits how many large plans fit on a GPU. This needs device buffers shared across
    TornadoVM execution plans (see below).
-6. **Sign-flip TTA in one batch.** Both models forecast the series and its negation as two forward
+6. **Sign-flip TTA in one batch.** TiRex-2 and Timestral forecast the series and its negation as two forward
    passes; concatenating them into one halves the kernel launches.
 7. **Faster portable FP16 GEMM** (`half`): vectorised half2 loads, a larger K slice, double buffering.
 8. **Smaller items.**
@@ -48,11 +50,11 @@ Planned work on jitcast, and the TornadoVM issues that limit it today. The curre
      `cublas-auto`).
    - Lower host memory: drop the host weight copies after upload, or map them straight from the
      safetensors file.
-   - TiRex-2: re-check the server's restart guard (`--max-shapes`) on TornadoVM 7.1.0.
+   - TiRex-2: re-check the server's restart guard (`--max-shapes`) on TornadoVM `develop`.
 
 ## Evaluation
 
-- TiRex-2: re-measure Metal and OpenCL on TornadoVM 7.1.0; GIFT-Eval parity in multivariate mode.
+- TiRex-2: re-measure Metal and OpenCL on TornadoVM `develop`; GIFT-Eval parity in multivariate mode.
 - CUDA Tile (`cutile`): tuning its GEMM. It runs on TornadoVM `develop`, at 0.5–0.9× the speed of
   `cublas-auto` on an A10, and its first call per shape compiles for about 40 s.
 - `torch.compile` baselines for Timestral (the current reference runs are eager).

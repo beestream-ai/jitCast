@@ -10,7 +10,7 @@ has its own, with its own prefix (`tirex.*`, `timestral.*`, `chronos2.*`).
 | Property | Values (default first) | Effect |
 |---|---|---|
 | `jitcast.tornado.device` | `<backend>:<device>` (TornadoVM's default device) | Device to run on, numbered as in `tornado --devices` |
-| `tornado.metal.dispatch.spinWait` (TornadoVM) | `False` (set by jitcast unless given) | TornadoVM develop's Metal backend spin-waits up to 1 ms on each dispatch before it blocks. A forward pass runs dozens of kernels per task graph, so the waits outlast the spin and jitcast runs up to 2× slower on Metal; jitcast turns it off. Code that calls TornadoVM before creating a TiRex-2 engine should call `tirex2.tornado.TornadoForward.tornadoDefaults()` first |
+| `tornado.metal.dispatch.spinWait` (TornadoVM) | `False` (set by jitcast unless given) | TornadoVM's Metal backend spin-waits up to 1 ms on each dispatch before it blocks. A forward pass runs dozens of kernels per task graph, so the waits outlast the spin and jitcast runs up to 2× slower on Metal; jitcast turns it off. Code that calls TornadoVM before creating a TiRex-2 engine should call `tirex2.tornado.TornadoForward.tornadoDefaults()` first |
 | `tornado.cuda.host.pinning` (TornadoVM) | `True`; `False` in `TiRexServer` | Pinned host buffers for transfers. Applications that keep several plans alive and evict them often (such as `TiRexServer`) should turn it off: on TornadoVM's CUDA backend that churn can make device allocations fail, and it gave no speed-up on fev-bench |
 
 TornadoVM properties used alongside: `tornado.device.memory` (device heap, e.g. `15GB`),
@@ -20,7 +20,7 @@ TornadoVM properties used alongside: `tornado.device.memory` (device heap, e.g. 
 
 | Hardware | TornadoVM backend | TiRex-2 | Timestral | Chronos-2 |
 |---|---|---|---|---|
-| NVIDIA GPU | CUDA | validated and benchmarked (A100) | validated and benchmarked (A100, RTX 5070 Ti) | validated and benchmarked (RTX 5070 Ti) |
+| NVIDIA GPU | CUDA | validated and benchmarked (A100, A10) | validated and benchmarked (A100, RTX 5070 Ti, A10) | validated and benchmarked (RTX 5070 Ti, A10) |
 | NVIDIA GPU | OpenCL | validated (A100) | validated (A100) | not tested |
 | Apple Silicon GPU | Metal | validated (M4 Pro) | validated and benchmarked (M4 Pro) | validated and benchmarked (M4 Pro) |
 | Apple Silicon GPU | OpenCL | validated (M4 Pro) | validated and benchmarked (M4 Pro) | validated (M4 Pro) |
@@ -36,7 +36,7 @@ The CPU engines are the references the device kernels are validated against, not
 | cuBLAS: `cublasSgemm`, `cublasSgemmTF32` | FP32 / TF32 GEMMs | `tirex.tornado.gemm` / `timestral.tornado.gemm` / `chronos2.tornado.gemm` = `cublas`, `cublas-tf32` | CUDA backend; `tornado-cublas` in the SDK |
 | cuBLAS: `cublasGemmEx` (FP16 in, FP32 or FP16 out) | FP16 tensor-core GEMMs | `cublas-fp16` (all), `cublas-auto` (TiRex-2) | cuBLAS 13 on Blackwell (see [INSTALL.md](INSTALL.md#nvidia-extras)) |
 | cuBLASLt: `ltMatmulFP16` | FP16 GEMMs | `-Dtirex.tornado.fp16Kernel=lt-h16` (TiRex-2) | as above |
-| CUDA Tile (`TileContext`) | FP16 GEMM on tensor cores, written in TornadoVM | `-Dtirex.tornado.gemm=cutile` (TiRex-2) | CUDA Toolkit 13.3+ (`tileiras`), compute capability 8.0+, driver R580+ |
+| CUDA Tile (`TileContext`) | FP16 GEMM on tensor cores, written in TornadoVM | `-Dtirex.tornado.gemm=cutile` (TiRex-2) | TornadoVM `develop`, CUDA Toolkit 13.3+ (`tileiras`), compute capability 8.0+, driver R580+ |
 | CUDA graphs | replaying the plan's task graph | `tirex.tornado.cudaGraph`, `timestral.tornado.cudaGraph`, `chronos2.tornado.cudaGraph` (on by default with cuBLAS) | CUDA backend |
 | cuDNN | — | not used | — |
 
@@ -109,6 +109,7 @@ Some kernels adapt to the device's maximum work-group size (for example 256 on O
 | `timestral.tornado.blasAttentionMinTokens` | `128` | The fewest tokens per row (patches of context plus horizon) that use the cuBLAS time attention under `auto` |
 | `timestral.tornado.blasAttentionMaxRows` | `8` | The most rows (series × variates) a block may have to use the cuBLAS time attention under `auto` |
 | `timestral.tornado.attentionScoreBytes` | `536870912` (512 MB) | The most memory the cuBLAS time attention's scores take at once; larger blocks run in chunks of (row, head) batches |
+| `timestral.tornado.buckets` | `true`, `false` | Pad each block to a shared shape (the context with leading empty patches, the rows with empty series, each by at most a quarter), so that few plans are compiled; the forecasts do not change |
 | `timestral.tornado.plans` | `8` | Block shapes kept compiled (rows, encoder tokens, horizon patches, covariates); least recently used are evicted |
 | `timestral.tornado.planBytes` | `8589934592` (8 GiB) | The most host memory the cached plans' buffers take together; the least recently used plans are evicted until a new plan fits, and a plan larger than this still runs alone |
 | `timestral.tornado.profile` | `false`, `true` | Print TornadoVM's per-task kernel times after every execution (analysis only) |
@@ -123,7 +124,7 @@ clipping, with the reference's defaults.
 
 | Platform | Recommended flags | Why |
 |---|---|---|
-| **NVIDIA** (tested: A100) | the defaults (`auto`: cuBLAS FP32 with CUDA graphs) | Matches the reference to 1e-5 and is faster than it from 1 to 512 series on every checkpoint tried |
+| **NVIDIA** (tested: A100, A10, RTX 5070 Ti) | the defaults (`auto`: cuBLAS FP32 with CUDA graphs) | Matches the reference to 1e-5 and is faster than it from 1 to 512 series on every checkpoint tried |
 | NVIDIA, fastest | `-Dtimestral.tornado.gemm=cublas-fp16` | 3–4× faster again on Timestral-209M from 32 series up; forecasts move by up to 1e-2 of the series' range (see [VALIDATION.md](VALIDATION.md#timestral)) |
 | **Apple Silicon** (tested: M4 Pro) | the defaults on Metal, with `-Dtornado.metal.priority=100` (`auto`: `simdgroup`) | The simdgroup GEMMs are 2–4× faster than the portable `blocked` ones on the larger checkpoints; Metal is faster than OpenCL on Apple GPUs |
 | Other OpenCL devices | the defaults | Portable; not tuned |
@@ -151,7 +152,7 @@ defaults; `withBatchSize` sets the rows per batch (256).
 
 | Platform | Recommended flags | Why |
 |---|---|---|
-| **NVIDIA** (tested: RTX 5070 Ti) | the defaults (`auto`: cuBLAS FP32 with CUDA graphs) | Matches the reference to 4.5e-5 and is level with it or faster from 1 to 512 series |
-| NVIDIA, fastest | `-Dchronos2.tornado.gemm=cublas-fp16` | 1.4–6.4× faster than the reference; forecasts move by up to 5e-3 of the series' range (see [VALIDATION.md](VALIDATION.md#chronos-2)) |
+| **NVIDIA** (tested: RTX 5070 Ti, A10) | the defaults (`auto`: cuBLAS FP32 with CUDA graphs) | Matches the reference to 4.5e-5 and is level with it or faster from 1 to 512 series |
+| NVIDIA, fastest | `-Dchronos2.tornado.gemm=cublas-fp16` | 1.4–13.9× faster than the reference on an RTX 5070 Ti and an A10; forecasts move by up to 5e-3 of the series' range (see [VALIDATION.md](VALIDATION.md#chronos-2)) |
 | **Apple Silicon** (tested: M4 Pro) | the defaults on Metal, with `-Dtornado.metal.priority=100` (`auto`: `simdgroup`) | Metal is faster than OpenCL on Apple GPUs |
 | Other OpenCL devices | the defaults | Portable; not tuned |

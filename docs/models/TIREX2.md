@@ -10,7 +10,7 @@ multi-target series, and series with past or future covariates.
 |---|---|
 | Architecture | xLSTM: 12 blocks of `[mLSTM, sLSTM] × 6`, each time mixer followed by attention across variates; D = 512, 82.5M parameters; a residual-block quantile head |
 | Checkpoints | `NX-AI/TiRex-2` and `-fevbench` (2,048 + 320 steps = 74 patches); `-gifteval-zs` and `-gifteval-pretrain` (8,192 + 928 = 285 patches, no qk-norm), converted once to safetensors |
-| Validated | CPU, CUDA, OpenCL and Metal; benchmark parity with NXAI on fev-bench and GIFT-Eval ([VALIDATION.md](../VALIDATION.md#tirex-2)) |
+| Validated | CPU, CUDA, OpenCL and Metal, against NXAI's tirex-2 0.4.0; benchmark parity with NXAI on fev-bench and GIFT-Eval ([VALIDATION.md](../VALIDATION.md#tirex-2)) |
 | Performance | [PERFORMANCE.md](../PERFORMANCE.md#tirex-2) |
 | Engines | `tirex2.tornado.TornadoTiRex2Engine` (TornadoVM), `tirex2.cpu.CpuTiRex2Engine` (FP32 reference) |
 
@@ -53,7 +53,7 @@ pass (512) and the trend differencing and sign flip, which default to the checkp
 - **Device side** (`tirex2.tornado.TornadoForward`): one task graph per batch shape — the scaler and
   patching, the mLSTM and sLSTM cells, the head norms, variate attention, the residual heads — with
   the activations kept on the device. Its kernels are in [KERNELS.md](../KERNELS.md#tirex-2).
-- **Weights** (`tirex2.TiRex2Weights`, `tornado.PackedWeights`): bound by name and shape; the q|k|v|o|i|f
+- **Weights** (`tirex2.TiRex2Weights`, `tirex2.tornado.PackedWeights`): bound by name and shape; the q|k|v|o|i|f
   projections, the FFN's up-gate|up and the block-diagonal sLSTM gates are fused at load time.
 - **Reference** (`tirex2.cpu.CpuReference`): a port of `scripts/spec_forward.py`, an executable spec of
   NXAI's `forward()` in basic PyTorch ops.

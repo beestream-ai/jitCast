@@ -30,10 +30,10 @@ one Java API.
 - **Hybrid on NVIDIA.** GEMMs can run on cuBLAS (FP32, TF32 or FP16 tensor cores), and each forward
   pass is replayed as a CUDA graph.
 - **Validated against the reference engines.** Every stage of every model is checked against its
-  reference's own activations, on every backend; TiRex-2's fev-bench and GIFT-Eval scores are within
+  reference's own activations, on CUDA, OpenCL and Metal; TiRex-2's fev-bench and GIFT-Eval scores are within
   0.03% and 0.08% of NXAI's on the same GPU.
-- **Faster than the reference engines.** On an A100, at every batch size measured, from 1 to 512
-  series: 4–16× at one series, where the references' per-call overhead dominates.
+- **Faster than the reference engines.** On an A100 and an A10, at every batch size measured, from 1
+  to 512 series: 3–16× at one series, where the references' per-call overhead dominates.
 
 ## Where it runs
 
@@ -90,7 +90,7 @@ Covariates, the benchmarks, the harness server and the tests are covered in [doc
 ## Performance
 
 End-to-end `forecast()` against each model's reference engine on the same inputs, on an NVIDIA
-A100 80GB. The method and every configuration are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md),
+A100 80GB (Chronos-2: an A10). The method and every configuration are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md),
 including Apple silicon.
 
 **TiRex-2**, jitcast `cublas-auto` against NXAI's best of eager, `torch.compile` and FlexAttention
@@ -118,16 +118,17 @@ CUDA (TornadoVM develop):
 With cuBLAS FP16, Timestral-209M is another 3–4× faster at large batches.
 
 **Chronos-2**, jitcast's defaults (cuBLAS FP32, CUDA graphs) against Amazon's reference on PyTorch
-CUDA; not measured on the A100 yet (the RTX 5070 Ti and Apple M4 Pro results are in
-[PERFORMANCE.md](docs/PERFORMANCE.md#chronos-2)):
+CUDA, on an NVIDIA A10 (TornadoVM develop); not measured on the A100 yet:
 
 | Workload | small reference | small jitcast | base reference | base jitcast |
 |---|---|---|---|---|
-| 1 series |  |  |  |  |
-| 8 series |  |  |  |  |
-| 128 series |  |  |  |  |
-| 512 series |  |  |  |  |
-| 8 series × (2 past + 2 known) |  |  |  |  |
+| 1 series | 14.6 ms | **1.76 ms (8.3×)** | 25.8 ms | **6.63 ms (3.9×)** |
+| 8 series | 14.7 ms | **8.93 ms (1.6×)** | 33.9 ms | **29.8 ms (1.1×)** |
+| 128 series | 139.8 ms | **104.9 ms (1.3×)** | 524.9 ms | **438.7 ms (1.2×)** |
+| 512 series | 625.4 ms | **410.8 ms (1.5×)** | 2,383.3 ms | **1,769.2 ms (1.3×)** |
+| 8 series × (2 past + 2 known) | 45.7 ms | **35.1 ms (1.3×)** | 159.9 ms | **135.5 ms (1.2×)** |
+
+With cuBLAS FP16, Chronos-2 is 1.5–13.9× faster than the reference.
 
 ## Documentation
 

@@ -53,7 +53,7 @@ engine; the reference side writes the shared workload file.
 python scripts/bench_nxai.py workloads --out workloads.safetensors
 $JITCAST -Dtirex.tornado.gemm=cublas-auto ai.beestream.jitcast.bench.TiRexBench \
     --weights tirex2.safetensors --workloads workloads.safetensors --engine tornado \
-    --scenarios throughput,multivariate --batches 1,8,64,512 --mv-batches 1,32 --covariates 15 --out results.jsonl
+    --scenarios throughput,multivariate --batches 1,8,64,512 --mv-batches 1,32 --covariates 15 --out results.json
 
 # TiRex-2: cold start (process start → first forecast) and the harness server for NXAI's Python harnesses
 BENCH_EXEC_START_NS=$(date +%s%N) $JITCAST ai.beestream.jitcast.bench.TiRexColdStart \
@@ -77,6 +77,12 @@ $JITCAST ai.beestream.jitcast.bench.Chronos2Bench --checkpoint chronos-2 \
 `--scenarios`, `--reps` (20), `--warmup` (3), `--budget` (5 s per point); `Chronos2Bench` takes the
 same. The method and the results are in [PERFORMANCE.md](PERFORMANCE.md).
 
+The harness servers answer forecast requests over a local socket, so the reference engines' Python
+benchmark harnesses can score jitcast unchanged: `TiRexServer` for NXAI's (`scripts/tirex_tornado.py`;
+options `--engine tornado|cpu`, `--batch-size` (512), `--plans` (cached plans, 4), `--max-shapes` (12)
+and `--max-builds`, after which it asks the client to restart it) and `TimestralServer` for
+`scripts/timestral/fev_eval.py` (`--checkpoint`, `--port-file`, `--engine`).
+
 ## Tests
 
 The CPU references and host pipelines run against goldens recorded from each reference engine; the
@@ -97,9 +103,10 @@ and the device engines against the goldens. Tests whose goldens are not configur
 
 | Model | Goldens | Recorded by |
 |---|---|---|
-| TiRex-2 | `-Dtirex.weights`, `-Dtirex.golden` (and `-Dtirex.golden.gpu` for the reduced-precision checks) | `scripts/dump_golden.py`, with NXAI's package: `git clone https://github.com/NX-AI/tirex-2 && pip install -e ./tirex-2` |
+| TiRex-2 | `-Dtirex.weights`, `-Dtirex.golden` (and `-Dtirex.golden.gpu` for the reduced-precision checks) | `scripts/dump_golden.py`, with NXAI's package: `git clone -b v0.4.0 https://github.com/NX-AI/tirex-2 && pip install -e ./tirex-2` (or `scripts/setup_reference.sh`) |
 | Timestral | `-Dtimestral.checkpoint`, `-Dtimestral.golden` | `scripts/timestral/dump_golden.py --src <timestral>/src --ckpt <dir> --out <dir>`, from a clone of `mistralai/timestral` |
 | Chronos-2 | `-Dchronos2.checkpoint`, `-Dchronos2.golden` | `scripts/chronos2/dump_golden.py --src <chronos-forecasting>/src --ckpt <dir> --out <dir>`, from a clone of `amazon-science/chronos-forecasting` (with `transformers`, `einops` and `pandas`) |
 
 The tolerances and what each test checks are in [VALIDATION.md](VALIDATION.md). With cuBLAS, the
-Timestral-209M tests need `-Dtornado.device.memory=40GB` (the profile's default is 8 GB).
+Timestral-209M tests need more than the profile's default of 8 GB: `-Dtornado.device.memory=20GB`
+is enough (on a 24 GB A10).
