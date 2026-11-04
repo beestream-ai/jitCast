@@ -611,15 +611,11 @@ public final class TiRexKernels {
         int g = tid / dh;
         float[] yl = ctx.allocateFloatLocalArray(SLSTM_MAX_ROWS * 128);
         float[] raw = ctx.allocateFloatLocalArray(SLSTM_MAX_ROWS * 512);
-        float[] c = new float[SLSTM_MAX_ROWS];
-        float[] nn = new float[SLSTM_MAX_ROWS];
-        float[] m = new float[SLSTM_MAX_ROWS];
-        float[] acc = new float[SLSTM_MAX_ROWS];
-        for (int rb = 0; rb < SLSTM_MAX_ROWS; rb++) {
-            c[rb] = 0f;
-            nn[rb] = 0f;
-            m[rb] = 0f;
-        }
+        // the per-row cell state is scalars, one per row of SLSTM_MAX_ROWS = 8, not arrays: kernel
+        // compilers that do not unroll the row loops would otherwise keep them in memory
+        float c0 = 0f, c1 = 0f, c2 = 0f, c3 = 0f, c4 = 0f, c5 = 0f, c6 = 0f, c7 = 0f;
+        float n0 = 0f, n1 = 0f, n2 = 0f, n3 = 0f, n4 = 0f, n5 = 0f, n6 = 0f, n7 = 0f;
+        float m0 = 0f, m1 = 0f, m2 = 0f, m3 = 0f, m4 = 0f, m5 = 0f, m6 = 0f, m7 = 0f;
         if (tid < dh) {
             for (int rb = 0; rb < rowsPerGroup; rb++) {
                 yl[rb * dh + tid] = 0f;
@@ -761,37 +757,200 @@ public final class TiRexKernels {
                 a += yl[yo + 61] * r61;
                 a += yl[yo + 62] * r62;
                 a += yl[yo + 63] * r63;
-                acc[rb] = a;
+                raw[rb * 512 + g * dh + e] = a;
             }
+            float s0 = 0f, s1 = 0f, s2 = 0f, s3 = 0f, s4 = 0f, s5 = 0f, s6 = 0f, s7 = 0f;
             for (int pp = SLSTM_REG_R; pp < dh; pp++) {
                 float r = rh.get(ro + pp * 4 * dh).getFloat32();
-                for (int rb = 0; rb < rowsPerGroup; rb++) {
-                    acc[rb] += yl[rb * dh + pp] * r;
+                s0 += yl[pp] * r;
+                if (1 < rowsPerGroup) {
+                    s1 += yl[128 + pp] * r;
+                }
+                if (2 < rowsPerGroup) {
+                    s2 += yl[256 + pp] * r;
+                }
+                if (3 < rowsPerGroup) {
+                    s3 += yl[384 + pp] * r;
+                }
+                if (4 < rowsPerGroup) {
+                    s4 += yl[512 + pp] * r;
+                }
+                if (5 < rowsPerGroup) {
+                    s5 += yl[640 + pp] * r;
+                }
+                if (6 < rowsPerGroup) {
+                    s6 += yl[768 + pp] * r;
+                }
+                if (7 < rowsPerGroup) {
+                    s7 += yl[896 + pp] * r;
                 }
             }
-            for (int rb = 0; rb < rowsPerGroup; rb++) {
-                raw[rb * 512 + g * dh + e] = acc[rb];
+            raw[g * dh + e] += s0;
+            if (1 < rowsPerGroup) {
+                raw[512 + g * dh + e] += s1;
+            }
+            if (2 < rowsPerGroup) {
+                raw[1024 + g * dh + e] += s2;
+            }
+            if (3 < rowsPerGroup) {
+                raw[1536 + g * dh + e] += s3;
+            }
+            if (4 < rowsPerGroup) {
+                raw[2048 + g * dh + e] += s4;
+            }
+            if (5 < rowsPerGroup) {
+                raw[2560 + g * dh + e] += s5;
+            }
+            if (6 < rowsPerGroup) {
+                raw[3072 + g * dh + e] += s6;
+            }
+            if (7 < rowsPerGroup) {
+                raw[3584 + g * dh + e] += s7;
             }
             ctx.localBarrier();
             if (tid < dh) {
-                for (int rb = 0; rb < rowsPerGroup; rb++) {
-                    int o = rb * 512;
-                    float ri = raw[o + e];
-                    float rf = raw[o + dh + e];
-                    float rz = raw[o + 2 * dh + e];
-                    float rog = raw[o + 3 * dh + e];
-                    float logf = TornadoMath.min(rf, 0f) - TornadoMath.log(1f + TornadoMath.exp(-TornadoMath.abs(rf))) + m[rb];
+                if (0 < rowsPerGroup) {
+                    float ri = raw[0 + e];
+                    float rf = raw[0 + dh + e];
+                    float rz = raw[0 + 2 * dh + e];
+                    float rog = raw[0 + 3 * dh + e];
+                    float logf = TornadoMath.min(rf, 0f) - TornadoMath.log(1f + TornadoMath.exp(-TornadoMath.abs(rf))) + m0;
                     float mNew = t == 0 ? ri : TornadoMath.max(ri, logf);
                     float ig = TornadoMath.exp(ri - mNew);
                     float fg = TornadoMath.exp(logf - mNew);
-                    c[rb] = fg * c[rb] + ig * TornadoMath.tanh(rz);
-                    nn[rb] = TornadoMath.max(fg * nn[rb] + ig, 1f);
-                    float yNew = c[rb] / nn[rb] / (1f + TornadoMath.exp(-rog));
-                    m[rb] = mNew;
-                    yl[rb * dh + e] = yNew;
-                    int row = row0 + rb;
-                    if (row < rows) {
-                        y.set((row * seq + t) * d + h * dh + e, yNew);
+                    c0 = fg * c0 + ig * TornadoMath.tanh(rz);
+                    n0 = TornadoMath.max(fg * n0 + ig, 1f);
+                    float yNew = c0 / n0 / (1f + TornadoMath.exp(-rog));
+                    m0 = mNew;
+                    yl[0 + e] = yNew;
+                    if (row0 + 0 < rows) {
+                        y.set(((row0 + 0) * seq + t) * d + h * dh + e, yNew);
+                    }
+                }
+                if (1 < rowsPerGroup) {
+                    float ri = raw[512 + e];
+                    float rf = raw[512 + dh + e];
+                    float rz = raw[512 + 2 * dh + e];
+                    float rog = raw[512 + 3 * dh + e];
+                    float logf = TornadoMath.min(rf, 0f) - TornadoMath.log(1f + TornadoMath.exp(-TornadoMath.abs(rf))) + m1;
+                    float mNew = t == 0 ? ri : TornadoMath.max(ri, logf);
+                    float ig = TornadoMath.exp(ri - mNew);
+                    float fg = TornadoMath.exp(logf - mNew);
+                    c1 = fg * c1 + ig * TornadoMath.tanh(rz);
+                    n1 = TornadoMath.max(fg * n1 + ig, 1f);
+                    float yNew = c1 / n1 / (1f + TornadoMath.exp(-rog));
+                    m1 = mNew;
+                    yl[128 + e] = yNew;
+                    if (row0 + 1 < rows) {
+                        y.set(((row0 + 1) * seq + t) * d + h * dh + e, yNew);
+                    }
+                }
+                if (2 < rowsPerGroup) {
+                    float ri = raw[1024 + e];
+                    float rf = raw[1024 + dh + e];
+                    float rz = raw[1024 + 2 * dh + e];
+                    float rog = raw[1024 + 3 * dh + e];
+                    float logf = TornadoMath.min(rf, 0f) - TornadoMath.log(1f + TornadoMath.exp(-TornadoMath.abs(rf))) + m2;
+                    float mNew = t == 0 ? ri : TornadoMath.max(ri, logf);
+                    float ig = TornadoMath.exp(ri - mNew);
+                    float fg = TornadoMath.exp(logf - mNew);
+                    c2 = fg * c2 + ig * TornadoMath.tanh(rz);
+                    n2 = TornadoMath.max(fg * n2 + ig, 1f);
+                    float yNew = c2 / n2 / (1f + TornadoMath.exp(-rog));
+                    m2 = mNew;
+                    yl[256 + e] = yNew;
+                    if (row0 + 2 < rows) {
+                        y.set(((row0 + 2) * seq + t) * d + h * dh + e, yNew);
+                    }
+                }
+                if (3 < rowsPerGroup) {
+                    float ri = raw[1536 + e];
+                    float rf = raw[1536 + dh + e];
+                    float rz = raw[1536 + 2 * dh + e];
+                    float rog = raw[1536 + 3 * dh + e];
+                    float logf = TornadoMath.min(rf, 0f) - TornadoMath.log(1f + TornadoMath.exp(-TornadoMath.abs(rf))) + m3;
+                    float mNew = t == 0 ? ri : TornadoMath.max(ri, logf);
+                    float ig = TornadoMath.exp(ri - mNew);
+                    float fg = TornadoMath.exp(logf - mNew);
+                    c3 = fg * c3 + ig * TornadoMath.tanh(rz);
+                    n3 = TornadoMath.max(fg * n3 + ig, 1f);
+                    float yNew = c3 / n3 / (1f + TornadoMath.exp(-rog));
+                    m3 = mNew;
+                    yl[384 + e] = yNew;
+                    if (row0 + 3 < rows) {
+                        y.set(((row0 + 3) * seq + t) * d + h * dh + e, yNew);
+                    }
+                }
+                if (4 < rowsPerGroup) {
+                    float ri = raw[2048 + e];
+                    float rf = raw[2048 + dh + e];
+                    float rz = raw[2048 + 2 * dh + e];
+                    float rog = raw[2048 + 3 * dh + e];
+                    float logf = TornadoMath.min(rf, 0f) - TornadoMath.log(1f + TornadoMath.exp(-TornadoMath.abs(rf))) + m4;
+                    float mNew = t == 0 ? ri : TornadoMath.max(ri, logf);
+                    float ig = TornadoMath.exp(ri - mNew);
+                    float fg = TornadoMath.exp(logf - mNew);
+                    c4 = fg * c4 + ig * TornadoMath.tanh(rz);
+                    n4 = TornadoMath.max(fg * n4 + ig, 1f);
+                    float yNew = c4 / n4 / (1f + TornadoMath.exp(-rog));
+                    m4 = mNew;
+                    yl[512 + e] = yNew;
+                    if (row0 + 4 < rows) {
+                        y.set(((row0 + 4) * seq + t) * d + h * dh + e, yNew);
+                    }
+                }
+                if (5 < rowsPerGroup) {
+                    float ri = raw[2560 + e];
+                    float rf = raw[2560 + dh + e];
+                    float rz = raw[2560 + 2 * dh + e];
+                    float rog = raw[2560 + 3 * dh + e];
+                    float logf = TornadoMath.min(rf, 0f) - TornadoMath.log(1f + TornadoMath.exp(-TornadoMath.abs(rf))) + m5;
+                    float mNew = t == 0 ? ri : TornadoMath.max(ri, logf);
+                    float ig = TornadoMath.exp(ri - mNew);
+                    float fg = TornadoMath.exp(logf - mNew);
+                    c5 = fg * c5 + ig * TornadoMath.tanh(rz);
+                    n5 = TornadoMath.max(fg * n5 + ig, 1f);
+                    float yNew = c5 / n5 / (1f + TornadoMath.exp(-rog));
+                    m5 = mNew;
+                    yl[640 + e] = yNew;
+                    if (row0 + 5 < rows) {
+                        y.set(((row0 + 5) * seq + t) * d + h * dh + e, yNew);
+                    }
+                }
+                if (6 < rowsPerGroup) {
+                    float ri = raw[3072 + e];
+                    float rf = raw[3072 + dh + e];
+                    float rz = raw[3072 + 2 * dh + e];
+                    float rog = raw[3072 + 3 * dh + e];
+                    float logf = TornadoMath.min(rf, 0f) - TornadoMath.log(1f + TornadoMath.exp(-TornadoMath.abs(rf))) + m6;
+                    float mNew = t == 0 ? ri : TornadoMath.max(ri, logf);
+                    float ig = TornadoMath.exp(ri - mNew);
+                    float fg = TornadoMath.exp(logf - mNew);
+                    c6 = fg * c6 + ig * TornadoMath.tanh(rz);
+                    n6 = TornadoMath.max(fg * n6 + ig, 1f);
+                    float yNew = c6 / n6 / (1f + TornadoMath.exp(-rog));
+                    m6 = mNew;
+                    yl[768 + e] = yNew;
+                    if (row0 + 6 < rows) {
+                        y.set(((row0 + 6) * seq + t) * d + h * dh + e, yNew);
+                    }
+                }
+                if (7 < rowsPerGroup) {
+                    float ri = raw[3584 + e];
+                    float rf = raw[3584 + dh + e];
+                    float rz = raw[3584 + 2 * dh + e];
+                    float rog = raw[3584 + 3 * dh + e];
+                    float logf = TornadoMath.min(rf, 0f) - TornadoMath.log(1f + TornadoMath.exp(-TornadoMath.abs(rf))) + m7;
+                    float mNew = t == 0 ? ri : TornadoMath.max(ri, logf);
+                    float ig = TornadoMath.exp(ri - mNew);
+                    float fg = TornadoMath.exp(logf - mNew);
+                    c7 = fg * c7 + ig * TornadoMath.tanh(rz);
+                    n7 = TornadoMath.max(fg * n7 + ig, 1f);
+                    float yNew = c7 / n7 / (1f + TornadoMath.exp(-rog));
+                    m7 = mNew;
+                    yl[896 + e] = yNew;
+                    if (row0 + 7 < rows) {
+                        y.set(((row0 + 7) * seq + t) * d + h * dh + e, yNew);
                     }
                 }
             }
