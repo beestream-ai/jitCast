@@ -129,9 +129,9 @@ public final class TimestralKernels {
         float[] lRun = ctx.allocateFloatLocalArray(ATTN_QUERIES);
         float[] corr = ctx.allocateFloatLocalArray(ATTN_QUERIES);
         float[] pw = ctx.allocateFloatLocalArray(ATTN_QUERIES);
-        float[] acc = new float[ATTN_QUERIES];
+        // one scalar per query of ATTN_QUERIES = 16 (not an array), so every kernel compiler keeps them in registers
+        float a0 = 0f, a1 = 0f, a2 = 0f, a3 = 0f, a4 = 0f, a5 = 0f, a6 = 0f, a7 = 0f; float a8 = 0f, a9 = 0f, a10 = 0f, a11 = 0f, a12 = 0f, a13 = 0f, a14 = 0f, a15 = 0f;
         for (int qq = 0; qq < ATTN_QUERIES; qq++) {
-            acc[qq] = 0f;
             if (qq < qn) {
                 for (int e = tid; e < dh; e += ATTN_THREADS) {
                     qs[qq * MAX_HEAD_DIM + e] = qkv.get((r * n + q0 + qq) * 3 * d + hh * dh + e);
@@ -204,18 +204,73 @@ public final class TimestralKernels {
             ctx.localBarrier();
             if (tid < dh) {
                 float vj = kv[MAX_HEAD_DIM + tid];
-                for (int qq = 0; qq < ATTN_QUERIES; qq++) {
-                    if (qq < qn) {
-                        acc[qq] = acc[qq] * corr[qq] + pw[qq] * vj;
-                    }
-                }
+                a0 = a0 * corr[0] + pw[0] * vj;
+                a1 = a1 * corr[1] + pw[1] * vj;
+                a2 = a2 * corr[2] + pw[2] * vj;
+                a3 = a3 * corr[3] + pw[3] * vj;
+                a4 = a4 * corr[4] + pw[4] * vj;
+                a5 = a5 * corr[5] + pw[5] * vj;
+                a6 = a6 * corr[6] + pw[6] * vj;
+                a7 = a7 * corr[7] + pw[7] * vj;
+                a8 = a8 * corr[8] + pw[8] * vj;
+                a9 = a9 * corr[9] + pw[9] * vj;
+                a10 = a10 * corr[10] + pw[10] * vj;
+                a11 = a11 * corr[11] + pw[11] * vj;
+                a12 = a12 * corr[12] + pw[12] * vj;
+                a13 = a13 * corr[13] + pw[13] * vj;
+                a14 = a14 * corr[14] + pw[14] * vj;
+                a15 = a15 * corr[15] + pw[15] * vj;
+
             }
         }
         if (tid < dh) {
-            for (int qq = 0; qq < ATTN_QUERIES; qq++) {
-                if (qq < qn) {
-                    out.set((r * n + q0 + qq) * d + hh * dh + tid, acc[qq] / lRun[qq]);
-                }
+            if (0 < qn) {
+                out.set((r * n + q0 + 0) * d + hh * dh + tid, a0 / lRun[0]);
+            }
+            if (1 < qn) {
+                out.set((r * n + q0 + 1) * d + hh * dh + tid, a1 / lRun[1]);
+            }
+            if (2 < qn) {
+                out.set((r * n + q0 + 2) * d + hh * dh + tid, a2 / lRun[2]);
+            }
+            if (3 < qn) {
+                out.set((r * n + q0 + 3) * d + hh * dh + tid, a3 / lRun[3]);
+            }
+            if (4 < qn) {
+                out.set((r * n + q0 + 4) * d + hh * dh + tid, a4 / lRun[4]);
+            }
+            if (5 < qn) {
+                out.set((r * n + q0 + 5) * d + hh * dh + tid, a5 / lRun[5]);
+            }
+            if (6 < qn) {
+                out.set((r * n + q0 + 6) * d + hh * dh + tid, a6 / lRun[6]);
+            }
+            if (7 < qn) {
+                out.set((r * n + q0 + 7) * d + hh * dh + tid, a7 / lRun[7]);
+            }
+            if (8 < qn) {
+                out.set((r * n + q0 + 8) * d + hh * dh + tid, a8 / lRun[8]);
+            }
+            if (9 < qn) {
+                out.set((r * n + q0 + 9) * d + hh * dh + tid, a9 / lRun[9]);
+            }
+            if (10 < qn) {
+                out.set((r * n + q0 + 10) * d + hh * dh + tid, a10 / lRun[10]);
+            }
+            if (11 < qn) {
+                out.set((r * n + q0 + 11) * d + hh * dh + tid, a11 / lRun[11]);
+            }
+            if (12 < qn) {
+                out.set((r * n + q0 + 12) * d + hh * dh + tid, a12 / lRun[12]);
+            }
+            if (13 < qn) {
+                out.set((r * n + q0 + 13) * d + hh * dh + tid, a13 / lRun[13]);
+            }
+            if (14 < qn) {
+                out.set((r * n + q0 + 14) * d + hh * dh + tid, a14 / lRun[14]);
+            }
+            if (15 < qn) {
+                out.set((r * n + q0 + 15) * d + hh * dh + tid, a15 / lRun[15]);
             }
         }
     }
@@ -249,9 +304,9 @@ public final class TimestralKernels {
         float[] lRun = ctx.allocateFloatLocalArray(ATTN_QUERIES);
         float[] corr = ctx.allocateFloatLocalArray(ATTN_QUERIES);
         float[] pw = ctx.allocateFloatLocalArray(ATTN_QUERIES);
-        float[] acc = new float[ATTN_QUERIES];
+        // one scalar per query of ATTN_QUERIES = 16 (not an array), so every kernel compiler keeps them in registers
+        float a0 = 0f, a1 = 0f, a2 = 0f, a3 = 0f, a4 = 0f, a5 = 0f, a6 = 0f, a7 = 0f; float a8 = 0f, a9 = 0f, a10 = 0f, a11 = 0f, a12 = 0f, a13 = 0f, a14 = 0f, a15 = 0f;
         for (int qq = 0; qq < ATTN_QUERIES; qq++) {
-            acc[qq] = 0f;
             if (qq < qn) {
                 for (int e = tid; e < dh; e += ATTN_THREADS) {
                     qs[qq * MAX_HEAD_DIM + e] = qkv.get(((q0 + qq) * n + t) * 3 * d + hh * dh + e);
@@ -315,18 +370,73 @@ public final class TimestralKernels {
             ctx.localBarrier();
             if (tid < dh) {
                 float vj = kv[MAX_HEAD_DIM + tid];
-                for (int qq = 0; qq < ATTN_QUERIES; qq++) {
-                    if (qq < qn) {
-                        acc[qq] = acc[qq] * corr[qq] + pw[qq] * vj;
-                    }
-                }
+                a0 = a0 * corr[0] + pw[0] * vj;
+                a1 = a1 * corr[1] + pw[1] * vj;
+                a2 = a2 * corr[2] + pw[2] * vj;
+                a3 = a3 * corr[3] + pw[3] * vj;
+                a4 = a4 * corr[4] + pw[4] * vj;
+                a5 = a5 * corr[5] + pw[5] * vj;
+                a6 = a6 * corr[6] + pw[6] * vj;
+                a7 = a7 * corr[7] + pw[7] * vj;
+                a8 = a8 * corr[8] + pw[8] * vj;
+                a9 = a9 * corr[9] + pw[9] * vj;
+                a10 = a10 * corr[10] + pw[10] * vj;
+                a11 = a11 * corr[11] + pw[11] * vj;
+                a12 = a12 * corr[12] + pw[12] * vj;
+                a13 = a13 * corr[13] + pw[13] * vj;
+                a14 = a14 * corr[14] + pw[14] * vj;
+                a15 = a15 * corr[15] + pw[15] * vj;
+
             }
         }
         if (tid < dh) {
-            for (int qq = 0; qq < ATTN_QUERIES; qq++) {
-                if (qq < qn) {
-                    out.set(((q0 + qq) * n + t) * d + hh * dh + tid, acc[qq] / lRun[qq]);
-                }
+            if (0 < qn) {
+                out.set(((q0 + 0) * n + t) * d + hh * dh + tid, a0 / lRun[0]);
+            }
+            if (1 < qn) {
+                out.set(((q0 + 1) * n + t) * d + hh * dh + tid, a1 / lRun[1]);
+            }
+            if (2 < qn) {
+                out.set(((q0 + 2) * n + t) * d + hh * dh + tid, a2 / lRun[2]);
+            }
+            if (3 < qn) {
+                out.set(((q0 + 3) * n + t) * d + hh * dh + tid, a3 / lRun[3]);
+            }
+            if (4 < qn) {
+                out.set(((q0 + 4) * n + t) * d + hh * dh + tid, a4 / lRun[4]);
+            }
+            if (5 < qn) {
+                out.set(((q0 + 5) * n + t) * d + hh * dh + tid, a5 / lRun[5]);
+            }
+            if (6 < qn) {
+                out.set(((q0 + 6) * n + t) * d + hh * dh + tid, a6 / lRun[6]);
+            }
+            if (7 < qn) {
+                out.set(((q0 + 7) * n + t) * d + hh * dh + tid, a7 / lRun[7]);
+            }
+            if (8 < qn) {
+                out.set(((q0 + 8) * n + t) * d + hh * dh + tid, a8 / lRun[8]);
+            }
+            if (9 < qn) {
+                out.set(((q0 + 9) * n + t) * d + hh * dh + tid, a9 / lRun[9]);
+            }
+            if (10 < qn) {
+                out.set(((q0 + 10) * n + t) * d + hh * dh + tid, a10 / lRun[10]);
+            }
+            if (11 < qn) {
+                out.set(((q0 + 11) * n + t) * d + hh * dh + tid, a11 / lRun[11]);
+            }
+            if (12 < qn) {
+                out.set(((q0 + 12) * n + t) * d + hh * dh + tid, a12 / lRun[12]);
+            }
+            if (13 < qn) {
+                out.set(((q0 + 13) * n + t) * d + hh * dh + tid, a13 / lRun[13]);
+            }
+            if (14 < qn) {
+                out.set(((q0 + 14) * n + t) * d + hh * dh + tid, a14 / lRun[14]);
+            }
+            if (15 < qn) {
+                out.set(((q0 + 15) * n + t) * d + hh * dh + tid, a15 / lRun[15]);
             }
         }
     }
