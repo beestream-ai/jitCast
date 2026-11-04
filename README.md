@@ -8,7 +8,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg"></a>
   <img alt="Java 22+" src="https://img.shields.io/badge/java-22%2B-orange.svg">
-  <img alt="TornadoVM" src="https://img.shields.io/badge/TornadoVM-7.3.1%2B-0B1F33.svg">
+  <img alt="TornadoVM" src="https://img.shields.io/badge/TornadoVM-8.0.0%2B-0B1F33.svg">
 </p>
 
 # jitcast
@@ -49,14 +49,14 @@ The options and the recommended flags per platform are in [docs/CONFIGURATION.md
 
 ## Quick start
 
-You need JDK 22+ and a TornadoVM SDK (7.3.1 or newer, `jdk22plus` family); the full guide is in
-[docs/INSTALL.md](docs/INSTALL.md). TornadoVM's `develop` branch, with its new TC compiler, is
-recommended: up to 1.36× faster at small batches, and it runs the CUDA Tile GEMM.
+You need JDK 22+ and a TornadoVM SDK (8.0.0 or newer, `jdk22plus` family); the full guide is in
+[docs/INSTALL.md](docs/INSTALL.md). TornadoVM 8 compiles kernels with its new TC compiler: up to 1.36×
+faster than 7.3.1 at small batches, and it runs the CUDA Tile GEMM.
 
 ```bash
 # 1. a JDK and TornadoVM (or download an SDK from tornadovm.org/downloads)
 sdk install java 25.0.4-tem                     # any JDK 22+; the TornadoVM SDK does not include one
-sdk install tornadovm 7.3.1-jdk22plus-cuda      # or ...-metal / ...-opencl
+sdk install tornadovm 8.0.0-jdk22plus-cuda      # or ...-metal / ...-opencl
 tornado --devices                               # device ids, as <backend>:<device>
 
 # 2. jitcast
@@ -89,46 +89,22 @@ Covariates, the benchmarks, the harness server and the tests are covered in [doc
 
 ## Performance
 
-End-to-end `forecast()` against each model's reference engine on the same inputs, on an NVIDIA
-A100 80GB (Chronos-2: an A10). The method and every configuration are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md),
-including Apple silicon.
+End-to-end `forecast()` on an NVIDIA A100 80GB (TornadoVM `develop`), jitcast's fastest option against
+the fastest option of each model's PyTorch reference (eager, `torch.compile`, TF32, BF16 and FP16, and
+FlexAttention for TiRex-2), per workload. The method, both times of every point and the other GPUs and
+Apple silicon are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md#fastest-against-fastest).
 
-**TiRex-2**, jitcast `cublas-auto` against NXAI's best of eager, `torch.compile` and FlexAttention
-(TornadoVM 7.1.0):
-
-| Workload | NXAI | jitcast | Speed-up |
-|---|---|---|---|
-| 1 series | 35.1 ms | **2.25 ms** | 15.6× |
-| 64 series | 123.7 ms | **14.8 ms** | 8.3× |
-| 512 series | 620 series/s | **4,863 series/s** | 7.8× |
-| 1 series × 15 covariates | 72.1 ms | **8.88 ms** | 8.1× |
-| fev-bench, 100 tasks: inference time | 2,897 s | **919 s** | 3.2× |
-
-**Timestral**, jitcast's defaults (cuBLAS FP32, CUDA graphs) against Mistral's reference on PyTorch
-CUDA (TornadoVM develop):
-
-| Workload | 5M reference | 5M jitcast | 28M reference | 28M jitcast | 209M reference | 209M jitcast |
+| Model | 1 series | 8 series | 128 series | 512 series | 1 series, H = 1,024 | 8 series, long context |
 |---|---|---|---|---|---|---|
-| 1 series | 43.1 ms | **3.8 ms (11.3×)** | 53.1 ms | **6.2 ms (8.6×)** | 88.9 ms | **21.4 ms (4.1×)** |
-| 8 series | 45.0 ms | **9.8 ms (4.6×)** | 55.5 ms | **13.9 ms (4.0×)** | 93.0 ms | **41.9 ms (2.2×)** |
-| 128 series | 45.5 ms | **26.4 ms (1.7×)** | 94.5 ms | **76.8 ms (1.2×)** | 512.8 ms | **477.6 ms (1.1×)** |
-| 512 series | 101.9 ms | **81.5 ms (1.2×)** | 349.1 ms | **284.2 ms (1.2×)** | 2,071.0 ms | **1,802.3 ms (1.1×)** |
-| 8 series × (2 past + 2 known) | 50.4 ms | **12.1 ms (4.2×)** | 75.5 ms | **30.2 ms (2.5×)** | 336.7 ms | **162.9 ms (2.1×)** |
+| TiRex-2 | **13.1×** | **9.8×** | **7.6×** | **7.7×** | – | **3.6×** |
+| Timestral-5M | **10.7×** | **3.7×** | **1.7×** | 0.72× | **9.4×** | **4.4×** |
+| Timestral-209M | **6.9×** | **2.9×** | 0.67× | 1.0× | **6.7×** | **1.2×** |
+| Chronos-2 small | **5.7×** | **3.0×** | 1.1× | **1.2×** | **4.1×** | 0.98× |
+| Chronos-2 | **4.6×** | **2.3×** | 0.86× | 0.96× | **3.1×** | 0.71× |
 
-With cuBLAS FP16, Timestral-209M is another 3–4× faster at large batches.
-
-**Chronos-2**, jitcast's defaults (cuBLAS FP32, CUDA graphs) against Amazon's reference on PyTorch
-CUDA, on an NVIDIA A10 (TornadoVM develop); not measured on the A100 yet:
-
-| Workload | small reference | small jitcast | base reference | base jitcast |
-|---|---|---|---|---|
-| 1 series | 14.6 ms | **1.76 ms (8.3×)** | 25.8 ms | **6.63 ms (3.9×)** |
-| 8 series | 14.7 ms | **8.93 ms (1.6×)** | 33.9 ms | **29.8 ms (1.1×)** |
-| 128 series | 139.8 ms | **104.9 ms (1.3×)** | 524.9 ms | **438.7 ms (1.2×)** |
-| 512 series | 625.4 ms | **410.8 ms (1.5×)** | 2,383.3 ms | **1,769.2 ms (1.3×)** |
-| 8 series × (2 past + 2 known) | 45.7 ms | **35.1 ms (1.3×)** | 159.9 ms | **135.5 ms (1.2×)** |
-
-With cuBLAS FP16, Chronos-2 is 1.5–13.9× faster than the reference.
+jitcast wins at small batches, where PyTorch's per-call overhead dominates, and TiRex-2 at every size.
+From 128 series up Timestral and Chronos-2 are GEMM-bound on the same tensor cores in both engines.
+On fev-bench (100 tasks) TiRex-2's inference time is 3.2× lower than NXAI's.
 
 ## Documentation
 
