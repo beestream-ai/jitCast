@@ -61,7 +61,8 @@ example `8.0.1-jdk22plus-dev` for `develop`); the build installs them in `~/.m2`
 and CUDA `1:0` on an NVIDIA machine with both. The accelerated tests (`-Paccel-tests`) give CUDA
 priority, so in the tests CUDA is `0:0`. Pick the device per JVM with `-Djitcast.tornado.device`.
 
-On macOS a Metal + OpenCL SDK lists OpenCL `0:0` and Metal `1:0`. TornadoVM compiles kernels for its
+The 8.0.0 SDKs for macOS have one backend each, so in the Metal SDK Metal is `0:0` and the default
+with no further setting. An SDK built with both Metal and OpenCL lists OpenCL `0:0` and Metal `1:0`. TornadoVM compiles kernels for its
 default backend, and the simdgroup GEMMs of Timestral and Chronos-2 exist only on Metal, so run Metal
 as the default with `-Dtornado.metal.priority=100`: Metal is then `0:0`. Without it both still run on
 Metal `1:0`, with the portable register-blocked GEMMs. A backend's priority is

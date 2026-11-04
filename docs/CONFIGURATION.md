@@ -126,7 +126,7 @@ clipping, with the reference's defaults.
 |---|---|---|
 | **NVIDIA** (tested: A100, A10, RTX 5070 Ti) | the defaults (`auto`: cuBLAS FP32 with CUDA graphs) | Matches the reference to 1e-5 and is faster than it from 1 to 512 series on every checkpoint tried |
 | NVIDIA, fastest | `-Dtimestral.tornado.gemm=cublas-fp16` | 3–4× faster again on Timestral-209M from 32 series up; forecasts move by up to 1e-2 of the series' range (see [VALIDATION.md](VALIDATION.md#timestral)) |
-| **Apple Silicon** (tested: M4 Pro) | the defaults on Metal, with `-Dtornado.metal.priority=100` (`auto`: `simdgroup`) | The simdgroup GEMMs are 2–4× faster than the portable `blocked` ones on the larger checkpoints; Metal is faster than OpenCL on Apple GPUs |
+| **Apple Silicon** (tested: M4 Pro) | the defaults on Metal (`auto`: `simdgroup`; with an SDK that also has OpenCL, add `-Dtornado.metal.priority=100`) | The simdgroup GEMMs are 2–4× faster than the portable `blocked` ones on the larger checkpoints; Metal is faster than OpenCL on Apple GPUs |
 | Other OpenCL devices | the defaults | Portable; not tuned |
 
 ## Chronos-2
@@ -154,5 +154,5 @@ defaults; `withBatchSize` sets the rows per batch (256).
 |---|---|---|
 | **NVIDIA** (tested: RTX 5070 Ti, A10) | the defaults (`auto`: cuBLAS FP32 with CUDA graphs) | Matches the reference to 4.5e-5 and is level with it or faster from 1 to 512 series |
 | NVIDIA, fastest | `-Dchronos2.tornado.gemm=cublas-fp16` | 1.4–13.9× faster than the reference on an RTX 5070 Ti and an A10; forecasts move by up to 5e-3 of the series' range (see [VALIDATION.md](VALIDATION.md#chronos-2)) |
-| **Apple Silicon** (tested: M4 Pro) | the defaults on Metal, with `-Dtornado.metal.priority=100` (`auto`: `simdgroup`) | Metal is faster than OpenCL on Apple GPUs |
+| **Apple Silicon** (tested: M4 Pro) | the defaults on Metal (`auto`: `simdgroup`; with an SDK that also has OpenCL, add `-Dtornado.metal.priority=100`) | Metal is faster than OpenCL on Apple GPUs |
 | Other OpenCL devices | the defaults | Portable; not tuned |
