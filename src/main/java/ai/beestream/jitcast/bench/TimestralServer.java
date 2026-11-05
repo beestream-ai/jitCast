@@ -18,6 +18,7 @@ package ai.beestream.jitcast.bench;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetAddress;
@@ -45,12 +46,15 @@ import ai.beestream.jitcast.timestral.tornado.TornadoTimestralEngine;
  *
  * <p>Protocol, little-endian, one request at a time:
  * <pre>
- * request : int op (1 = forecast, 0 = quit), int nSeries, int horizon, then per series:
+ * request : int op (1 = forecast, 0 = quit the server), int nSeries, int horizon, then per series:
  *           int vt, vp, vf, cp, cf, T, Tf, Tcf; the floats target [vt·T], past [vp·T], future [vf·Tf];
  *           the doubles categorical past [cp·T], categorical future [cf·Tcf]
  * response: int status (0 = ok, else a UTF-8 message: int length, bytes), int nq, the floats of the
  *           quantile levels [nq], then per series: int vt, int h and the floats [vt·nq·h]
  * </pre>
+ *
+ * <p>Clients are served one after another: one that disconnects without quitting leaves the server,
+ * with its compiled kernels and plans, waiting for the next.
  *
  * <pre>
  * java … TimestralServer --checkpoint Timestral-5M --port-file port.txt [--engine tornado|cpu]
@@ -72,51 +76,68 @@ public final class TimestralServer {
                 ServerSocket server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
             Files.writeString(Path.of(a.get("port-file")), String.valueOf(server.getLocalPort()));
             System.err.println("TimestralServer: " + engine.name() + " on port " + server.getLocalPort());
-            try (Socket s = server.accept();
-                    DataInputStream in = new DataInputStream(new BufferedInputStream(s.getInputStream(), 1 << 20));
-                    OutputStream out = new BufferedOutputStream(s.getOutputStream(), 1 << 20)) {
-                while (readInt(in) != 0) {
-                    int n = readInt(in), horizon = readInt(in);
-                    List<TimeSeries> series = new ArrayList<>(n);
-                    for (int i = 0; i < n; i++) {
-                        int vt = readInt(in), vp = readInt(in), vf = readInt(in), cp = readInt(in), cf = readInt(in);
-                        int t = readInt(in), tf = readInt(in), tcf = readInt(in);
-                        float[][] target = readFloats(in, vt, t);
-                        float[][] past = vp == 0 ? null : readFloats(in, vp, t);
-                        float[][] future = vf == 0 ? null : readFloats(in, vf, tf);
-                        double[][] catPast = cp == 0 ? null : readDoubles(in, cp, t);
-                        double[][] catFuture = cf == 0 ? null : readDoubles(in, cf, tcf);
-                        series.add(new TimeSeries(target, past, future, catPast, catFuture));
-                    }
-                    try {
-                        List<Forecast> result = engine.forecast(series, horizon);
-                        Timing.report("request of " + n + " series", 1);
-                        writeInt(out, 0);
-                        float[] levels = result.get(0).levels();
-                        writeInt(out, levels.length);
-                        out.write(floats(levels));
-                        for (Forecast f : result) {
-                            float[][][] v = f.values();
-                            writeInt(out, v.length);
-                            writeInt(out, v[0][0].length);
-                            for (float[][] tq : v) {
-                                for (float[] q : tq) {
-                                    out.write(floats(q));
-                                }
-                            }
-                        }
-                    } catch (RuntimeException e) {
-                        byte[] msg = String.valueOf(e).getBytes(StandardCharsets.UTF_8);
-                        writeInt(out, 1);
-                        writeInt(out, msg.length);
-                        out.write(msg);
-                        e.printStackTrace();
-                    }
-                    out.flush();
+            boolean quit = false;
+            while (!quit) {
+                try (Socket s = server.accept();
+                        DataInputStream in = new DataInputStream(new BufferedInputStream(s.getInputStream(), 1 << 20));
+                        OutputStream out = new BufferedOutputStream(s.getOutputStream(), 1 << 20)) {
+                    quit = serve(engine, in, out);
                 }
             }
         }
         System.exit(0);
+    }
+
+    /** Answers one client's requests: true when it asked the server to quit, false when it disconnected. */
+    private static boolean serve(ForecastEngine engine, DataInputStream in, OutputStream out) throws IOException {
+        while (true) {
+            int op;
+            try {
+                op = readInt(in);
+            } catch (EOFException e) {
+                return false;
+            }
+            if (op == 0) {
+                return true;
+            }
+            int n = readInt(in), horizon = readInt(in);
+            List<TimeSeries> series = new ArrayList<>(n);
+            for (int i = 0; i < n; i++) {
+                int vt = readInt(in), vp = readInt(in), vf = readInt(in), cp = readInt(in), cf = readInt(in);
+                int t = readInt(in), tf = readInt(in), tcf = readInt(in);
+                float[][] target = readFloats(in, vt, t);
+                float[][] past = vp == 0 ? null : readFloats(in, vp, t);
+                float[][] future = vf == 0 ? null : readFloats(in, vf, tf);
+                double[][] catPast = cp == 0 ? null : readDoubles(in, cp, t);
+                double[][] catFuture = cf == 0 ? null : readDoubles(in, cf, tcf);
+                series.add(new TimeSeries(target, past, future, catPast, catFuture));
+            }
+            try {
+                List<Forecast> result = engine.forecast(series, horizon);
+                Timing.report("request of " + n + " series", 1);
+                writeInt(out, 0);
+                float[] levels = result.get(0).levels();
+                writeInt(out, levels.length);
+                out.write(floats(levels));
+                for (Forecast f : result) {
+                    float[][][] v = f.values();
+                    writeInt(out, v.length);
+                    writeInt(out, v[0][0].length);
+                    for (float[][] tq : v) {
+                        for (float[] q : tq) {
+                            out.write(floats(q));
+                        }
+                    }
+                }
+            } catch (RuntimeException e) {
+                byte[] msg = String.valueOf(e).getBytes(StandardCharsets.UTF_8);
+                writeInt(out, 1);
+                writeInt(out, msg.length);
+                out.write(msg);
+                e.printStackTrace();
+            }
+            out.flush();
+        }
     }
 
     private static int readInt(DataInputStream in) throws IOException {
