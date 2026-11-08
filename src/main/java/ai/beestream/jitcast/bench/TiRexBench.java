@@ -38,7 +38,7 @@ import ai.beestream.jitcast.util.Json;
 
 /**
  * The TornadoVM (or CPU) side of the NXAI comparison: the same workload file, scenarios and
- * timing boundaries as {@code scripts/bench_nxai.py}, and the same JSON record layout.
+ * timing boundaries as jitCast-benchmarking's {@code scripts/bench_nxai.py}, and the same JSON record layout.
  *
  * <ul>
  *   <li>{@code e2e}: {@code forecast()} — batch assembly, forward, postprocessing;

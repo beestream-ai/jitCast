@@ -13,8 +13,8 @@ reference's long-horizon unrolling).
 |---|---|
 | Architecture | T5-style encoder over 16-step patches: time attention with RoPE along each series, group attention across the series of a group at each patch, ReLU feed-forward layers, RMSNorm; a `[REG]` token and one token per forecast patch; residual-MLP patch embedding and quantile head |
 | Checkpoints | `amazon/chronos-2` (120M, 21 quantiles) and `autogluon/chronos-2-small` (28M, 13 quantiles) on Hugging Face, loaded as published (`config.json` + `model.safetensors`) |
-| Validated | both checkpoints on CPU, Metal, OpenCL and CUDA ([VALIDATION.md](../VALIDATION.md#chronos-2)) |
-| Performance | [PERFORMANCE.md](../PERFORMANCE.md#chronos-2) |
+| Validated | both checkpoints on CPU, Metal, OpenCL and CUDA ([VALIDATION.md](https://github.com/beestream-ai/jitCast-benchmarking/blob/main/docs/VALIDATION.md#chronos-2)) |
+| Performance | [PERFORMANCE.md](https://github.com/beestream-ai/jitCast-benchmarking/blob/main/docs/PERFORMANCE.md#chronos-2) |
 | Engines | `chronos2.tornado.TornadoChronos2Engine` (TornadoVM), `chronos2.cpu.CpuChronos2Engine` (FP32 reference) |
 
 ## Quick start

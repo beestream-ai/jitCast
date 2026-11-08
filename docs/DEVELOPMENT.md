@@ -78,23 +78,17 @@ golden tests read their paths from system properties and are skipped when those 
 | `convert_ckpt.py` | `model.ckpt` + `model-config.yaml` → one `tirex2.safetensors` (FP32, aliases removed, config in the metadata) |
 | `spec_forward.py` | An explicit PyTorch spec of `forward()` (basic ops only, no mLSTM or FlashRNN kernels) checked stage by stage against the goldens; the Java reference is a port of it |
 | `dump_golden.py` | Runs the NXAI model on 13 cases and saves the inputs, the batch passed to `forward()`, the activations of every stage, the raw model output and the final forecasts |
-| `bench_nxai.py` | NXAI baseline: `workloads` (shared inputs), `run` (latency/throughput, e2e + forward-only), `coldstart` |
-| `setup_reference.sh` | The whole reference setup on a CUDA machine, in a work directory: venv, CUDA-kernel check, conversion, CPU + CUDA goldens, NXAI baseline, cold start |
-| `tirex_tornado.py`, `run_with_tornado.py` | Run an unmodified NXAI harness with `TiRex2.predict` served by `TiRexServer` |
-| `gift_resumable.py` | GIFT-Eval one configuration at a time: results appended as they land, resumable, server restart and retry on failure |
+| `setup_reference.sh` | The whole reference setup on a CUDA machine, in a work directory: venv, CUDA-kernel check, conversion, CPU + CUDA goldens |
 | **Timestral** | |
 | `timestral/dump_golden.py` | Runs Mistral's Timestral forecaster on 13 cases and saves every `predict_block` call's arguments, stages and output, the forecasts, and each stage's distance from a float64 replay |
-| `timestral/bench_reference.py` | The Timestral benchmark workloads, and the reference's latency on them (CPU, CUDA, or MPS with its float64 steps on the CPU) |
-| `timestral/eval_mac.sh` | The Apple-silicon matrix: the reference on CPU and MPS against jitcast on Metal and OpenCL, per checkpoint |
-| `timestral/fev_eval.py` | fev-bench for both engines under one harness: the reference in process, jitcast through `TimestralServer`; resumable, one result row per task |
 | **Chronos-2** | |
 | `chronos2/dump_golden.py` | Runs Amazon's Chronos-2 pipeline on 13 cases and saves every forward call's arguments, stages and output, the forecasts, and each stage's distance from a float64 replay |
-| `chronos2/bench_reference.py` | The Chronos-2 benchmark workloads, and the reference's latency on them (CPU, CUDA or MPS) |
-| **Evaluation** | |
-| `eval/` | The evaluation matrix: `eval_nvidia.sh` / `eval_mac.sh` + `summarize_eval.py` / `plot_eval.py` ([PERFORMANCE.md](PERFORMANCE.md)); accuracy parity: `acc_setup.sh` / `acc_run.sh` / `acc_compare.py` ([VALIDATION.md](VALIDATION.md)); `tornado_run.sh` (run a jitcast main class on a TornadoVM SDK), `nxai.sh` (NXAI's benchmark in its venv), `profile.sh` + `kern_sum.py` (nsys), `cublas13_shim.sh` ([INSTALL.md](INSTALL.md#nvidia-extras)), `waitfree.sh` (wait for a shared machine to be free). Each script's header lists its arguments and environment |
 
-The whole TiRex-2 reference setup on a CUDA machine (venv, conversion, goldens, NXAI baseline):
+The whole TiRex-2 reference setup on a CUDA machine (venv, conversion, goldens):
 
 ```bash
 ./scripts/setup_reference.sh ~/tirex2-work
 ```
+
+The reference engines' benchmarks, the evaluation matrix, the accuracy-parity harnesses and the
+recorded results are in [jitCast-benchmarking](https://github.com/beestream-ai/jitCast-benchmarking).

@@ -14,15 +14,16 @@
 # limitations under the License.
 
 # The reference setup on a CUDA machine: install NXAI's TiRex-2 in a venv, check that its CUDA kernels build,
-# convert the checkpoint, dump CPU + CUDA goldens and record NXAI's baseline and cold start.
+# convert the checkpoint and dump CPU + CUDA goldens.
 #
 #   setup_reference.sh <workdir>
 #
 # PYTHON picks the interpreter (default python3.11), TORCH_INDEX the PyTorch wheel index (default CUDA 13.0),
 # TIREX_REF the tirex-2 tag or commit (default v0.4.0). Triton builds a C helper, so the interpreter needs its
 # development headers (a uv-managed Python has them).
-# Re-runnable: each step skips work that is already done. Results land in <workdir>/results; the work
-# directory is then the one scripts/eval/acc_setup.sh, eval_nvidia.sh and acc_run.sh take.
+# Re-runnable: each step skips work that is already done. Results land in <workdir>/results. NXAI's
+# speed baseline and the benchmark harnesses that take this work directory are in jitCast-benchmarking
+# (https://github.com/beestream-ai/jitCast-benchmarking).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -103,37 +104,4 @@ for case, info in man["cases"].items():
         print(f"{case + '.' + str(i):28s} {d:14.3e} {d / (x.abs().max().item() + 1e-12):10.3e}")
 EOF
 
-# 4. NXAI baseline ----------------------------------------------------------------------------
-B="$HERE/bench_nxai.py"
-[ -f workloads.safetensors ] || python "$B" workloads --out workloads.safetensors
-nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv | tee results/gpu_before_bench.txt
-nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv | tee -a results/gpu_before_bench.txt
-for cfg in eager compile; do
-    log "bench $cfg"
-    python "$B" run --workloads workloads.safetensors --device cuda --config "$cfg" \
-        --scenarios throughput,multivariate --out "results/nxai-$cfg.json" 2>&1 | grep -v Warning | tee "results/nxai-$cfg.log"
-done
-log "bench flex (multivariate)"
-python "$B" run --workloads workloads.safetensors --device cuda --config flex \
-    --scenarios multivariate --out results/nxai-flex.json 2>&1 | grep -v Warning | tee results/nxai-flex.log
-
-# 5. Cold start: warm extension cache x10, cold FlashRNN build cache x3 -----------------------
-log "cold start"
-rm -f results/nxai-cold-warmcache.jsonl results/nxai-cold-coldcache.jsonl
-for i in $(seq 10); do
-    BENCH_EXEC_START_NS=$(now_ns) python "$B" coldstart --device cuda --out results/nxai-cold-warmcache.jsonl >/dev/null 2>&1
-done
-for i in $(seq 3); do
-    ext=$(mktemp -d)
-    TORCH_EXTENSIONS_DIR="$ext" TRITON_CACHE_DIR="$ext/triton" BENCH_EXEC_START_NS=$(now_ns) \
-        python "$B" coldstart --device cuda --out results/nxai-cold-coldcache.jsonl >/dev/null 2>&1
-    rm -rf "$ext"
-done
-python - <<'EOF' | tee results/cold_summary.txt
-import json, statistics
-for name in ("warmcache", "coldcache"):
-    rows = [json.loads(l) for l in open(f"results/nxai-cold-{name}.jsonl")]
-    keys = ("import_ms", "load_model_ms", "first_forecast_ms", "exec_to_first_forecast_ms")
-    print(name, {k: round(statistics.median(r[k] for r in rows)) for k in keys})
-EOF
 log "done: $WORK/results"

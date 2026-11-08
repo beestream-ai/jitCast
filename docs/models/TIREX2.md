@@ -10,8 +10,8 @@ multi-target series, and series with past or future covariates.
 |---|---|
 | Architecture | xLSTM: 12 blocks of `[mLSTM, sLSTM] × 6`, each time mixer followed by attention across variates; D = 512, 82.5M parameters; a residual-block quantile head |
 | Checkpoints | `NX-AI/TiRex-2` and `-fevbench` (2,048 + 320 steps = 74 patches); `-gifteval-zs` and `-gifteval-pretrain` (8,192 + 928 = 285 patches, no qk-norm), converted once to safetensors |
-| Validated | CPU, CUDA, OpenCL and Metal, against NXAI's tirex-2 0.4.0; benchmark parity with NXAI on fev-bench and GIFT-Eval ([VALIDATION.md](../VALIDATION.md#tirex-2)) |
-| Performance | [PERFORMANCE.md](../PERFORMANCE.md#tirex-2) |
+| Validated | CPU, CUDA, OpenCL and Metal, against NXAI's tirex-2 0.4.0; benchmark parity with NXAI on fev-bench and GIFT-Eval ([VALIDATION.md](https://github.com/beestream-ai/jitCast-benchmarking/blob/main/docs/VALIDATION.md#tirex-2)) |
+| Performance | [PERFORMANCE.md](https://github.com/beestream-ai/jitCast-benchmarking/blob/main/docs/PERFORMANCE.md#tirex-2) |
 | Engines | `tirex2.tornado.TornadoTiRex2Engine` (TornadoVM), `tirex2.cpu.CpuTiRex2Engine` (FP32 reference) |
 
 ## Quick start

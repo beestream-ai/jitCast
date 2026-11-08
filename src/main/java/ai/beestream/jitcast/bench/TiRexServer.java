@@ -44,7 +44,7 @@ import ai.beestream.jitcast.tirex2.tornado.TornadoForward;
 /**
  * Serves {@code forecast()} to Python over a local socket, so NXAI's own benchmark harnesses
  * (GIFT-Eval, fev-bench) can score this engine with their data loading and metrics unchanged: the
- * Python side ({@code scripts/tirex_tornado.py}) replaces {@code TiRex2.predict} with a call here.
+ * Python side (jitCast-benchmarking's {@code scripts/tirex_tornado.py}) replaces {@code TiRex2.predict} with a call here.
  *
  * <p>Protocol, little-endian, one request at a time:
  * <pre>

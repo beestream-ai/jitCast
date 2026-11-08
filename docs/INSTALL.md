@@ -10,7 +10,7 @@
   8.0.0 API. TornadoVM 8 compiles kernels with TC, its own compiler, in place of Graal: every model
   passes its golden tests on it, it is up to 1.36× faster than 7.3.1 at small batches, and it runs the
   CUDA Tile GEMM (`cutile`) that 7.3.1 cannot compile
-  ([PERFORMANCE.md](PERFORMANCE.md#tornadovm-8-against-731)). jitcast still runs on a 7.3.1 SDK, built
+  ([PERFORMANCE.md](https://github.com/beestream-ai/jitCast-benchmarking/blob/main/docs/PERFORMANCE.md#tornadovm-8-against-731)). jitcast still runs on a 7.3.1 SDK, built
   with `-Dtornadovm.version=7.3.1-jdk22plus`.
 - **Python 3.11+ with PyTorch**, only for converting TiRex-2 checkpoints, recording goldens and running
   the reference engines as baselines. Create the venv with that interpreter (`python3.11 -m venv`): a
@@ -74,8 +74,8 @@ Metal `1:0`, with the portable register-blocked GEMMs. A backend's priority is
   libraries first and needs no shim). TornadoVM's cuBLAS provider loads `libcublas.so.12` first. If a CUDA 12.0
   cuBLAS is installed next to CUDA 13, it silently runs generic, non-tensor-core kernels on sm_120.
   Point `LD_LIBRARY_PATH` at a directory where `lib{cublas,cublasLt,cudart}.so.12` link to the CUDA 13
-  libraries; `scripts/eval/cublas13_shim.sh <dir>` builds such a shim, and `scripts/eval/tornado_run.sh`
-  uses it when `CUBLAS_SHIM=<dir>` is set.
+  libraries; jitCast-benchmarking's [`scripts/eval/cublas13_shim.sh`](https://github.com/beestream-ai/jitCast-benchmarking/blob/main/scripts/eval/cublas13_shim.sh) `<dir>` builds such a shim,
+  and its `scripts/eval/tornado_run.sh` uses it when `CUBLAS_SHIM=<dir>` is set.
 - **CUDA Tile (`cutile`)** needs TornadoVM 8 (7.3.1 fails to compile its GEMM) and toolkit
   13.3+. A user-space install is enough:
   `pip install 'cuda-tile[tileiras]'` into a venv, then pass

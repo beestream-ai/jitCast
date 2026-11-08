@@ -46,11 +46,11 @@ $JITCAST -Djitcast.tornado.device=1:0 -Dtimestral.tornado.gemm=cublas my.App
 ## Benchmarks
 
 Each model has a benchmark that times end-to-end `forecast()` on the same inputs as its reference
-engine; the reference side writes the shared workload file.
+engine; the reference side, in [jitCast-benchmarking](https://github.com/beestream-ai/jitCast-benchmarking), writes the shared workload file.
 
 ```bash
 # TiRex-2: latency and throughput (univariate batches, multivariate series × covariates)
-python scripts/bench_nxai.py workloads --out workloads.safetensors
+python ../jitCast-benchmarking/scripts/bench_nxai.py workloads --out workloads.safetensors
 $JITCAST -Dtirex.tornado.gemm=cublas-auto ai.beestream.jitcast.bench.TiRexBench \
     --weights tirex2.safetensors --workloads workloads.safetensors --engine tornado \
     --scenarios throughput,multivariate --batches 1,8,64,512 --mv-batches 1,32 --covariates 15 --out results.json
@@ -61,12 +61,12 @@ BENCH_EXEC_START_NS=$(date +%s%N) $JITCAST ai.beestream.jitcast.bench.TiRexColdS
 $JITCAST ai.beestream.jitcast.bench.TiRexServer --weights tirex2.safetensors --port-file port.txt
 
 # Timestral: 1–512 series, a long horizon, a long context and covariates
-python scripts/timestral/bench_reference.py workloads --out ts-workloads.safetensors
+python ../jitCast-benchmarking/scripts/timestral/bench_reference.py workloads --out ts-workloads.safetensors
 $JITCAST ai.beestream.jitcast.bench.TimestralBench --checkpoint Timestral-5M \
     --workloads ts-workloads.safetensors --engine tornado --out timestral.json
 
 # Chronos-2: the Timestral workloads plus a 2,048-step horizon
-python scripts/chronos2/bench_reference.py workloads --out c2-workloads.safetensors
+python ../jitCast-benchmarking/scripts/chronos2/bench_reference.py workloads --out c2-workloads.safetensors
 $JITCAST ai.beestream.jitcast.bench.Chronos2Bench --checkpoint chronos-2 \
     --workloads c2-workloads.safetensors --engine tornado --out chronos2.json
 ```
@@ -75,13 +75,13 @@ $JITCAST ai.beestream.jitcast.bench.Chronos2Bench --checkpoint chronos-2 \
 `--covariates`, `--horizon` (64), `--reps` (30), `--warmup` (5), `--budget` (3 s per point),
 `--max-batch` (1024), `--config` (a label). `TimestralBench` options: `--engine tornado|cpu`,
 `--scenarios`, `--reps` (20), `--warmup` (3), `--budget` (5 s per point); `Chronos2Bench` takes the
-same. The method and the results are in [PERFORMANCE.md](PERFORMANCE.md).
+same. The method and the results are in [PERFORMANCE.md](https://github.com/beestream-ai/jitCast-benchmarking/blob/main/docs/PERFORMANCE.md).
 
 The harness servers answer forecast requests over a local socket, so the reference engines' Python
-benchmark harnesses can score jitcast unchanged: `TiRexServer` for NXAI's (`scripts/tirex_tornado.py`;
+benchmark harnesses can score jitcast unchanged: `TiRexServer` for NXAI's (jitCast-benchmarking's `scripts/tirex_tornado.py`;
 options `--engine tornado|cpu`, `--batch-size` (512), `--plans` (cached plans, 4), `--max-shapes` (12)
-and `--max-builds`, after which it asks the client to restart it) and `TimestralServer` for
-`scripts/timestral/fev_eval.py` (`--checkpoint`, `--port-file`, `--engine`).
+and `--max-builds`, after which it asks the client to restart it) and `TimestralServer` for its
+`scripts/timestral/fev_eval.py` and `gift_eval.py` (`--checkpoint`, `--port-file`, `--engine`).
 
 ## Tests
 
@@ -107,6 +107,6 @@ and the device engines against the goldens. Tests whose goldens are not configur
 | Timestral | `-Dtimestral.checkpoint`, `-Dtimestral.golden` | `scripts/timestral/dump_golden.py --src <timestral>/src --ckpt <dir> --out <dir>`, from a clone of `mistralai/timestral` |
 | Chronos-2 | `-Dchronos2.checkpoint`, `-Dchronos2.golden` | `scripts/chronos2/dump_golden.py --src <chronos-forecasting>/src --ckpt <dir> --out <dir>`, from a clone of `amazon-science/chronos-forecasting` (with `transformers`, `einops` and `pandas`) |
 
-The tolerances and what each test checks are in [VALIDATION.md](VALIDATION.md). With cuBLAS, the
+The tolerances and what each test checks are in [VALIDATION.md](https://github.com/beestream-ai/jitCast-benchmarking/blob/main/docs/VALIDATION.md). With cuBLAS, the
 Timestral-209M tests need more than the profile's default of 8 GB: `-Dtornado.device.memory=20GB`
 is enough (on a 24 GB A10).

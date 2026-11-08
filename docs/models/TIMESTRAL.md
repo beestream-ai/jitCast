@@ -13,8 +13,8 @@ augmentation.
 |---|---|
 | Architecture | patch transformer (32 steps per patch): time attention with partial RoPE and a sigmoid gate, attention across the variates of a series, SwiGLU MLPs, RMSNorm; a monotone 21-quantile head |
 | Checkpoints | `mistralai/Timestral-5M`, `-28M`, `-123M`, `-209M` on Hugging Face, loaded as published (`config.json` + `model.safetensors`) |
-| Validated | all four checkpoints on CPU, Metal, OpenCL and CUDA ([VALIDATION.md](../VALIDATION.md#timestral)) |
-| Performance | [PERFORMANCE.md](../PERFORMANCE.md#timestral) |
+| Validated | all four checkpoints on CPU, Metal, OpenCL and CUDA ([VALIDATION.md](https://github.com/beestream-ai/jitCast-benchmarking/blob/main/docs/VALIDATION.md#timestral)) |
+| Performance | [PERFORMANCE.md](https://github.com/beestream-ai/jitCast-benchmarking/blob/main/docs/PERFORMANCE.md#timestral) |
 | Engines | `timestral.tornado.TornadoTimestralEngine` (TornadoVM), `timestral.cpu.CpuTimestralEngine` (FP32 reference) |
 
 ## Quick start

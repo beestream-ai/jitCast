@@ -92,7 +92,7 @@ Covariates, the benchmarks, the harness server and the tests are covered in [doc
 End-to-end `forecast()` on an NVIDIA A100 80GB (TornadoVM `develop`), jitcast's fastest option against
 the fastest option of each model's PyTorch reference (eager, `torch.compile`, TF32, BF16 and FP16, and
 FlexAttention for TiRex-2), per workload. The method, both times of every point and the other GPUs and
-Apple silicon are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md#fastest-against-fastest).
+Apple silicon are in [PERFORMANCE.md](https://github.com/beestream-ai/jitCast-benchmarking/blob/main/docs/PERFORMANCE.md#fastest-against-fastest) in [jitCast-benchmarking](https://github.com/beestream-ai/jitCast-benchmarking).
 
 | Model | 1 series | 8 series | 128 series | 512 series | 1 series, H = 1,024 | 8 series, long context |
 |---|---|---|---|---|---|---|
@@ -114,10 +114,9 @@ On fev-bench (100 tasks) TiRex-2's inference time is 3.2× lower than NXAI's.
 | [USAGE.md](docs/USAGE.md) | The Java API, the benchmarks, the harness server, the tests |
 | [CONFIGURATION.md](docs/CONFIGURATION.md) | Every option, GEMM modes, hybrid APIs, per-platform recommendations, per model |
 | [models/TIREX2.md](docs/models/TIREX2.md), [models/TIMESTRAL.md](docs/models/TIMESTRAL.md), [models/CHRONOS2.md](docs/models/CHRONOS2.md) | Each model: architecture, checkpoints, features, how it maps onto jitcast, options, licence |
-| [VALIDATION.md](docs/VALIDATION.md) | How each model was checked against its reference engine |
-| [PERFORMANCE.md](docs/PERFORMANCE.md) | The comparisons with the reference engines: method, results, charts |
 | [KERNELS.md](docs/KERNELS.md) | Every kernel, shared and per model, with source links and their hybrid alternatives |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Architecture, code layout, adding a model family, scripts |
+| [jitCast-benchmarking](https://github.com/beestream-ai/jitCast-benchmarking) | Validation, performance comparisons with the reference engines, benchmark harnesses and recorded results |
 | [ROADMAP.md](docs/ROADMAP.md) | Planned work, and the TornadoVM issues that limit jitcast today |
 
 ## License

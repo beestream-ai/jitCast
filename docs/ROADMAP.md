@@ -3,7 +3,7 @@
 [← back to the README](../README.md)
 
 Planned work on jitcast, and the TornadoVM issues that limit it today. The current results are in
-[PERFORMANCE.md](PERFORMANCE.md) and [VALIDATION.md](VALIDATION.md).
+[PERFORMANCE.md](https://github.com/beestream-ai/jitCast-benchmarking/blob/main/docs/PERFORMANCE.md) and [VALIDATION.md](https://github.com/beestream-ai/jitCast-benchmarking/blob/main/docs/VALIDATION.md).
 
 ## Models
 
@@ -12,7 +12,7 @@ Planned work on jitcast, and the TornadoVM issues that limit it today. The curre
    GIFT-Eval).
 2. **Further candidates**: TimesFM, Toto, Moirai 2, TTM, Sundial, checked against the GIFT-Eval
    leaderboard and each model's weight licence before porting.
-3. **GIFT-Eval parity for Timestral** (fev-bench is done: [VALIDATION.md](VALIDATION.md#timestral)).
+3. **GIFT-Eval parity for Timestral** (fev-bench is done: [VALIDATION.md](https://github.com/beestream-ai/jitCast-benchmarking/blob/main/docs/VALIDATION.md#timestral)).
 4. **Timestral's long-context attention**: its time attention kernel walks the keys one at a time,
    which makes the longest fev-bench tasks slower than in PyTorch. On CUDA, small batches of long rows
    already go to cuBLAS batched GEMMs (`timestral.tornado.attention`); the kernel is used everywhere
