@@ -35,6 +35,20 @@ one Java API.
 - **Faster than the reference engines.** On an A100 and an A10, at every batch size measured, from 1
   to 512 series: 3–16× at one series, where the references' per-call overhead dominates.
 
+## Architecture
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-dark.svg">
+    <img alt="jitcast architecture: callers use one Java API; each model family has its config and weights, a host pipeline in Java, and a forward pass run by a CPU reference or a TornadoVM engine; shared io, host, cpu and tornado packages; TornadoVM runs the kernels on CUDA, OpenCL and Metal" src="docs/images/architecture-light.svg" width="100%">
+  </picture>
+</p>
+
+Each model family reproduces its reference engine's `forecast()`: the host pipeline (batching,
+scaling, test-time augmentation, calibration) runs in Java, and the forward pass runs either on the
+CPU reference, the FP32 oracle the device kernels are tested against, or on a TornadoVM device as one
+cached task graph per batch shape. More in [DEVELOPMENT.md](docs/DEVELOPMENT.md#architecture).
+
 ## Where it runs
 
 | Platform | Backend | TiRex-2 | Timestral | Chronos-2 |
