@@ -5,7 +5,7 @@
 Every entry point runs on the TornadoVM JVM with the SDK's argfile:
 
 ```bash
-JITCAST="java @$TORNADOVM_HOME/tornado-argfile --add-modules jdk.incubator.vector -cp target/classes"
+JITCAST="java @$TORNADOVM_HOME/tornado-argfile -cp target/classes"
 ```
 
 ## From Java

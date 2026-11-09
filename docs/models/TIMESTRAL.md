@@ -103,14 +103,15 @@ TimestralPipeline p = engine.pipeline().withOptions(
 | `timestral.tornado.attentionScoreBytes` | `536870912` (512 MB) | The most memory the cuBLAS time attention's scores take at once |
 | `timestral.tornado.buckets` | `true` | Pad each block to a shared shape (leading empty patches, empty series), so that few plans are compiled; the forecasts do not change |
 | `timestral.tornado.plans` | `8` | Block shapes kept compiled (least recently used are evicted) |
-| `timestral.tornado.planBytes` | `8589934592` (8 GiB) | The most host memory the cached plans' buffers take together; the least recently used plans are evicted first |
+| `timestral.tornado.planBytes` | `tornado.device.memory` | The device memory the cached plans may hold together, each counting its own copy of the weights; see [CONFIGURATION.md](../CONFIGURATION.md#compiled-plans) |
 | `timestral.tornado.profile` | `false` | Print TornadoVM's per-task kernel times after every execution |
 | `timestral.timing` | `false` | Print the time of each host and device phase per forecast (analysis only) |
 | `timestral.maxTokens` | `131072` | The most tokens one forward pass takes; forecasts do not depend on the split |
 
-With cuBLAS the weights are held twice on the device (the packed buffer and one array per GEMM
-matrix), about 0.8 GB more for the 209M checkpoint; the FP16 modes add an FP16 copy of the GEMM
-weights.
+With cuBLAS each plan holds the weights twice on the device (the packed buffer and one array per
+GEMM matrix), about 0.8 GB more for the 209M checkpoint; the FP16 modes add an FP16 copy of the GEMM
+weights. TornadoVM gives every plan its own device buffers, so each cached plan holds its own copy,
+which the plan cache counts against its budget.
 
 ## Limits
 

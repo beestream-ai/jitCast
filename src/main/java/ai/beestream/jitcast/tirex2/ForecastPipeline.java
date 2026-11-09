@@ -45,7 +45,9 @@ public final class ForecastPipeline {
      * Splitting a batch does not change the forecasts: a row's position in the model input does
      * not depend on the other series of its batch.
      */
-    public static final long DEFAULT_MAX_TOKENS = Long.getLong("tirex.maxTokens", 131_072L);
+    public static long defaultMaxTokens() {
+        return ai.beestream.jitcast.util.Options.number("tirex.maxTokens", 131_072L, 1);
+    }
 
     private final TiRex2Config config;
     private final ForwardPass forward;
@@ -59,7 +61,7 @@ public final class ForecastPipeline {
     }
 
     public ForecastPipeline(TiRex2Config config, ForwardPass forward, int batchSize, boolean ttaDiff, boolean ttaSignFlip) {
-        this(config, forward, batchSize, DEFAULT_MAX_TOKENS, ttaDiff, ttaSignFlip);
+        this(config, forward, batchSize, defaultMaxTokens(), ttaDiff, ttaSignFlip);
     }
 
     public ForecastPipeline(TiRex2Config config, ForwardPass forward, int batchSize, long maxTokens, boolean ttaDiff,

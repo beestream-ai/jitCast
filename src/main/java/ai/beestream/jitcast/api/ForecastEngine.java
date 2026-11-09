@@ -19,7 +19,8 @@ import java.util.List;
 
 /**
  * A forecasting engine for one model family, such as TiRex-2: its CPU reference or a TornadoVM
- * backend.
+ * backend. An engine can be shared between threads; a TornadoVM engine runs their calls one at a
+ * time, since they reuse the same device buffers. {@link #close()} may be called more than once.
  */
 public interface ForecastEngine extends AutoCloseable {
 
@@ -29,7 +30,7 @@ public interface ForecastEngine extends AutoCloseable {
      */
     List<Forecast> forecast(List<TimeSeries> series, int horizon);
 
-    /** A short name for logs and benchmark records, e.g. {@code cpu-fp32} or {@code tornado-cuda}. */
+    /** A short name for logs and benchmark records, e.g. {@code cpu-fp32} or {@code tornado}. */
     String name();
 
     @Override

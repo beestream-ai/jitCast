@@ -35,6 +35,9 @@ public record TimeSeries(float[][] target, float[][] pastCovariates, float[][] f
             throw new IllegalArgumentException("a series needs at least one target row");
         }
         int t = target[0].length;
+        if (t == 0) {
+            throw new IllegalArgumentException("a series needs at least one time step");
+        }
         for (float[] row : target) {
             requireLength(row.length, t, "target");
         }

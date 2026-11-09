@@ -12,12 +12,15 @@ engine's `forecast()` end to end, and shares one engine structure with the other
   series. Every engine of every family implements it.
 - **Host side, in Java**: the family's forecast pipeline (batch assembly and padding, scaling,
   decoding, calibration, test-time augmentation), over a forward-pass interface it defines. The
-  splitting of a call into forward passes (`host.SeriesWindows`) and sign-flip averaging
-  (`host.SignFlip`) are shared.
-- **Forward pass on a TornadoVM device**: one task graph per batch shape, compiled once and cached,
-  with the activations kept on the device. The GEMMs, RMSNorm, SwiGLU and their epilogues are shared
-  kernels (`tornado.Kernels`), run in a `tornado.GemmMode`: TornadoVM's own FP32 or FP16 kernels on any
-  backend, Apple's simdgroup matrices on Metal, or cuBLAS on CUDA, with CUDA graphs. The rest are the family's own kernels.
+  splitting of a call into forward passes (`host.SeriesWindows`, used by TiRex-2 and Timestral;
+  Chronos-2 splits between groups) and sign-flip averaging (`host.SignFlip`) are shared.
+- **Forward pass on a TornadoVM device**: one task graph per batch shape, compiled once and cached
+  in a `tornado.PlanCache` (least recently used evicted, within a device-memory budget, one call at a
+  time), with the activations kept on the device. The GEMMs, RMSNorm, SwiGLU and their epilogues are
+  shared kernels (`tornado.Kernels`). Timestral and Chronos-2 run them in a `tornado.GemmMode`:
+  TornadoVM's own FP32 or FP16 kernels on any backend, Apple's simdgroup matrices on Metal, or cuBLAS
+  on CUDA, with CUDA graphs. TiRex-2 has its own modes (`TornadoForward.GemmMode`: the tiled and FP16
+  kernels, cuBLAS with per-GEMM FP16, CUDA Tile). The rest are the family's own kernels.
 - **CPU reference**: a plain-Java FP32 port of the forward pass, from the shared operators
   (`cpu.Ops`), which the device kernels are tested against.
 
@@ -32,8 +35,8 @@ explicit worker grid, so the same code runs on CUDA, OpenCL and Metal.
 | `io` | `SafeTensors` (memory-mapped reader), `Tensor` |
 | `host` | Model-agnostic host pieces: `SeriesWindows` (splits a forecast call into forward passes by series count and token budget) and `SignFlip` (sign-flip test-time augmentation) |
 | `cpu` | `Ops`: the FP32 operators shared by every family's CPU reference (linear, RMSNorm, SiLU, ReLU, sigmoid), the oracles of the shared kernels |
-| `tornado` | `Kernels`: the device kernels shared by every family — the FP32 (tiled, register-blocked, simdgroup), FP16 and CUDA Tile GEMMs with SiLU or ReLU epilogues, RMSNorm, SwiGLU and the epilogues around a cuBLAS GEMM (see [KERNELS.md](KERNELS.md)); `GemmMode`: how a family's GEMMs run (TornadoVM kernels or cuBLAS) |
-| `util` | `Json` |
+| `tornado` | `Devices` (the device, its memory budget, jitcast's TornadoVM defaults), `PlanCache` (the compiled plans of a family), `Kernels`: the device kernels shared by every family — the FP32 (tiled, register-blocked, simdgroup), FP16 and CUDA Tile GEMMs with SiLU or ReLU epilogues, RMSNorm, SwiGLU and the epilogues around a cuBLAS GEMM (see [KERNELS.md](KERNELS.md)); `GemmMode`: how a family's GEMMs run (TornadoVM kernels or cuBLAS) |
+| `util` | `Json`, `Options` (system-property options that fail on values that do not parse) |
 | `bench` | `TiRexBench` (latency/throughput), `TiRexColdStart`, `TiRexServer` (socket server for NXAI's Python harnesses), `PlanMemoryProbe`, `TimestralBench`, `TimestralServer`, `Chronos2Bench` |
 | `tirex2` | `TiRex2Config` (from the embedded model config), `TiRex2Weights` (binds every tensor by name and shape; unknown or missing tensors fail the load), `ForecastPipeline` (`ForecastModel.forecast`: batch assembly and padding, horizon slicing, calibration) and `PostProcessor` (trend detection, differencing, band calibration), `ModelBatch` (the batch `forward()` receives) and `ForwardPass` (the forward-pass interface) — shared by both TiRex-2 engines |
 | `tirex2.cpu` | FP32 CPU reference, the oracle for the device kernels: `TiRexOps` (head LayerNorm, gate functions, residual block, SwiGLU FFN), `InputStage`, `Cells` (mLSTM, sLSTM), `CpuReference` (the full forward pass), `CpuWeights` (heap copies of the weights it reads), `CpuTiRex2Engine` |
@@ -55,8 +58,8 @@ The Timestral port is the template; it took these steps, each validated before t
    its inputs (univariate, multivariate, NaNs, ragged batches, covariates, long contexts and
    horizons), recording each forward call's inputs, every stage, its output, the forecasts, and each
    stage's distance from a float64 replay (the reference's own noise floor).
-3. **Config and weights** (`<family>.<Family>Config`, `<Family>Weights`): unknown config keys,
-   unsupported settings and unbound tensors fail the load.
+3. **Config and weights** (`<family>.<Family>Config`, `<Family>Weights`): unsupported settings,
+   inconsistent sizes and unbound tensors fail the load.
 4. **CPU reference and pipeline** against the goldens: every stage within 1e-4 (or 4× the noise floor),
    every forward call's inputs bit for bit, the forecasts within 1e-4.
 5. **TornadoVM engine**: the shared kernels first, then the family's own; a device test against the

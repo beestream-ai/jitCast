@@ -17,6 +17,7 @@ package ai.beestream.jitcast.bench;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.EOFException;
 import java.io.IOException;
@@ -24,9 +25,6 @@ import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -88,93 +86,70 @@ public final class TimestralServer {
         System.exit(0);
     }
 
-    /** Answers one client's requests: true when it asked the server to quit, false when it disconnected. */
+    /**
+     * Answers one client's requests: true when it asked the server to quit, false when it disconnected
+     * or sent a request whose sizes are out of range (answered with the error first).
+     */
     private static boolean serve(ForecastEngine engine, DataInputStream in, OutputStream out) throws IOException {
+        Wire wire = new Wire(in);
         while (true) {
             int op;
             try {
-                op = readInt(in);
+                op = wire.readInt();
             } catch (EOFException e) {
                 return false;
             }
             if (op == 0) {
                 return true;
             }
-            int n = readInt(in), horizon = readInt(in);
-            List<TimeSeries> series = new ArrayList<>(n);
-            for (int i = 0; i < n; i++) {
-                int vt = readInt(in), vp = readInt(in), vf = readInt(in), cp = readInt(in), cf = readInt(in);
-                int t = readInt(in), tf = readInt(in), tcf = readInt(in);
-                float[][] target = readFloats(in, vt, t);
-                float[][] past = vp == 0 ? null : readFloats(in, vp, t);
-                float[][] future = vf == 0 ? null : readFloats(in, vf, tf);
-                double[][] catPast = cp == 0 ? null : readDoubles(in, cp, t);
-                double[][] catFuture = cf == 0 ? null : readDoubles(in, cf, tcf);
-                series.add(new TimeSeries(target, past, future, catPast, catFuture));
+            wire.next();
+            int n, horizon;
+            List<Object[]> raw;
+            try {
+                n = wire.count("series count", 1, Wire.MAX_SERIES);
+                horizon = wire.count("horizon", 1, 1 << 20);
+                raw = new ArrayList<>(n);
+                for (int i = 0; i < n; i++) {
+                    int vt = wire.count("targets", 1, 1 << 16), vp = wire.count("past covariates", 0, 1 << 16);
+                    int vf = wire.count("known covariates", 0, 1 << 16), cp = wire.count("categorical past covariates", 0, 1 << 16);
+                    int cf = wire.count("categorical known covariates", 0, 1 << 16);
+                    int t = wire.count("length", 1, Integer.MAX_VALUE), tf = wire.count("future length", 0, Integer.MAX_VALUE);
+                    int tcf = wire.count("categorical future length", 0, Integer.MAX_VALUE);
+                    raw.add(new Object[] {wire.floats(vt, t), vp == 0 ? null : wire.floats(vp, t), vf == 0 ? null : wire.floats(vf, tf),
+                            cp == 0 ? null : wire.doubles(cp, t), cf == 0 ? null : wire.doubles(cf, tcf)});
+                }
+            } catch (Wire.BadRequest e) {
+                Wire.error(out, e);
+                out.flush();
+                return false;
             }
             try {
+                List<TimeSeries> series = new ArrayList<>(n);
+                for (Object[] r : raw) {
+                    series.add(new TimeSeries((float[][]) r[0], (float[][]) r[1], (float[][]) r[2], (double[][]) r[3], (double[][]) r[4]));
+                }
                 List<Forecast> result = engine.forecast(series, horizon);
                 Timing.report("request of " + n + " series", 1);
-                writeInt(out, 0);
+                ByteArrayOutputStream body = new ByteArrayOutputStream();
                 float[] levels = result.get(0).levels();
-                writeInt(out, levels.length);
-                out.write(floats(levels));
+                Wire.writeInt(body, levels.length);
+                Wire.writeFloats(body, levels);
                 for (Forecast f : result) {
                     float[][][] v = f.values();
-                    writeInt(out, v.length);
-                    writeInt(out, v[0][0].length);
+                    Wire.writeInt(body, v.length);
+                    Wire.writeInt(body, v[0][0].length);
                     for (float[][] tq : v) {
                         for (float[] q : tq) {
-                            out.write(floats(q));
+                            Wire.writeFloats(body, q);
                         }
                     }
                 }
+                Wire.ok(out, body);
             } catch (RuntimeException e) {
-                byte[] msg = String.valueOf(e).getBytes(StandardCharsets.UTF_8);
-                writeInt(out, 1);
-                writeInt(out, msg.length);
-                out.write(msg);
+                Wire.error(out, e);
                 e.printStackTrace();
             }
             out.flush();
         }
-    }
-
-    private static int readInt(DataInputStream in) throws IOException {
-        return Integer.reverseBytes(in.readInt());
-    }
-
-    private static void writeInt(OutputStream out, int v) throws IOException {
-        out.write(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(v).array());
-    }
-
-    private static byte[] floats(float[] v) {
-        ByteBuffer bb = ByteBuffer.allocate(4 * v.length).order(ByteOrder.LITTLE_ENDIAN);
-        bb.asFloatBuffer().put(v);
-        return bb.array();
-    }
-
-    private static float[][] readFloats(DataInputStream in, int rows, int cols) throws IOException {
-        byte[] bytes = new byte[4 * rows * cols];
-        in.readFully(bytes);
-        ByteBuffer bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
-        float[][] m = new float[rows][cols];
-        for (int r = 0; r < rows; r++) {
-            bb.asFloatBuffer().get(m[r]);
-            bb.position(bb.position() + 4 * cols);
-        }
-        return m;
-    }
-
-    private static double[][] readDoubles(DataInputStream in, int rows, int cols) throws IOException {
-        byte[] bytes = new byte[8 * rows * cols];
-        in.readFully(bytes);
-        ByteBuffer bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
-        double[][] m = new double[rows][cols];
-        for (int r = 0; r < rows; r++) {
-            bb.asDoubleBuffer().get(m[r]);
-            bb.position(bb.position() + 8 * cols);
-        }
-        return m;
     }
 }

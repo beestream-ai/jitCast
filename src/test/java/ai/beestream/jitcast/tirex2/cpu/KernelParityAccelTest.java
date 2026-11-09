@@ -72,7 +72,7 @@ public class KernelParityAccelTest {
             FloatArray fg = FloatArray.fromArray(gate), fo = FloatArray.fromArray(y0);
             int md = mode;
             run("t", grid1(rows * D, 128), g -> g.task("t", TiRexKernels::headLayerNorm, ctx, fx, fo, fw, 0, HEADS, 128,
-                    1e-6f, fg, D, 0, md, NO_TWIN, 0), fo, fx, fw, fg);
+                    1e-6f, fg, D, 0, md, NO_TWIN, 0, rows), fo, fx, fw, fg);
             float[] exp = ln.clone();
             for (int i = 0; i < exp.length; i++) {
                 exp[i] = mode == 1 ? (float) (Ops.sigmoid(gate[i]) * exp[i]) : mode == 2 ? exp[i] + y0[i] : exp[i];
@@ -317,7 +317,7 @@ public class KernelParityAccelTest {
             FloatArray fp = FloatArray.fromArray(packed);
             uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray tn2 = new uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray(rows * D);
             TaskGraph g2 = new TaskGraph("k").transferToDevice(DataTransferMode.EVERY_EXECUTION, fx, fh2, fn2, fp, tn2)
-                    .task("t", TiRexKernels::headNormAddRmsNorm, ctx, fx, fh2, fn2, fp, 0, D, HEADS, 128, 1e-6f, 1e-6f, tn2, 1)
+                    .task("t", TiRexKernels::headNormAddRmsNorm, ctx, fx, fh2, fn2, fp, 0, D, HEADS, 128, 1e-6f, 1e-6f, tn2, 1, rows)
                     .transferToHost(DataTransferMode.EVERY_EXECUTION, fh2, fn2, tn2);
             execute(g2, grid1(rows * D, D));
             float[] h2 = h0.clone();
@@ -345,7 +345,8 @@ public class KernelParityAccelTest {
     }
 
     private static ai.beestream.jitcast.tirex2.TiRex2Config testConfig() {
-        return new ai.beestream.jitcast.tirex2.TiRex2Config(12, 512, 32, 2048, 2048, 2048, 320, new float[9], true,
+        return new ai.beestream.jitcast.tirex2.TiRex2Config(12, 512, 32, 2048, 2048, 2048, 320,
+                new float[] {0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f, 0.9f}, true,
                 true, 1e-7f, true, false, java.util.List.of(), 4, 4, 4, true);
     }
 }

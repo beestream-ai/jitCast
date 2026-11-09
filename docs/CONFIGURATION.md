@@ -2,19 +2,35 @@
 
 [← back to the README](../README.md)
 
-Engine options are JVM properties (`-D…`). The options every model shares come first; each model then
+Engine options are JVM properties (`-D…`), read when an engine is created. A value that does not
+parse, or a GEMM mode the device cannot run, fails the engine's creation with the property's name;
+nothing falls back to a default silently. The options every model shares come first; each model then
 has its own, with its own prefix (`tirex.*`, `timestral.*`, `chronos2.*`).
+
+An engine can be shared between threads: a TornadoVM engine runs their calls one at a time, since
+every call of a shape reuses that shape's device buffers.
 
 ## Shared options
 
 | Property | Values (default first) | Effect |
 |---|---|---|
 | `jitcast.tornado.device` | `<backend>:<device>` (TornadoVM's default device) | Device to run on, numbered as in `tornado --devices` |
-| `tornado.metal.dispatch.spinWait` (TornadoVM) | `False` (set by jitcast unless given) | TornadoVM's Metal backend spin-waits up to 1 ms on each dispatch before it blocks. A forward pass runs dozens of kernels per task graph, so the waits outlast the spin and jitcast runs up to 2× slower on Metal; jitcast turns it off. Code that calls TornadoVM before creating a TiRex-2 engine should call `tirex2.tornado.TornadoForward.tornadoDefaults()` first |
-| `tornado.cuda.host.pinning` (TornadoVM) | `True`; `False` in `TiRexServer` | Pinned host buffers for transfers. Applications that keep several plans alive and evict them often (such as `TiRexServer`) should turn it off: on TornadoVM's CUDA backend that churn can make device allocations fail, and it gave no speed-up on fev-bench |
+| `tornado.metal.dispatch.spinWait` (TornadoVM) | `False` (set by jitcast unless given) | TornadoVM's Metal backend spin-waits up to 1 ms on each dispatch before it blocks. A forward pass runs dozens of kernels per task graph, so the waits outlast the spin and jitcast runs up to 2× slower on Metal; jitcast turns it off, for every model. Code that calls TornadoVM before creating an engine should call `tornado.Devices.defaults()` first |
+| `tornado.cuda.host.pinning` (TornadoVM) | `True`; `False` in `TiRexServer` and `TimestralServer` | Pinned host buffers for transfers. Applications that keep several plans alive and evict them often (such as the harness servers) should turn it off: on TornadoVM's CUDA backend that churn can make device allocations fail, and it gave no speed-up on fev-bench |
 
-TornadoVM properties used alongside: `tornado.device.memory` (device heap, e.g. `15GB`),
-`tornado.cuda.nvcc` (for CUDA Tile).
+TornadoVM properties used alongside: `tornado.device.memory` (TornadoVM's cap on the device memory it
+allocates, 4 GB unless set, e.g. `15GB`), `tornado.cuda.nvcc` (for CUDA Tile).
+
+### Compiled plans
+
+Each model compiles one plan per input shape and keeps the most recently used ones. TornadoVM gives
+every plan its own device buffers, a copy of the model's weights included, so a plan's footprint is
+its weights plus its activations. A cache holds at most `<model>.tornado.plans` plans (8) and keeps
+their device memory, as TornadoVM reports it after each plan's first run, within
+`<model>.tornado.planBytes` (by default `tornado.device.memory`), evicting the least recently used
+first; a plan larger than the budget still runs, alone. A plan whose first run fails is not kept;
+if other plans were cached, they are evicted and the plan is built once more, in case the device
+was out of memory.
 
 ## Hardware and backends
 
@@ -44,7 +60,9 @@ The CPU engines are the references the device kernels are validated against, not
 
 | Property | Values (default first) | Effect |
 |---|---|---|
-| `tirex.tornado.gemm` | `tiled`, `half`, `cublas`, `cublas-tf32`, `cublas-fp16`, `cublas-auto`, `cutile` | GEMM implementation (see *GEMM modes*) |
+| `tirex.tornado.gemm` | `auto`, `tiled`, `half`, `cublas`, `cublas-tf32`, `cublas-fp16`, `cublas-auto`, `cutile` | GEMM implementation (see *GEMM modes*). `auto`: `cublas` (FP32) on CUDA, `tiled` elsewhere |
+| `tirex.tornado.plans` | `8` | Shapes kept compiled (rows, known covariates, rows in multi-row groups); see *Compiled plans* |
+| `tirex.tornado.planBytes` | `tornado.device.memory` | The device memory the cached plans may hold together (bytes, or `16GB` and so on) |
 | `tirex.tornado.fp16MinTokens` | `0` | `cublas-auto`: GEMMs over at least this many rows use FP16, smaller ones FP32. 0 is FP16 everywhere, the fastest at every size with CUDA 13 cuBLAS; a threshold only helps where CUDA 12 cuBLAS is loaded |
 | `tirex.tornado.fp16Kernel` | `gemmex-mixed`, `gemmex-h16`, `lt-h16` | cuBLAS call for an FP16 GEMM: GemmEx FP16→FP32, GemmEx all-FP16, or cuBLASLt all-FP16 (the last two with an FP32 epilogue kernel) |
 | `tirex.tornado.slstmR` | `auto`, `fp16-reg`, `fp16`, `fp32` | The sLSTM recurrent weights R. `fp16-reg`: FP16, with half of each thread's R values held in registers for the whole sequence where that is faster (up to ~64 rows; it needs 512-thread work-groups and falls back to `fp16` elsewhere). `fp16`: FP16, streamed every step. `fp32`: FP32, streamed. `auto`: `fp16-reg` where that kernel is known to fit (CUDA compute capability 12 and up, Apple GPUs on Metal or OpenCL), `fp16` elsewhere (see below). The state is FP32 in all of them |
@@ -110,8 +128,8 @@ Some kernels adapt to the device's maximum work-group size (for example 256 on O
 | `timestral.tornado.blasAttentionMaxRows` | `8` | The most rows (series × variates) a block may have to use the cuBLAS time attention under `auto` |
 | `timestral.tornado.attentionScoreBytes` | `536870912` (512 MB) | The most memory the cuBLAS time attention's scores take at once; larger blocks run in chunks of (row, head) batches |
 | `timestral.tornado.buckets` | `true`, `false` | Pad each block to a shared shape (the context with leading empty patches, the rows with empty series, each by at most a quarter), so that few plans are compiled; the forecasts do not change |
-| `timestral.tornado.plans` | `8` | Block shapes kept compiled (rows, encoder tokens, horizon patches, covariates); least recently used are evicted |
-| `timestral.tornado.planBytes` | `8589934592` (8 GiB) | The most host memory the cached plans' buffers take together; the least recently used plans are evicted until a new plan fits, and a plan larger than this still runs alone |
+| `timestral.tornado.plans` | `8` | Block shapes kept compiled (rows, encoder tokens, horizon patches, covariates); see *Compiled plans* |
+| `timestral.tornado.planBytes` | `tornado.device.memory` | The device memory the cached plans may hold together (bytes, or `16GB` and so on) |
 | `timestral.tornado.profile` | `false`, `true` | Print TornadoVM's per-task kernel times after every execution (analysis only) |
 | `timestral.timing` | `false`, `true` | Print the time of each host and device phase per forecast (analysis only) |
 | `timestral.maxTokens` | `131072` | The most tokens (rows × patches) one forward pass takes; forecasts do not depend on the split |
@@ -140,9 +158,10 @@ clipping, with the reference's defaults.
 | `chronos2.tornado.splitKTarget` | `320` | Split K for 64 × 64 simdgroup GEMMs with fewer tiles than this (`1`: off) |
 | `chronos2.tornado.splitKMax` | `16` | The most K slices of a split GEMM |
 | `chronos2.tornado.cudaGraph` | `true` with cuBLAS, `false` otherwise | Capture the plan's task graph once and replay it as a CUDA graph |
-| `chronos2.tornado.plans` | `8` | Shapes kept compiled (rows, context patches, output patches); least recently used are evicted |
+| `chronos2.tornado.plans` | `8` | Shapes kept compiled (rows, context patches, output patches); see *Compiled plans* |
+| `chronos2.tornado.planBytes` | `tornado.device.memory` | The device memory the cached plans may hold together (bytes, or `16GB` and so on) |
 | `chronos2.tornado.profile` | `false`, `true` | Print TornadoVM's per-task kernel times after every execution (analysis only) |
-| `chronos2.maxTokens` | `131072` | The most tokens (rows × tokens per row) one forward pass takes; larger passes run as several, split between groups, and the forecasts do not depend on the split |
+| `chronos2.maxTokens` | `131072` | The most tokens (rows × tokens per row) one forward pass takes; larger passes run as several, split between groups, and the forecasts do not depend on the split. A group is never split, so with cross-learning (one group per batch) a batch can exceed it |
 
 `Chronos2Pipeline.Options` sets the pipeline: the context cap, cross-learning, the patches per forward
 pass before the long-horizon unrolling and the unrolled quantile levels, with the reference's

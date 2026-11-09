@@ -36,7 +36,9 @@ import ai.beestream.jitcast.api.TimeSeries;
  *
  * <p>Within a batch the series do not affect each other's forecasts unless cross-learning is on.
  * A forward pass larger than {@code maxTokens} tokens runs as several, split between groups, which
- * does not change the forecasts. Categorical covariates are not supported.
+ * does not change the forecasts. A group is never split, so one larger than {@code maxTokens} still
+ * runs as one pass; with cross-learning the whole batch is one group. Categorical covariates are not
+ * supported.
  */
 public final class Chronos2Pipeline {
 
@@ -44,7 +46,9 @@ public final class Chronos2Pipeline {
     public static final int DEFAULT_BATCH_SIZE = 256;
 
     /** The most tokens one forward pass takes ({@code -Dchronos2.maxTokens}, default 131,072). */
-    public static final long DEFAULT_MAX_TOKENS = Long.getLong("chronos2.maxTokens", 131_072L);
+    public static long defaultMaxTokens() {
+        return ai.beestream.jitcast.util.Options.number("chronos2.maxTokens", 131_072L, 1);
+    }
 
     /** The reference's default levels for the long-horizon unrolling. */
     private static final float[] UNROLLED = {0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f, 0.9f};
@@ -80,7 +84,7 @@ public final class Chronos2Pipeline {
     private final long maxTokens;
 
     public Chronos2Pipeline(Chronos2Config config, ModelForward forward) {
-        this(config, forward, Options.defaults(config), DEFAULT_BATCH_SIZE, DEFAULT_MAX_TOKENS);
+        this(config, forward, Options.defaults(config), DEFAULT_BATCH_SIZE, defaultMaxTokens());
     }
 
     public Chronos2Pipeline(Chronos2Config config, ModelForward forward, Options options, int batchSize, long maxTokens) {

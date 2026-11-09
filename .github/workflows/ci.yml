@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Build and CPU tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      # TornadoVM is a provided dependency: compiling needs only its API from Maven Central, and the
+      # tests that need a device (*AccelTest) or recorded goldens are skipped
+      - name: Test
+        run: ./mvnw -B test

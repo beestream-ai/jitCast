@@ -95,7 +95,7 @@ try (ForecastEngine engine = TornadoTimestralEngine.load(Path.of("Timestral-5M")
 Run it on the TornadoVM JVM, choosing the device:
 
 ```bash
-java @$TORNADOVM_HOME/tornado-argfile --add-modules jdk.incubator.vector -cp target/classes:<your app> \
+java @$TORNADOVM_HOME/tornado-argfile -cp target/classes:<your app> \
      -Djitcast.tornado.device=0:0 your.Main
 ```
 

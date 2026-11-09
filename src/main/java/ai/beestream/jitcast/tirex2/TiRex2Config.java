@@ -47,6 +47,27 @@ public record TiRex2Config(
         int variateHeads,
         boolean useQkNorm) {
 
+    public TiRex2Config {
+        if (patchSize < 1 || contextLen < 1 || futureLen < 0 || (contextLen + futureLen) % patchSize != 0) {
+            throw new IllegalArgumentException("context_len + future_len (" + contextLen + " + " + futureLen
+                    + ") must be a positive multiple of the patch size " + patchSize);
+        }
+        for (int h : new int[] {timeMixerHeads, slstmHeads, variateHeads}) {
+            if (h < 1 || embeddingDim % h != 0) {
+                throw new IllegalArgumentException("embedding_dim " + embeddingDim + " is not divisible by " + h + " heads");
+            }
+        }
+        // the median is the middle level: calibration and the point forecast take it from there
+        if (quantiles.length % 2 == 0 || quantiles[quantiles.length / 2] != 0.5f) {
+            throw new IllegalArgumentException("the quantiles must be an odd number of levels with 0.5 in the middle");
+        }
+        for (int i = 0; i < quantiles.length; i++) {
+            if (!(quantiles[i] > 0f && quantiles[i] < 1f) || i > 0 && quantiles[i] <= quantiles[i - 1]) {
+                throw new IllegalArgumentException("the quantiles must increase strictly within (0, 1)");
+            }
+        }
+    }
+
     /** The time mixer of a block. Every block's variate mixer is attention. */
     public enum BlockType {
         MLSTM, SLSTM
@@ -94,7 +115,7 @@ public record TiRex2Config(
             throw new IllegalArgumentException("only non-overlapping patches with input == output size are supported");
         }
         Map<String, Object> scaler = map(c, "scaler_cfg");
-        Map<String, Object> outNorm = map(c, "stack_out_norm_config");
+        Map<String, Object> outNorm = optionalMap(c, "stack_out_norm_config");
         if (outNorm != null && Boolean.TRUE.equals(outNorm.get("use_rmsnorm"))) {
             throw new IllegalArgumentException("stack_out_norm use_rmsnorm=true is not supported");
         }
@@ -162,14 +183,26 @@ public record TiRex2Config(
 
     private static int intOf(Map<String, Object> m, String key) {
         Object v = m.get(key);
-        if (!(v instanceof Number n)) {
-            throw new IllegalArgumentException("config key '" + key + "' missing or not a number");
+        if (!(v instanceof Number n) || n.doubleValue() != n.intValue()) {
+            throw new IllegalArgumentException("config key '" + key + "' missing or not an integer");
         }
         return n.intValue();
     }
 
-    @SuppressWarnings("unchecked")
     private static Map<String, Object> map(Map<String, Object> m, String key) {
-        return (Map<String, Object>) m.get(key);
+        Map<String, Object> v = optionalMap(m, key);
+        if (v == null) {
+            throw new IllegalArgumentException("config key '" + key + "' missing");
+        }
+        return v;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> optionalMap(Map<String, Object> m, String key) {
+        Object v = m.get(key);
+        if (v != null && !(v instanceof Map)) {
+            throw new IllegalArgumentException("config key '" + key + "' is not an object");
+        }
+        return (Map<String, Object>) v;
     }
 }

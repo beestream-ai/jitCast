@@ -29,6 +29,7 @@ import ai.beestream.jitcast.timestral.TimestralWeights;
 public final class CpuTimestralEngine implements ForecastEngine {
 
     private final TimestralWeights weights;
+    private boolean closed;
     private final TimestralPipeline pipeline;
 
     public CpuTimestralEngine(TimestralWeights weights) {
@@ -38,7 +39,17 @@ public final class CpuTimestralEngine implements ForecastEngine {
 
     /** Loads a checkpoint directory holding {@code config.json} and {@code model.safetensors}. */
     public static CpuTimestralEngine load(Path checkpoint) throws IOException {
-        return new CpuTimestralEngine(TimestralWeights.load(checkpoint));
+        TimestralWeights weights = TimestralWeights.load(checkpoint);
+        try {
+            return new CpuTimestralEngine(weights);
+        } catch (RuntimeException | Error e) {
+            try {
+                weights.close();
+            } catch (RuntimeException suppressed) {
+                e.addSuppressed(suppressed);
+            }
+            throw e;
+        }
     }
 
     public TimestralPipeline pipeline() {
@@ -56,7 +67,11 @@ public final class CpuTimestralEngine implements ForecastEngine {
     }
 
     @Override
-    public void close() {
+    public synchronized void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
         weights.close();
     }
 }

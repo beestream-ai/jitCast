@@ -311,7 +311,7 @@ public class KernelsAccelTest {
         FloatArray fx = FloatArray.fromArray(x), fw = FloatArray.fromArray(w), fy = new FloatArray(rows * D);
         KernelContext ctx = new KernelContext();
         run("t", grid1(rows * Kernels.NORM_THREADS, Kernels.NORM_THREADS),
-                g -> g.task("t", Kernels::rmsNorm, ctx, fx, fy, fw, 0, D, 1e-6f, NO_TWIN, 0), fy, fx, fw);
+                g -> g.task("t", Kernels::rmsNorm, ctx, fx, fy, fw, 0, D, 1e-6f, NO_TWIN, 0, rows), fy, fx, fw);
         check("rmsNorm", fy.toHeapArray(), Ops.rmsNorm(x, rows, D, w, 1e-6f));
     }
 
@@ -323,7 +323,7 @@ public class KernelsAccelTest {
         HalfFloatArray fh = new HalfFloatArray(rows * D);
         KernelContext ctx = new KernelContext();
         TaskGraph g = new TaskGraph("k").transferToDevice(DataTransferMode.EVERY_EXECUTION, fx, fw, fy, fh)
-                .task("t", Kernels::rmsNorm, ctx, fx, fy, fw, 0, D, 1e-6f, fh, 1)
+                .task("t", Kernels::rmsNorm, ctx, fx, fy, fw, 0, D, 1e-6f, fh, 1, rows)
                 .transferToHost(DataTransferMode.EVERY_EXECUTION, fy, fh);
         execute(g, grid1(rows * Kernels.NORM_THREADS, Kernels.NORM_THREADS));
         check("rmsNorm FP16 twin", fromTwin(fh, rows * D), roundHalf(fy.toHeapArray()));
@@ -377,7 +377,7 @@ public class KernelsAccelTest {
         HalfFloatArray tn = new HalfFloatArray(rows * D);
         KernelContext ctx = new KernelContext();
         TaskGraph g = new TaskGraph("k").transferToDevice(DataTransferMode.EVERY_EXECUTION, fh, fy, fn, fw, tn)
-                .task("t", Kernels::addRmsNorm, ctx, fh, fy, fn, fw, 0, D, 1e-6f, tn, 1)
+                .task("t", Kernels::addRmsNorm, ctx, fh, fy, fn, fw, 0, D, 1e-6f, tn, 1, rows)
                 .transferToHost(DataTransferMode.EVERY_EXECUTION, fh, fn, tn);
         execute(g, grid1(rows * Kernels.NORM_THREADS, Kernels.NORM_THREADS));
         float[] hExp = h0.clone();

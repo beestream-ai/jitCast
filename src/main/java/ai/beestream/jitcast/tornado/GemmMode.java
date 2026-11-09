@@ -42,15 +42,20 @@ public enum GemmMode {
 
     /** Parses {@code tiled}, {@code cublas-fp16} and so on. */
     public static GemmMode parse(String v) {
-        return valueOf(v.trim().toUpperCase().replace('-', '_'));
+        return ai.beestream.jitcast.util.Options.parseEnum("gemm", v, GemmMode.class);
     }
 
-    /** {@code AUTO} made concrete for a device. */
+    /** {@code AUTO} made concrete for a device; a mode the device cannot run fails here, not in the first plan. */
     public GemmMode resolve(TornadoDevice device) {
+        TornadoVMBackendType backend = device.getTornadoVMBackend();
+        if (cublas() && backend != TornadoVMBackendType.CUDA || this == SIMDGROUP && backend != TornadoVMBackendType.METAL) {
+            throw new IllegalArgumentException("GEMM mode " + name().toLowerCase().replace('_', '-') + " cannot run on the "
+                    + backend + " device; see docs/CONFIGURATION.md");
+        }
         if (this != AUTO) {
             return this;
         }
-        if (device.getTornadoVMBackend() == TornadoVMBackendType.CUDA) {
+        if (backend == TornadoVMBackendType.CUDA) {
             return CUBLAS;
         }
         if (device.getTornadoVMBackend() == TornadoVMBackendType.METAL && TornadoRuntimeProvider.getTornadoRuntime()

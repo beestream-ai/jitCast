@@ -30,6 +30,7 @@ import ai.beestream.jitcast.chronos2.Chronos2Weights;
 public final class CpuChronos2Engine implements ForecastEngine {
 
     private final Chronos2Weights weights;
+    private boolean closed;
     private final Chronos2Pipeline pipeline;
 
     public CpuChronos2Engine(Chronos2Weights weights) {
@@ -39,7 +40,17 @@ public final class CpuChronos2Engine implements ForecastEngine {
 
     /** Loads a checkpoint directory holding {@code config.json} and {@code model.safetensors}. */
     public static CpuChronos2Engine load(Path checkpoint) throws IOException {
-        return new CpuChronos2Engine(Chronos2Weights.load(checkpoint));
+        Chronos2Weights weights = Chronos2Weights.load(checkpoint);
+        try {
+            return new CpuChronos2Engine(weights);
+        } catch (RuntimeException | Error e) {
+            try {
+                weights.close();
+            } catch (RuntimeException suppressed) {
+                e.addSuppressed(suppressed);
+            }
+            throw e;
+        }
     }
 
     public Chronos2Config config() {
@@ -61,7 +72,11 @@ public final class CpuChronos2Engine implements ForecastEngine {
     }
 
     @Override
-    public void close() {
+    public synchronized void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
         weights.close();
     }
 }

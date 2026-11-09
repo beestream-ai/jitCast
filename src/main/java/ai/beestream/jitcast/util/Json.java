@@ -248,7 +248,9 @@ public final class Json {
         } else if (v instanceof Boolean || v instanceof Integer || v instanceof Long) {
             sb.append(v);
         } else if (v instanceof Double d) {
-            if (d == Math.rint(d) && !d.isInfinite()) {
+            if (d.isNaN() || d.isInfinite()) {
+                sb.append("null"); // JSON has no NaN or infinity
+            } else if (d == Math.rint(d)) {
                 sb.append(d.longValue());
             } else {
                 sb.append(d);

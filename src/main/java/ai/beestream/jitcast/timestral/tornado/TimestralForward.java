@@ -20,7 +20,6 @@ import java.lang.foreign.ValueLayout;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -39,13 +38,15 @@ import ai.beestream.jitcast.tornado.Kernels;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.TaskGraph;
+import ai.beestream.jitcast.tornado.Devices;
+import ai.beestream.jitcast.tornado.PlanCache;
+import ai.beestream.jitcast.util.Options;
 import uk.ac.manchester.tornado.api.TornadoExecutionPlan;
 import uk.ac.manchester.tornado.api.WorkerGrid;
 import uk.ac.manchester.tornado.api.WorkerGrid1D;
 import uk.ac.manchester.tornado.api.WorkerGrid2D;
 import uk.ac.manchester.tornado.api.common.TornadoDevice;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
-import uk.ac.manchester.tornado.api.runtime.TornadoRuntimeProvider;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
@@ -67,6 +68,10 @@ import uk.ac.manchester.tornado.cublas.CuBlas;
  */
 public final class TimestralForward implements BlockForward, AutoCloseable {
 
+    static {
+        Devices.defaults();
+    }
+
     private static final String G = "ts";
 
     /** Work-group size of the element-wise kernels. */
@@ -78,7 +83,7 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
      * own, each up to its {@link #bucket}. Neither is ever a valid key, and time positions count from
      * each series' first observation, so the forecasts do not change.
      */
-    private final boolean buckets = !"false".equalsIgnoreCase(System.getProperty("timestral.tornado.buckets", "true"));
+    private final boolean buckets = Options.bool("timestral.tornado.buckets", true);
 
     /**
      * The size {@code x} is padded to: {@code x} itself up to 8, then the next multiple of a quarter of
@@ -94,21 +99,21 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
     }
 
     /** The fewest rows a GEMM needs to run on {@link Kernels#gemmBlocked}. */
-    private final int blockedMinRows = Integer.getInteger("timestral.tornado.blockedMinRows", 128);
+    private final int blockedMinRows = Options.integer("timestral.tornado.blockedMinRows", 128, 1);
 
     /** The fewest rows a GEMM needs to run on {@link Kernels#gemmBlockedWide}, whose 64 × 128 tiles leave the GPU idle below that. */
-    private final int blockedWideMinRows = Integer.getInteger("timestral.tornado.wideMinRows", 1024);
+    private final int blockedWideMinRows = Options.integer("timestral.tornado.wideMinRows", 1024, 1);
 
     /** The fewest GEMM rows that use {@link Kernels#gemmSimdgroupWide} rather than {@link Kernels#gemmSimdgroup}. */
-    private final int wideMinRows = Integer.getInteger("timestral.tornado.simdgroupWideMinRows", 64);
+    private final int wideMinRows = Options.integer("timestral.tornado.simdgroupWideMinRows", 64, 1);
 
     /**
      * Split K: a 64 × 64 simdgroup GEMM with fewer tiles than {@code splitKTarget} work-groups also
      * splits K, into at most {@code splitKMax} slices of at least {@link #SPLIT_K_MIN} each, so that
      * GEMMs with few rows still fill the GPU. 1 turns it off.
      */
-    private final int splitKTarget = Integer.getInteger("timestral.tornado.splitKTarget", 320);
-    private final int splitKMax = Math.max(1, Integer.getInteger("timestral.tornado.splitKMax", 16));
+    private final int splitKTarget = Options.integer("timestral.tornado.splitKTarget", 320, 1);
+    private final int splitKMax = Options.integer("timestral.tornado.splitKMax", 16, 1);
     static final int SPLIT_K_MIN = 128;
 
     /** The number of K slices for a GEMM of {@code tiles} 64 × 64 tiles over {@code k}. */
@@ -126,15 +131,13 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
     private final TimestralPacked weights;
     private final Quantiles quantiles;
     private final float[] invFreq;
-    private final int maxCachedPlans;
     /**
-     * The most host memory the cached plans' buffers may take together ({@code -Dtimestral.tornado.planBytes},
-     * 8 GiB): the least recently used plans are evicted until a new one fits, so a few long-context
-     * shapes do not exhaust the JVM's direct memory. A plan larger than the budget still runs, alone.
+     * The compiled plans: at most {@code -Dtimestral.tornado.plans} (8), within
+     * {@code -Dtimestral.tornado.planBytes} of device memory (by default TornadoVM's
+     * {@code tornado.device.memory}), each counting its own copy of the weights.
      */
-    private final long maxPlanBytes = Long.getLong("timestral.tornado.planBytes", 8L << 30);
-    private final Map<Shape, Plan> plans = new LinkedHashMap<>(16, 0.75f, true);
-    private TornadoDevice device;
+    private final PlanCache<Shape, Plan> plans;
+    private final TornadoDevice device = Devices.device();
     private final GemmMode gemmMode;
     /**
      * Time attention as cuBLAS batched GEMMs plus a masked softmax instead of
@@ -146,14 +149,14 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
      * {@code kernel} never. The scores of one chunk of (row, head) batches take at most
      * {@code -Dtimestral.tornado.attentionScoreBytes} (512 MB).
      */
-    private final String attentionMode = System.getProperty("timestral.tornado.attention", "auto").toLowerCase();
-    private final int blasAttentionMinTokens = Integer.getInteger("timestral.tornado.blasAttentionMinTokens", 128);
-    private final int blasAttentionMaxRows = Integer.getInteger("timestral.tornado.blasAttentionMaxRows", 8);
-    private final long attentionScoreBytes = Long.getLong("timestral.tornado.attentionScoreBytes", 512L << 20);
+    private final String attentionMode = Options.choice("timestral.tornado.attention", "auto", "auto", "cublas", "kernel");
+    private final int blasAttentionMinTokens = Options.integer("timestral.tornado.blasAttentionMinTokens", 128, 1);
+    private final int blasAttentionMaxRows = Options.integer("timestral.tornado.blasAttentionMaxRows", 8, 1);
+    private final long attentionScoreBytes = Options.bytes("timestral.tornado.attentionScoreBytes", 512L << 20, 1);
     private final boolean cudaGraph;
 
     public TimestralForward(TimestralConfig config, TimestralPacked weights) {
-        this(config, weights, Integer.getInteger("timestral.tornado.plans", 8));
+        this(config, weights, Options.integer("timestral.tornado.plans", 8, 1));
     }
 
     public TimestralForward(TimestralConfig config, TimestralPacked weights, int maxCachedPlans) {
@@ -165,9 +168,9 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
         this.weights = weights;
         this.quantiles = new Quantiles(config);
         this.invFreq = CpuTimestral.inverseFrequencies(config);
-        this.maxCachedPlans = Math.max(1, maxCachedPlans);
-        this.gemmMode = GemmMode.parse(System.getProperty("timestral.tornado.gemm", "auto")).resolve(device());
-        this.cudaGraph = Boolean.parseBoolean(System.getProperty("timestral.tornado.cudaGraph", String.valueOf(gemmMode.cublas())));
+        this.plans = new PlanCache<>(Math.max(1, maxCachedPlans), Options.bytes("timestral.tornado.planBytes", Devices.memory(), 1));
+        this.gemmMode = Options.enumeration("timestral.tornado.gemm", GemmMode.AUTO, GemmMode.class).resolve(device);
+        this.cudaGraph = Options.bool("timestral.tornado.cudaGraph", gemmMode.cublas());
     }
 
     /** The GEMM mode in use, {@code AUTO} resolved for the device. */
@@ -175,22 +178,9 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
         return gemmMode;
     }
 
-    private TornadoDevice device() {
-        if (device == null) {
-            String prop = System.getProperty("jitcast.tornado.device");
-            if (prop != null && !prop.isBlank()) {
-                String[] dd = prop.split(":");
-                device = TornadoExecutionPlan.getDevice(Integer.parseInt(dd[0]), Integer.parseInt(dd[1]));
-            } else {
-                device = TornadoRuntimeProvider.getTornadoRuntime().getDefaultDevice();
-            }
-        }
-        return device;
-    }
-
     /** The shapes compiled so far, least recently used first. */
     public List<Shape> cachedShapes() {
-        return List.copyOf(plans.keySet());
+        return plans.keys();
     }
 
     @Override
@@ -249,32 +239,16 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
         BlockPrep prep = BlockPrep.of(config, lay);
         Timing.add("fwd.prep", t);
         Shape shape = new Shape(lay.rows(), lay.encoderTokens(), lay.horizonPatches(), lay.covariates());
-        Plan plan = plans.get(shape);
-        if (plan == null) {
-            // evict before building, so the old plan's device buffers are freed first
-            long need = planBytes(shape);
-            while (!plans.isEmpty() && (plans.size() >= maxCachedPlans || cachedBytes() + need > maxPlanBytes)) {
-                Shape eldest = plans.keySet().iterator().next();
-                plans.remove(eldest).close();
-            }
+        float[] raw = plans.run(shape, sh -> {
             long tb = Timing.start();
-            plan = new Plan(shape);
-            plans.put(shape, plan);
+            Plan plan = new Plan(sh);
             Timing.add("fwd.plan-build", tb);
-        }
-        float[] raw = plan.run(lay, prep);
+            return plan;
+        }, plan -> plan.run(lay, prep));
         t = Timing.start();
         float[][][] out = prep.finish(config, lay, quantiles, raw);
         Timing.add("fwd.finish", t);
         return out;
-    }
-
-    private long cachedBytes() {
-        long sum = 0;
-        for (Shape s : plans.keySet()) {
-            sum += planBytes(s);
-        }
-        return sum;
     }
 
     /** Whether a block shape runs its time attention as cuBLAS batched GEMMs. */
@@ -292,29 +266,9 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
         return (int) Math.max(1, Math.min((long) shape.rows() * config.numHeads(), attentionScoreBytes / (4 * n * n)));
     }
 
-    /** The host memory of one plan's buffers (those {@link Plan} allocates for its shape). */
-    long planBytes(Shape shape) {
-        TimestralConfig c = config;
-        long rows = shape.rows(), enc = shape.encoder(), h = shape.horizon(), n = enc + h;
-        long d = c.dModel(), ps = c.patchSize(), f = c.mlpHiddenDim(), q = c.numQuantiles();
-        long tokens = rows * n, encTokens = rows * enc, decTokens = rows * h;
-        long floats = encTokens * 2 * ps + encTokens * d + 5 * tokens * d + tokens * Math.max(Math.max(3 * d, 2 * f), 4 * d)
-                + tokens * f + decTokens * d + decTokens * ps * q + (2 * enc + h) * c.headDim();
-        long ints = tokens + encTokens + 4 * rows;
-        if (gemmMode == GemmMode.SIMDGROUP) {
-            floats += 2L * splitKTarget * Kernels.MMA_WIDE * Kernels.MMA_WIDE;
-        }
-        if (blasAttention(shape)) {
-            long chunk = attentionChunk(shape);
-            floats += chunk * n * n + 4 * chunk * n * c.headDim();
-        }
-        return 4 * (floats + ints);
-    }
-
     @Override
     public void close() {
-        plans.values().forEach(Plan::close);
-        plans.clear();
+        plans.close();
     }
 
     private static WorkerGrid group(int global, int local) {
@@ -324,7 +278,7 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
     }
 
     /** The buffers and execution plan for one shape. */
-    private final class Plan implements AutoCloseable {
+    private final class Plan implements PlanCache.Plan {
         final Shape shape;
         final FloatArray tok, emb, x, hn, big, att, gate, act, y, dec, raw, table;
         final IntArray pos, keyValid, known, groupStart, groupEnd, role;
@@ -429,12 +383,12 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
 
             exec = new TornadoExecutionPlan(g.snapshot());
             exec.withGridScheduler(grid);
-            exec.withDevice(device());
+            exec.withDevice(device);
             if (cudaGraph) {
                 // CUDA backend only: the task graph is captured once and replayed as a CUDA graph
                 exec.withCUDAGraph();
             }
-            if (Boolean.getBoolean("timestral.tornado.profile")) {
+            if (Options.bool("timestral.tornado.profile", false)) {
                 exec.withProfiler(uk.ac.manchester.tornado.api.enums.ProfilerMode.CONSOLE);
             }
         }
@@ -628,7 +582,7 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
 
         void rms(String name, FloatArray in, FloatArray out, int wOff, int rows, float eps) {
             grid.addWorkerGrid(G + "." + name, group(rows * Kernels.NORM_THREADS, Kernels.NORM_THREADS));
-            g.task(name, Kernels::rmsNorm, ctx, in, out, w, wOff, config.dModel(), eps, noTwin, 0);
+            g.task(name, Kernels::rmsNorm, ctx, in, out, w, wOff, config.dModel(), eps, noTwin, 0, rows);
             written(out);
         }
 
@@ -685,6 +639,11 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
             MemorySegment.copy(raw.getSegment(), ValueLayout.JAVA_FLOAT, 0, out, 0, out.length);
             Timing.add("fwd.download", t0);
             return out;
+        }
+
+        @Override
+        public long deviceBytes() {
+            return exec.getCurrentDeviceMemoryUsage();
         }
 
         @Override

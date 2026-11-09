@@ -62,7 +62,7 @@ public class Chronos2BatchParityAccelTest {
                 }
                 call[0]++;
                 return out;
-            }, o, 1000, Chronos2Pipeline.DEFAULT_MAX_TOKENS);
+            }, o, 1000, Chronos2Pipeline.defaultMaxTokens());
             int horizon = 100;
             pipeline.forecast(batch(new Random(11), 25, horizon), horizon);
             assertTrue("the horizon unrolls", call[0] == 2);

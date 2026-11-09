@@ -32,6 +32,7 @@ public final class TornadoTimestralEngine implements ForecastEngine {
     private final TimestralWeights weights;
     private final TimestralForward forward;
     private final TimestralPipeline pipeline;
+    private boolean closed;
 
     public TornadoTimestralEngine(TimestralWeights weights) {
         this.weights = weights;
@@ -41,7 +42,17 @@ public final class TornadoTimestralEngine implements ForecastEngine {
 
     /** Loads a checkpoint directory holding {@code config.json} and {@code model.safetensors}. */
     public static TornadoTimestralEngine load(Path checkpoint) throws IOException {
-        return new TornadoTimestralEngine(TimestralWeights.load(checkpoint));
+        TimestralWeights weights = TimestralWeights.load(checkpoint);
+        try {
+            return new TornadoTimestralEngine(weights);
+        } catch (RuntimeException | Error e) {
+            try {
+                weights.close();
+            } catch (RuntimeException suppressed) {
+                e.addSuppressed(suppressed);
+            }
+            throw e;
+        }
     }
 
     public TimestralConfig config() {
@@ -67,8 +78,15 @@ public final class TornadoTimestralEngine implements ForecastEngine {
     }
 
     @Override
-    public void close() {
-        forward.close();
-        weights.close();
+    public synchronized void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
+        try {
+            forward.close();
+        } finally {
+            weights.close();
+        }
     }
 }

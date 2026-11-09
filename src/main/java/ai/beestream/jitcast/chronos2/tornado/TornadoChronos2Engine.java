@@ -32,6 +32,7 @@ public final class TornadoChronos2Engine implements ForecastEngine {
     private final Chronos2Weights weights;
     private final Chronos2Forward forward;
     private final Chronos2Pipeline pipeline;
+    private boolean closed;
 
     public TornadoChronos2Engine(Chronos2Weights weights) {
         this.weights = weights;
@@ -41,7 +42,17 @@ public final class TornadoChronos2Engine implements ForecastEngine {
 
     /** Loads a checkpoint directory holding {@code config.json} and {@code model.safetensors}. */
     public static TornadoChronos2Engine load(Path checkpoint) throws IOException {
-        return new TornadoChronos2Engine(Chronos2Weights.load(checkpoint));
+        Chronos2Weights weights = Chronos2Weights.load(checkpoint);
+        try {
+            return new TornadoChronos2Engine(weights);
+        } catch (RuntimeException | Error e) {
+            try {
+                weights.close();
+            } catch (RuntimeException suppressed) {
+                e.addSuppressed(suppressed);
+            }
+            throw e;
+        }
     }
 
     public Chronos2Config config() {
@@ -67,8 +78,15 @@ public final class TornadoChronos2Engine implements ForecastEngine {
     }
 
     @Override
-    public void close() {
-        forward.close();
-        weights.close();
+    public synchronized void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
+        try {
+            forward.close();
+        } finally {
+            weights.close();
+        }
     }
 }

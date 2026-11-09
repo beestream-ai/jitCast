@@ -37,13 +37,15 @@ import ai.beestream.jitcast.tornado.Kernels;
 import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.TaskGraph;
+import ai.beestream.jitcast.tornado.Devices;
+import ai.beestream.jitcast.tornado.PlanCache;
+import ai.beestream.jitcast.util.Options;
 import uk.ac.manchester.tornado.api.TornadoExecutionPlan;
 import uk.ac.manchester.tornado.api.WorkerGrid;
 import uk.ac.manchester.tornado.api.WorkerGrid1D;
 import uk.ac.manchester.tornado.api.WorkerGrid2D;
 import uk.ac.manchester.tornado.api.common.TornadoDevice;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
-import uk.ac.manchester.tornado.api.runtime.TornadoRuntimeProvider;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
@@ -65,27 +67,31 @@ import uk.ac.manchester.tornado.cublas.CuBlas;
  */
 public final class Chronos2Forward implements ModelForward, AutoCloseable {
 
+    static {
+        Devices.defaults();
+    }
+
     private static final String G = "c2";
 
     /** Work-group size of the element-wise kernels. */
     private static final int ITEM_GROUP = 128;
 
     /** The fewest rows a GEMM needs to run on {@link Kernels#gemmBlocked}. */
-    private final int blockedMinRows = Integer.getInteger("chronos2.tornado.blockedMinRows", 128);
+    private final int blockedMinRows = Options.integer("chronos2.tornado.blockedMinRows", 128, 1);
 
     /** The fewest rows a GEMM needs to run on {@link Kernels#gemmBlockedWide}, whose 64 × 128 tiles leave the GPU idle below that. */
-    private final int blockedWideMinRows = Integer.getInteger("chronos2.tornado.wideMinRows", 1024);
+    private final int blockedWideMinRows = Options.integer("chronos2.tornado.wideMinRows", 1024, 1);
 
     /** The fewest GEMM rows that use {@link Kernels#gemmSimdgroupWide} rather than {@link Kernels#gemmSimdgroup}. */
-    private final int simdgroupWideMinRows = Integer.getInteger("chronos2.tornado.simdgroupWideMinRows", 64);
+    private final int simdgroupWideMinRows = Options.integer("chronos2.tornado.simdgroupWideMinRows", 64, 1);
 
     /**
      * Split K: a 64 × 64 simdgroup GEMM with fewer tiles than {@code splitKTarget} work-groups also
      * splits K, into at most {@code splitKMax} slices of at least {@link #SPLIT_K_MIN} each, so that
      * GEMMs with few rows still fill the GPU. 1 turns it off.
      */
-    private final int splitKTarget = Integer.getInteger("chronos2.tornado.splitKTarget", 320);
-    private final int splitKMax = Math.max(1, Integer.getInteger("chronos2.tornado.splitKMax", 16));
+    private final int splitKTarget = Options.integer("chronos2.tornado.splitKTarget", 320, 1);
+    private final int splitKMax = Options.integer("chronos2.tornado.splitKMax", 16, 1);
     static final int SPLIT_K_MIN = 128;
 
     /** The number of K slices for a GEMM of {@code tiles} 64 × 64 tiles over {@code k}. */
@@ -102,14 +108,18 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
     private final Chronos2Config config;
     private final Chronos2Packed weights;
     private final float[] invFreq;
-    private final int maxCachedPlans;
-    private final Map<Shape, Plan> plans = new LinkedHashMap<>(16, 0.75f, true);
-    private TornadoDevice device;
+    /**
+     * The compiled plans: at most {@code -Dchronos2.tornado.plans} (8), within
+     * {@code -Dchronos2.tornado.planBytes} of device memory (by default TornadoVM's
+     * {@code tornado.device.memory}), each counting its own copy of the weights.
+     */
+    private final PlanCache<Shape, Plan> plans;
+    private final TornadoDevice device = Devices.device();
     private final GemmMode gemmMode;
     private final boolean cudaGraph;
 
     public Chronos2Forward(Chronos2Config config, Chronos2Packed weights) {
-        this(config, weights, Integer.getInteger("chronos2.tornado.plans", 8));
+        this(config, weights, Options.integer("chronos2.tornado.plans", 8, 1));
     }
 
     public Chronos2Forward(Chronos2Config config, Chronos2Packed weights, int maxCachedPlans) {
@@ -119,9 +129,9 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
         this.config = config;
         this.weights = weights;
         this.invFreq = CpuChronos2.inverseFrequencies(config);
-        this.maxCachedPlans = Math.max(1, maxCachedPlans);
-        this.gemmMode = GemmMode.parse(System.getProperty("chronos2.tornado.gemm", "auto")).resolve(device());
-        this.cudaGraph = Boolean.parseBoolean(System.getProperty("chronos2.tornado.cudaGraph", String.valueOf(gemmMode.cublas())));
+        this.plans = new PlanCache<>(Math.max(1, maxCachedPlans), Options.bytes("chronos2.tornado.planBytes", Devices.memory(), 1));
+        this.gemmMode = Options.enumeration("chronos2.tornado.gemm", GemmMode.AUTO, GemmMode.class).resolve(device);
+        this.cudaGraph = Options.bool("chronos2.tornado.cudaGraph", gemmMode.cublas());
     }
 
     /** The GEMM mode in use, {@code AUTO} resolved for the device. */
@@ -129,22 +139,9 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
         return gemmMode;
     }
 
-    private TornadoDevice device() {
-        if (device == null) {
-            String prop = System.getProperty("jitcast.tornado.device");
-            if (prop != null && !prop.isBlank()) {
-                String[] dd = prop.split(":");
-                device = TornadoExecutionPlan.getDevice(Integer.parseInt(dd[0]), Integer.parseInt(dd[1]));
-            } else {
-                device = TornadoRuntimeProvider.getTornadoRuntime().getDefaultDevice();
-            }
-        }
-        return device;
-    }
-
     /** The shapes compiled so far, least recently used first. */
     public List<Shape> cachedShapes() {
-        return List.copyOf(plans.keySet());
+        return plans.keys();
     }
 
     @Override
@@ -166,17 +163,8 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
         ModelLayout lay = ModelLayout.of(config, in);
         ModelPrep prep = ModelPrep.of(config, lay);
         Shape shape = new Shape(lay.rows(), lay.contextPatches(), lay.outputPatches());
-        Plan plan = plans.get(shape);
-        if (plan == null) {
-            // evict before building, so the old plan's device buffers are freed first
-            while (!plans.isEmpty() && plans.size() >= maxCachedPlans) {
-                Shape eldest = plans.keySet().iterator().next();
-                plans.remove(eldest).close();
-            }
-            plan = new Plan(shape);
-            plans.put(shape, plan);
-        }
-        float[][][] out = prep.finish(config, lay, plan.run(lay, prep));
+        float[] raw = plans.run(shape, Plan::new, plan -> plan.run(lay, prep));
+        float[][][] out = prep.finish(config, lay, raw);
         if (order == null) {
             return out;
         }
@@ -207,8 +195,7 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
 
     @Override
     public void close() {
-        plans.values().forEach(Plan::close);
-        plans.clear();
+        plans.close();
     }
 
     private static WorkerGrid group(int global, int local) {
@@ -218,7 +205,7 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
     }
 
     /** The buffers and execution plan for one shape. */
-    private final class Plan implements AutoCloseable {
+    private final class Plan implements PlanCache.Plan {
         final Shape shape;
         final FloatArray tok, emb, x, hn, big, att, y, dec, raw, table;
         final IntArray live, groupStart, groupEnd;
@@ -306,12 +293,12 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
 
             exec = new TornadoExecutionPlan(g.snapshot());
             exec.withGridScheduler(grid);
-            exec.withDevice(device());
+            exec.withDevice(device);
             if (cudaGraph) {
                 // CUDA backend only: the task graph is captured once and replayed as a CUDA graph
                 exec.withCUDAGraph();
             }
-            if (Boolean.getBoolean("chronos2.tornado.profile")) {
+            if (Options.bool("chronos2.tornado.profile", false)) {
                 exec.withProfiler(uk.ac.manchester.tornado.api.enums.ProfilerMode.CONSOLE);
             }
         }
@@ -464,7 +451,7 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
 
         void rms(String name, FloatArray in, FloatArray out, int wOff, int rows) {
             grid.addWorkerGrid(G + "." + name, group(rows * Kernels.NORM_THREADS, Kernels.NORM_THREADS));
-            g.task(name, Kernels::rmsNorm, ctx, in, out, w, wOff, config.dModel(), config.layerNormEps(), noTwin, 0);
+            g.task(name, Kernels::rmsNorm, ctx, in, out, w, wOff, config.dModel(), config.layerNormEps(), noTwin, 0, rows);
             written(out);
         }
 
@@ -504,6 +491,11 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
             float[] out = new float[raw.getSize()];
             MemorySegment.copy(raw.getSegment(), ValueLayout.JAVA_FLOAT, 0, out, 0, out.length);
             return out;
+        }
+
+        @Override
+        public long deviceBytes() {
+            return exec.getCurrentDeviceMemoryUsage();
         }
 
         @Override

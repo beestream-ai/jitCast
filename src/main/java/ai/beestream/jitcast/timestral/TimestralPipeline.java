@@ -42,7 +42,9 @@ public final class TimestralPipeline {
     public static final int DEFAULT_BATCH_SIZE = 512;
 
     /** The most tokens one forward pass takes ({@code -Dtimestral.maxTokens}, default 131,072). */
-    public static final long DEFAULT_MAX_TOKENS = Long.getLong("timestral.maxTokens", 131_072L);
+    public static long defaultMaxTokens() {
+        return ai.beestream.jitcast.util.Options.number("timestral.maxTokens", 131_072L, 1);
+    }
 
     /**
      * The forecaster's settings, with the reference's defaults.
@@ -79,7 +81,7 @@ public final class TimestralPipeline {
     private final int[] complement;
 
     public TimestralPipeline(TimestralConfig config, BlockForward forward) {
-        this(config, forward, Options.defaults(config), DEFAULT_BATCH_SIZE, DEFAULT_MAX_TOKENS);
+        this(config, forward, Options.defaults(config), DEFAULT_BATCH_SIZE, defaultMaxTokens());
     }
 
     public TimestralPipeline(TimestralConfig config, BlockForward forward, Options options, int batchSize, long maxTokens) {
@@ -310,7 +312,7 @@ public final class TimestralPipeline {
                             x = Math.min(Math.max(x, b[0]), b[1]);
                         }
                         if (Float.isNaN(x)) {
-                            throw new IllegalStateException("forecast produced NaN values; the input is degenerate");
+                            throw new IllegalStateException("forecast produced NaN values: the input is degenerate, or an activation left the FP32 range");
                         }
                         f[v][k][t] = x;
                     }

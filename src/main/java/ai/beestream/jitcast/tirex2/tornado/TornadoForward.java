@@ -18,9 +18,7 @@ package ai.beestream.jitcast.tirex2.tornado;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 import ai.beestream.jitcast.tirex2.ForwardPass;
 import ai.beestream.jitcast.tirex2.ModelBatch;
@@ -31,6 +29,9 @@ import uk.ac.manchester.tornado.api.GridScheduler;
 import uk.ac.manchester.tornado.api.ImmutableTaskGraph;
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.TaskGraph;
+import ai.beestream.jitcast.tornado.Devices;
+import ai.beestream.jitcast.tornado.PlanCache;
+import ai.beestream.jitcast.util.Options;
 import uk.ac.manchester.tornado.api.TornadoExecutionPlan;
 import uk.ac.manchester.tornado.api.WorkerGrid;
 import uk.ac.manchester.tornado.api.WorkerGrid1D;
@@ -51,17 +52,9 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         tornadoDefaults();
     }
 
-    /**
-     * Sets jitcast's TornadoVM defaults, unless already set. TornadoVM reads them when its backends
-     * start, so code that calls TornadoVM before creating a {@code TornadoForward} calls this first.
-     * TornadoVM's Metal backend spin-waits up to 1 ms on each dispatch before it blocks; a forward
-     * pass runs dozens of kernels per task graph, so its waits outlast the spin and jitcast runs up
-     * to 2× slower on Metal. The spin is off.
-     */
+    /** Sets jitcast's TornadoVM defaults ({@link Devices#defaults}). */
     public static void tornadoDefaults() {
-        if (System.getProperty("tornado.metal.dispatch.spinWait") == null) {
-            System.setProperty("tornado.metal.dispatch.spinWait", "False");
-        }
+        Devices.defaults();
     }
 
     private static final String G = "tirex";
@@ -78,26 +71,35 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
      * (−30% at 1 series, −44% at 8 on a compute capability 12 GPU). The threshold dates from CUDA 12.0 cuBLAS,
      * whose FP16→FP32 GEMM fell back to a non-tensor-core kernel at small row counts.
      * {@code HALF} and {@code CUTILE} are the same FP16 GEMM written in TornadoVM, for every row
-     * count: {@code HALF} with KernelContext ({@link TiRexKernels#gemmHalf}, any backend) and
-     * {@code CUTILE} with the CUDA Tile API ({@link TiRexKernels#gemmHalfTile}, tensor cores).
+     * count: {@code HALF} with KernelContext ({@link Kernels#gemmHalf}, any backend) and
+     * {@code CUTILE} with the CUDA Tile API ({@link Kernels#gemmHalfTile}, tensor cores). {@code AUTO}
+     * (the default) is {@code CUBLAS} on a CUDA device and {@code TILED} elsewhere, both FP32.
      */
     public enum GemmMode {
-        TILED, CUBLAS, CUBLAS_TF32, CUBLAS_FP16, CUBLAS_AUTO, HALF, CUTILE;
+        AUTO, TILED, CUBLAS, CUBLAS_TF32, CUBLAS_FP16, CUBLAS_AUTO, HALF, CUTILE;
 
         boolean cublas() {
             return this == CUBLAS || this == CUBLAS_TF32 || this == CUBLAS_FP16 || this == CUBLAS_AUTO;
         }
 
-        static GemmMode fromProperty() {
-            String v = System.getProperty("tirex.tornado.gemm", "tiled").trim().toUpperCase().replace('-', '_');
-            return GemmMode.valueOf(v);
+        static GemmMode fromProperty(uk.ac.manchester.tornado.api.common.TornadoDevice device) {
+            GemmMode m = Options.enumeration("tirex.tornado.gemm", AUTO, GemmMode.class);
+            boolean cuda = device.getTornadoVMBackend() == uk.ac.manchester.tornado.api.enums.TornadoVMBackendType.CUDA;
+            if (m == AUTO) {
+                return cuda ? CUBLAS : TILED;
+            }
+            if ((m.cublas() || m == CUTILE) && !cuda) {
+                throw new IllegalArgumentException("-Dtirex.tornado.gemm=" + m.name().toLowerCase().replace('_', '-')
+                        + " needs a CUDA device; " + device.getTornadoVMBackend() + " is selected");
+            }
+            return m;
         }
     }
 
-    private final GemmMode gemmMode = GemmMode.fromProperty();
+    private final GemmMode gemmMode = GemmMode.fromProperty(device());
 
     /** {@code -Dtirex.tornado.fuse=false} turns the fused SiLU epilogue and residual+RMSNorm kernels off (A/B). */
-    private final boolean fuse = !"false".equalsIgnoreCase(System.getProperty("tirex.tornado.fuse", "true"));
+    private final boolean fuse = Options.bool("tirex.tornado.fuse", true);
 
     /**
      * Keep the FFN's intermediates in FP16 only ({@code -Dtirex.tornado.ffnHalf}, on by default):
@@ -106,17 +108,16 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
      * {@code proj} and {@code big} become one buffer. Applies to the FP16 cuBLAS modes and
      * {@code half}; CUDA Tile and the FP32 modes keep the FP32 FFN.
      */
-    private final boolean ffnHalfEnabled = !"false".equalsIgnoreCase(System.getProperty("tirex.tornado.ffnHalf", "true"));
+    private final boolean ffnHalfEnabled = Options.bool("tirex.tornado.ffnHalf", true);
 
     /**
      * Capture and replay the plan's task graph as a CUDA graph ({@code -Dtirex.tornado.cudaGraph}). On
      * by default with the cuBLAS (CUDA-only) GEMM modes: −11% at batch 1 on a compute capability 12 GPU, with
      * identical results; off with the portable tiled GEMMs, which also run on OpenCL and Metal.
      */
-    private final boolean cudaGraph = Boolean.parseBoolean(
-            System.getProperty("tirex.tornado.cudaGraph", String.valueOf(gemmMode.cublas() || gemmMode == GemmMode.CUTILE)));
+    private final boolean cudaGraph = Options.bool("tirex.tornado.cudaGraph", gemmMode.cublas() || gemmMode == GemmMode.CUTILE);
 
-    private final int fp16MinTokens = Integer.getInteger("tirex.tornado.fp16MinTokens", 0);
+    private final int fp16MinTokens = Options.integer("tirex.tornado.fp16MinTokens", 0, 0);
 
     /**
      * Which cuBLAS call runs an FP16 GEMM: {@code gemmex-mixed} ({@code cublasGemmEx}, FP16 in,
@@ -128,8 +129,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         GEMMEX_MIXED, GEMMEX_H16, LT_H16
     }
 
-    private final Fp16Kernel fp16Kernel = Fp16Kernel.valueOf(
-            System.getProperty("tirex.tornado.fp16Kernel", "gemmex-mixed").trim().toUpperCase().replace('-', '_'));
+    private final Fp16Kernel fp16Kernel = Options.enumeration("tirex.tornado.fp16Kernel", Fp16Kernel.GEMMEX_MIXED, Fp16Kernel.class);
 
     /** Whether a GEMM over {@code m} rows runs in FP16 under the current mode. */
     private boolean halfGemm(int m) {
@@ -145,7 +145,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
      * it is 26–35% faster at 285 patches from 8 series up and 4–5% faster at 74 patches from 64
      * series, but 5% slower for a single 74-patch series, whose 20 work-groups leave the GPU idle.
      */
-    private final String mlstmMode = System.getProperty("tirex.tornado.mlstm", "auto").trim().toLowerCase();
+    private final String mlstmMode = Options.choice("tirex.tornado.mlstm", "auto", "auto", "chunk", "step");
 
     static final int MLSTM_CHUNK_MIN_GROUPS = 64;
 
@@ -166,7 +166,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
      * is {@code fp16-reg} on the devices where that kernel is known to fit
      * ({@link #registerKernelFits}), else {@code fp16}.
      */
-    private final String slstmRProperty = System.getProperty("tirex.tornado.slstmR", "auto").trim().toLowerCase();
+    private final String slstmRProperty = Options.choice("tirex.tornado.slstmR", "auto", "auto", "fp16-reg", "fp16", "fp32");
     private final boolean halfRecurrent = !"fp32".equals(slstmRProperty);
     private String slstmR;
 
@@ -205,9 +205,9 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
      * weights): results then differ from the FP32 reference by up to ~2e-3 instead of ~1e-5.
      */
     public static boolean reducedPrecision() {
-        String gemm = System.getProperty("tirex.tornado.gemm", "tiled").trim().toLowerCase();
-        String r = System.getProperty("tirex.tornado.slstmR", "auto").trim().toLowerCase();
-        return !(gemm.equals("tiled") || gemm.equals("cublas")) || !r.equals("fp32");
+        GemmMode gemm = Options.enumeration("tirex.tornado.gemm", GemmMode.AUTO, GemmMode.class);
+        String r = Options.choice("tirex.tornado.slstmR", "auto", "auto", "fp16-reg", "fp16", "fp32");
+        return !(gemm == GemmMode.AUTO || gemm == GemmMode.TILED || gemm == GemmMode.CUBLAS) || !r.equals("fp32");
     }
 
     /**
@@ -245,17 +245,27 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
 
     private final TiRex2Config config;
     private final PackedWeights weights;
-    private final int maxCachedPlans;
-    private final Map<Shape, Plan> plans = new LinkedHashMap<>(16, 0.75f, true);
+    /**
+     * The compiled plans: at most {@code -Dtirex.tornado.plans} (8), within
+     * {@code -Dtirex.tornado.planBytes} of device memory (by default TornadoVM's
+     * {@code tornado.device.memory}), each counting its own copy of the weights.
+     */
+    private final PlanCache<Shape, Plan> plans;
 
     public TornadoForward(TiRex2Config config, PackedWeights weights) {
-        this(config, weights, 8);
+        this(config, weights, Options.integer("tirex.tornado.plans", 8, 1));
     }
 
     public TornadoForward(TiRex2Config config, PackedWeights weights, int maxCachedPlans) {
+        int heads = config.slstmHeads();
+        if (heads < 1 || config.embeddingDim() % heads != 0 || config.embeddingDim() / heads != 128) {
+            // the sLSTM recurrence and head-norm kernels are written for 128-wide heads
+            throw new IllegalArgumentException("unsupported sLSTM head width: embedding " + config.embeddingDim() + ", "
+                    + heads + " heads; the kernels need 128 per head");
+        }
         this.config = config;
         this.weights = weights;
-        this.maxCachedPlans = maxCachedPlans;
+        this.plans = new PlanCache<>(Math.max(1, maxCachedPlans), Options.bytes("tirex.tornado.planBytes", Devices.memory(), 1));
     }
 
     /**
@@ -276,13 +286,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
 
     private uk.ac.manchester.tornado.api.common.TornadoDevice device() {
         if (device == null) {
-            String prop = System.getProperty("jitcast.tornado.device");
-            if (prop != null && !prop.isBlank()) {
-                String[] dd = prop.split(":");
-                device = TornadoExecutionPlan.getDevice(Integer.parseInt(dd[0]), Integer.parseInt(dd[1]));
-            } else {
-                device = uk.ac.manchester.tornado.api.runtime.TornadoRuntimeProvider.getTornadoRuntime().getDefaultDevice();
-            }
+            device = Devices.device();
         }
         return device;
     }
@@ -297,7 +301,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
      * overrides it.
      */
     static int slstmRowsPerGroup(int rows, int heads) {
-        int forced = Integer.getInteger("tirex.tornado.slstmRows", 0);
+        int forced = Options.integer("tirex.tornado.slstmRows", 0, 0);
         if (forced > 0) {
             return Math.min(forced, TiRexKernels.SLSTM_MAX_ROWS);
         }
@@ -316,7 +320,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
      * padding rows are real work, 20–60% on every call of a size that is not a power of two (compute
      * capability 12 GPU, cublas-auto), so it only pays for workloads with many sizes each seen a few times.
      */
-    private final boolean rowBuckets = "pow2".equalsIgnoreCase(System.getProperty("tirex.tornado.rowBuckets", "off"));
+    private final boolean rowBuckets = "pow2".equals(Options.choice("tirex.tornado.rowBuckets", "off", "off", "pow2"));
 
     /** The row count a batch of {@code rows} is padded to. */
     static int rowBucket(int rows) {
@@ -357,17 +361,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
     private float[][][] forwardExact(ModelBatch batch) {
         Structure s = structure(batch);
         Shape shape = s.shape(batch.rows());
-        Plan plan = plans.get(shape);
-        if (plan == null) {
-            // evict before building, so the old plan's device buffers are freed first
-            while (!plans.isEmpty() && plans.size() >= maxCachedPlans) {
-                Shape eldest = plans.keySet().iterator().next();
-                plans.remove(eldest).close();
-            }
-            plan = new Plan(shape);
-            plans.put(shape, plan);
-        }
-        return plan.run(batch, s);
+        return plans.run(shape, Plan::new, plan -> plan.run(batch, s));
     }
 
     /** Row alignment of GEMM operands: cuBLAS uses FP16 tensor cores only for multiples of 8. */
@@ -405,7 +399,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
 
     /** The shapes compiled so far, least recently used first. */
     public List<Shape> cachedShapes() {
-        return List.copyOf(plans.keySet());
+        return plans.keys();
     }
 
     /**
@@ -460,12 +454,11 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
 
     @Override
     public void close() {
-        plans.values().forEach(Plan::close);
-        plans.clear();
+        plans.close();
     }
 
     /** The buffers and execution plan for one shape. */
-    private final class Plan implements AutoCloseable {
+    private final class Plan implements PlanCache.Plan {
         final Shape shape;
         final FloatArray x, present, tok, stats, h, n, cell, proj, big, y, out;
         final FloatArray yc, revIn, revOut, xk;
@@ -562,7 +555,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 }
             }
             Object[] shared = sharedList.toArray();
-            if (Boolean.getBoolean("tirex.tornado.memReport")) {
+            if (Options.bool("tirex.tornado.memReport", false)) {
                 memoryReport(tokens, new Object[] {"x", x, "present", present, "tok", tok, "stats", stats, "h", h, "n", n, "cell", cell,
                         "proj", proj, "big", big, "y", y, "out", out, "yc", yc, "revIn", revIn, "revOut", revOut, "xk", xk, "cHalf", cHalf,
                         "ffnUp", ffnUp, "ffnSw", ffnSw});
@@ -612,7 +605,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                         // h += yc and the FFN's RMSNorm in one pass
                         grid.addWorkerGrid(b.name + "." + s + "resid", group(tokens * Kernels.NORM_THREADS, Kernels.NORM_THREADS));
                         g.task(s + "resid", Kernels::addRmsNorm, ctx, h, yc, n, w, blk.normFfn(), d, TiRex2Config.NORM_EPS,
-                                b.twin(n), b.hasTwin(n));
+                                b.twin(n), b.hasTwin(n), tokens);
                     } else {
                         b.items(s + "resid", tokens * d);
                         g.task(s + "resid", Kernels::addInPlace, ctx, h, yc, tokens * d);
@@ -649,16 +642,12 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
 
             this.grid = grid;
             exec = new TornadoExecutionPlan(b.graph);
-            String device = System.getProperty("jitcast.tornado.device");
-            if (device != null && !device.isBlank()) {
-                String[] dd = device.split(":");
-                exec.withDevice(TornadoExecutionPlan.getDevice(Integer.parseInt(dd[0]), Integer.parseInt(dd[1])));
-            }
+            exec.withDevice(device());
             if (cudaGraph) {
                 // CUDA backend only: the task graph is captured once and replayed as a CUDA graph
                 exec.withCUDAGraph();
             }
-            if (Boolean.getBoolean("tirex.tornado.profile")) {
+            if (Options.bool("tirex.tornado.profile", false)) {
                 // per-task kernel times on stdout after every execution (analysis only; slows every call)
                 exec.withProfiler(uk.ac.manchester.tornado.api.enums.ProfilerMode.CONSOLE);
             }
@@ -767,7 +756,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 if (fuse && add && ffnNorm >= 0 && fusedNorm(heads, dh)) {
                     b.grid.addWorkerGrid(b.name + "." + s + "hnorm", group(tokens * heads * dh, heads * dh));
                     b.g.task(s + "hnorm", TiRexKernels::headNormAddRmsNorm, b.ctx, cell, dst, n, b.w, blk.groupNorm(), ffnNorm,
-                            heads, dh, TiRex2Config.NORM_EPS, TiRex2Config.NORM_EPS, b.twin(n), b.hasTwin(n));
+                            heads, dh, TiRex2Config.NORM_EPS, TiRex2Config.NORM_EPS, b.twin(n), b.hasTwin(n), tokens);
                     return true;
                 }
                 b.headNorm(s + "hnorm", cell, dst, blk.groupNorm(), tokens, heads, dh, proj, 0, 0, add ? 2 : 0);
@@ -841,6 +830,11 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             for (int i = 0; dst != null && i < src.length; i++) {
                 dst.set(i, src[i]);
             }
+        }
+
+        @Override
+        public long deviceBytes() {
+            return exec.getCurrentDeviceMemoryUsage();
         }
 
         @Override
@@ -1071,7 +1065,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
 
         void rms(String name, FloatArray x, FloatArray y, int wOff, int rows, int d, float eps) {
             grid.addWorkerGrid(this.name + "." + name, group(rows * Kernels.NORM_THREADS, Kernels.NORM_THREADS));
-            g.task(name, Kernels::rmsNorm, ctx, x, y, w, wOff, d, eps, twin(y), hasTwin(y));
+            g.task(name, Kernels::rmsNorm, ctx, x, y, w, wOff, d, eps, twin(y), hasTwin(y), rows);
         }
 
         void headNorm(String name, FloatArray x, FloatArray y, int wOff, int tokens, int heads, int dh, FloatArray gate,
@@ -1080,7 +1074,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             // mode 2 adds into the residual stream, which no GEMM reads directly: no twin
             int tw = mode == 2 ? 0 : hasTwin(y);
             g.task(name, TiRexKernels::headLayerNorm, ctx, x, y, w, wOff, heads, dh, TiRex2Config.NORM_EPS, gate,
-                    gStride, gOff, mode, tw == 1 ? twin(y) : noTwin, tw);
+                    gStride, gOff, mode, tw == 1 ? twin(y) : noTwin, tw, tokens);
         }
 
         /** {@code y = output(SiLU(hidden(x))) + residual(x)}; {@code scratch} holds the hidden layer. */

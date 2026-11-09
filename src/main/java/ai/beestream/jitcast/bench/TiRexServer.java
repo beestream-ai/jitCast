@@ -17,15 +17,13 @@ package ai.beestream.jitcast.bench;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -100,36 +98,53 @@ public final class TiRexServer {
             try (Socket s = server.accept();
                     DataInputStream in = new DataInputStream(new BufferedInputStream(s.getInputStream(), 1 << 20));
                     OutputStream out = new BufferedOutputStream(s.getOutputStream(), 1 << 20)) {
+                Wire wire = new Wire(in);
                 while (true) {
-                    int op = readInt(in);
+                    int op = wire.readInt();
                     if (op == 0) {
                         break;
                     }
-                    int n = readInt(in), horizon = readInt(in), signFlip = readInt(in), trendDiff = readInt(in);
-                    List<TimeSeries> series = new ArrayList<>(n);
-                    for (int i = 0; i < n; i++) {
-                        int vt = readInt(in), vp = readInt(in), vf = readInt(in), t = readInt(in), tf = readInt(in);
-                        series.add(new TimeSeries(readRows(in, vt, t), vp == 0 ? null : readRows(in, vp, t),
-                                vf == 0 ? null : readRows(in, vf, tf)));
-                    }
-                    ForecastPipeline p = new ForecastPipeline(weights.config(), forward, batchSize,
-                            trendDiff < 0 ? base.trendDiff() : trendDiff == 1, signFlip < 0 ? base.signFlip() : signFlip == 1);
+                    wire.next();
+                    int n, horizon, signFlip, trendDiff;
+                    List<float[][][]> raw;
                     try {
+                        n = wire.count("series count", 1, Wire.MAX_SERIES);
+                        horizon = wire.count("horizon", 1, 1 << 20);
+                        signFlip = wire.readInt();
+                        trendDiff = wire.readInt();
+                        raw = new ArrayList<>(n);
+                        for (int i = 0; i < n; i++) {
+                            int vt = wire.count("targets", 1, 1 << 16), vp = wire.count("past covariates", 0, 1 << 16);
+                            int vf = wire.count("known covariates", 0, 1 << 16);
+                            int t = wire.count("length", 1, Integer.MAX_VALUE), tf = wire.count("future length", 0, Integer.MAX_VALUE);
+                            raw.add(new float[][][] {wire.floats(vt, t), vp == 0 ? null : wire.floats(vp, t),
+                                    vf == 0 ? null : wire.floats(vf, tf)});
+                        }
+                    } catch (Wire.BadRequest e) {
+                        // the rest of the request cannot be found: answer and drop the client
+                        Wire.error(out, e);
+                        out.flush();
+                        break;
+                    }
+                    try {
+                        List<TimeSeries> series = new ArrayList<>(n);
+                        for (float[][][] r : raw) {
+                            series.add(new TimeSeries(r[0], r[1], r[2]));
+                        }
+                        ForecastPipeline p = new ForecastPipeline(weights.config(), forward, batchSize,
+                                trendDiff < 0 ? base.trendDiff() : trendDiff == 1, signFlip < 0 ? base.signFlip() : signFlip == 1);
                         List<Forecast> result = p.forecast(bucketed(series), horizon).subList(0, n);
-                        writeInt(out, 0);
+                        ByteArrayOutputStream body = new ByteArrayOutputStream();
                         for (Forecast f : result) {
                             float[][][] v = f.values();
-                            writeInt(out, v.length);
-                            writeInt(out, v[0].length);
-                            writeInt(out, v[0][0].length);
-                            ByteBuffer bb = ByteBuffer.allocate(4 * v.length * v[0].length * v[0][0].length).order(ByteOrder.LITTLE_ENDIAN);
+                            Wire.writeInt(body, v.length);
+                            Wire.writeInt(body, v[0].length);
+                            Wire.writeInt(body, v[0][0].length);
                             for (float[][] tq : v) {
                                 for (float[] q : tq) {
-                                    bb.asFloatBuffer().put(q);
-                                    bb.position(bb.position() + 4 * q.length);
+                                    Wire.writeFloats(body, q);
                                 }
                             }
-                            out.write(bb.array());
                         }
                         if (forward instanceof TornadoForward tf) {
                             List<TornadoForward.Shape> now = tf.cachedShapes();
@@ -141,12 +156,10 @@ public final class TiRexServer {
                             cached = new java.util.HashSet<>(now);
                             seen.addAll(now);
                         }
-                        writeInt(out, seen.size() >= maxShapes || builds >= maxBuilds ? 1 : 0);
+                        Wire.writeInt(body, seen.size() >= maxShapes || builds >= maxBuilds ? 1 : 0);
+                        Wire.ok(out, body);
                     } catch (RuntimeException e) {
-                        byte[] msg = String.valueOf(e).getBytes(StandardCharsets.UTF_8);
-                        writeInt(out, 1);
-                        writeInt(out, msg.length);
-                        out.write(msg);
+                        Wire.error(out, e);
                         e.printStackTrace();
                     }
                     out.flush();
@@ -178,26 +191,6 @@ public final class TiRexServer {
             padded.add(series.get(0));
         }
         return padded;
-    }
-
-    private static int readInt(DataInputStream in) throws IOException {
-        return Integer.reverseBytes(in.readInt());
-    }
-
-    private static void writeInt(OutputStream out, int v) throws IOException {
-        out.write(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(v).array());
-    }
-
-    private static float[][] readRows(DataInputStream in, int rows, int cols) throws IOException {
-        byte[] bytes = new byte[4 * rows * cols];
-        in.readFully(bytes);
-        ByteBuffer bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
-        float[][] m = new float[rows][cols];
-        for (int r = 0; r < rows; r++) {
-            bb.asFloatBuffer().get(m[r]);
-            bb.position(bb.position() + 4 * cols);
-        }
-        return m;
     }
 
     private TiRexServer() {}

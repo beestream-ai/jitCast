@@ -29,6 +29,7 @@ import ai.beestream.jitcast.tirex2.TiRex2Weights;
 public final class CpuTiRex2Engine implements ForecastEngine {
 
     private final TiRex2Weights weights;
+    private boolean closed;
     private final ForecastPipeline pipeline;
 
     public CpuTiRex2Engine(TiRex2Weights weights) {
@@ -37,7 +38,17 @@ public final class CpuTiRex2Engine implements ForecastEngine {
     }
 
     public static CpuTiRex2Engine load(Path safetensors) throws IOException {
-        return new CpuTiRex2Engine(TiRex2Weights.load(safetensors));
+        TiRex2Weights weights = TiRex2Weights.load(safetensors);
+        try {
+            return new CpuTiRex2Engine(weights);
+        } catch (RuntimeException | Error e) {
+            try {
+                weights.close();
+            } catch (RuntimeException suppressed) {
+                e.addSuppressed(suppressed);
+            }
+            throw e;
+        }
     }
 
     public ForecastPipeline pipeline() {
@@ -55,7 +66,11 @@ public final class CpuTiRex2Engine implements ForecastEngine {
     }
 
     @Override
-    public void close() {
+    public synchronized void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
         weights.close();
     }
 }

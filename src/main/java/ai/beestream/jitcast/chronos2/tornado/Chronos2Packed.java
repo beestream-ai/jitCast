@@ -22,6 +22,7 @@ import java.util.Map;
 
 import ai.beestream.jitcast.chronos2.Chronos2Config;
 import ai.beestream.jitcast.chronos2.Chronos2Weights;
+import ai.beestream.jitcast.tornado.Kernels;
 
 import uk.ac.manchester.tornado.api.types.HalfFloat;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
@@ -122,7 +123,7 @@ public final class Chronos2Packed {
         return halfMatrices.computeIfAbsent(l, x -> {
             HalfFloatArray m = new HalfFloatArray(x.out() * x.in());
             for (int i = 0; i < m.getSize(); i++) {
-                m.set(i, new HalfFloat(data.get(x.w() + i)));
+                m.set(i, new HalfFloat(Math.clamp(data.get(x.w() + i), -Kernels.HALF_MAX, Kernels.HALF_MAX)));
             }
             return m;
         });

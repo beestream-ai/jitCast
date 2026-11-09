@@ -27,13 +27,14 @@ import ai.beestream.jitcast.tirex2.TiRex2Weights;
 
 /**
  * The TornadoVM engine: the shared host pipeline ({@link ForecastPipeline}) around
- * {@link TornadoForward}. P1 scope is univariate series; see {@link TornadoForward}.
+ * {@link TornadoForward}.
  */
 public final class TornadoTiRex2Engine implements ForecastEngine {
 
     private final TiRex2Weights weights;
     private final TornadoForward forward;
     private final ForecastPipeline pipeline;
+    private boolean closed;
 
     public TornadoTiRex2Engine(TiRex2Weights weights) {
         this.weights = weights;
@@ -42,7 +43,17 @@ public final class TornadoTiRex2Engine implements ForecastEngine {
     }
 
     public static TornadoTiRex2Engine load(Path safetensors) throws IOException {
-        return new TornadoTiRex2Engine(TiRex2Weights.load(safetensors));
+        TiRex2Weights weights = TiRex2Weights.load(safetensors);
+        try {
+            return new TornadoTiRex2Engine(weights);
+        } catch (RuntimeException | Error e) {
+            try {
+                weights.close();
+            } catch (RuntimeException suppressed) {
+                e.addSuppressed(suppressed);
+            }
+            throw e;
+        }
     }
 
     public TornadoForward forwardPass() {
@@ -64,8 +75,15 @@ public final class TornadoTiRex2Engine implements ForecastEngine {
     }
 
     @Override
-    public void close() {
-        forward.close();
-        weights.close();
+    public synchronized void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
+        try {
+            forward.close();
+        } finally {
+            weights.close();
+        }
     }
 }

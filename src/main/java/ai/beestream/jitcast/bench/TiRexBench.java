@@ -109,7 +109,7 @@ public final class TiRexBench {
         Capturing cap = new Capturing(fp);
         // each benchmark point is one forward pass unless -Dtirex.maxTokens is given explicitly
         ForecastPipeline pipeline = new ForecastPipeline(weights.config(), cap)
-                .withMaxTokens(Long.getLong("tirex.maxTokens", Long.MAX_VALUE));
+                .withMaxTokens(ai.beestream.jitcast.util.Options.number("tirex.maxTokens", Long.MAX_VALUE, 1));
 
         List<Map<String, Object>> records = new ArrayList<>();
         try (SafeTensors w = SafeTensors.open(Path.of(a.get("workloads")))) {

@@ -10,7 +10,7 @@
     <packaging>jar</packaging>
 
     <name>jitcast</name>
-    <description>An inference engine for NX-AI TiRex-2 time-series forecasting on TornadoVM, with the hybrid CUDA libraries (cuBLAS) and CUDA Tile</description>
+    <description>Zero-shot time-series foundation models (TiRex-2, Timestral, Chronos-2) in Java, on GPUs through TornadoVM</description>
 
     <url>https://github.com/beestream-ai/jitcast</url>
     <organization>
@@ -69,12 +69,6 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.11.0</version>
-                <configuration>
-                    <compilerArgs>
-                        <arg>--add-modules</arg>
-                        <arg>jdk.incubator.vector</arg>
-                    </compilerArgs>
-                </configuration>
             </plugin>
             <!-- Default tests need no accelerator; *AccelTest runs under -Paccel-tests, as in jitllm. -->
             <plugin>
@@ -85,7 +79,6 @@
                     <excludes>
                         <exclude>**/*AccelTest.java</exclude>
                     </excludes>
-                    <argLine>--add-modules jdk.incubator.vector</argLine>
                     <systemPropertyVariables>
                         <tirex.weights>${tirex.weights}</tirex.weights>
                         <tirex.golden>${tirex.golden}</tirex.golden>
@@ -111,7 +104,6 @@
                         <configuration>
                             <excludes combine.self="override"/>
                             <argLine>@${env.TORNADOVM_HOME}/tornado-argfile
-                                    --add-modules jdk.incubator.vector
                                     -Dtornado.recover.bailout=False
                                     -Dtornado.device.memory=8GB
                                     -Dtornado.cuda.priority=100
