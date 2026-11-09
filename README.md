@@ -8,7 +8,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg"></a>
   <img alt="Java 22+" src="https://img.shields.io/badge/java-22%2B-orange.svg">
-  <img alt="TornadoVM" src="https://img.shields.io/badge/TornadoVM-8.0.0%2B-0B1F33.svg">
+  <img alt="TornadoVM" src="https://img.shields.io/badge/TornadoVM-8.1.0-0B1F33.svg">
   <a href="https://beestream-ai.github.io/jitCast/"><img alt="Javadoc" src="https://img.shields.io/badge/javadoc-API-brightgreen.svg"></a>
 </p>
 
@@ -46,11 +46,12 @@ against, or on a TornadoVM device as one compiled plan per batch shape. More in
 
 ## Quick start
 
-You need JDK 22+ and a TornadoVM 8 SDK (`jdk22plus` family); details in [INSTALL.md](docs/INSTALL.md).
+You need JDK 22+ and TornadoVM 8.1.0, both from [SDKMAN!](https://sdkman.io); other platforms and options are in
+[INSTALL.md](docs/INSTALL.md).
 
 ```bash
 sdk install java 25.0.4-tem                     # any JDK 22+
-sdk install tornadovm 8.0.0-jdk22plus-cuda      # or ...-metal / ...-opencl
+sdk install tornadovm 8.1.0-jdk22plus-cuda      # or ...-metal on Apple Silicon, ...-opencl
 tornado --devices                               # device ids, as <backend>:<device>
 
 git clone https://github.com/beestream-ai/jitcast && cd jitcast

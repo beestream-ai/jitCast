@@ -6,35 +6,57 @@
 
 - **JDK 22 or newer** (tested with JDK 25). jitcast builds with `--release 22` against TornadoVM's
   `jdk22plus` SDKs.
-- **TornadoVM 8.0.0 or newer**, for your backend. TornadoVM 8 compiles kernels with its own TC
-  compiler and is required for CUDA Tile (`cutile`). A 7.3.1 SDK also works: build with
-  `-Dtornadovm.version=7.3.1-jdk22plus`.
+- **TornadoVM 8.1.0**, the version jitcast builds against, for your backend.
 - **Python 3.11+ with PyTorch**, only to convert TiRex-2 checkpoints and record test goldens. Create
   the venv with that interpreter (`python3.11 -m venv`).
 
-## Install TornadoVM
+## Install TornadoVM with SDKMAN!
 
-Prebuilt SDKs are on [tornadovm.org/downloads](https://www.tornadovm.org/downloads) and SDKMAN!.
-Pick the `jdk22plus` family:
+[SDKMAN!](https://sdkman.io) installs prebuilt TornadoVM SDKs and a JDK, and keeps several versions
+side by side:
 
 ```bash
-sdk install java 25.0.4-tem                     # a JDK 22+; the SDK does not include one
-sdk list tornadovm                              # <version>-<jdk>-<backend> combinations
-sdk install tornadovm 8.0.0-jdk22plus-metal     # Apple Silicon; or ...-opencl
-sdk install tornadovm 8.0.0-jdk22plus-cuda      # NVIDIA
+curl -s "https://get.sdkman.io" | bash          # once, then open a new shell
+sdk install java 25.0.4-tem                     # any JDK 22+; the TornadoVM SDK does not include one
+sdk install tornadovm 8.1.0-jdk22plus-cuda      # the SDK for your platform, from the table below
 tornado --devices                               # backends and devices, as <backend>:<device>
 ```
 
-SDKMAN! sets `TORNADOVM_HOME`. The first `tornado` command writes `$TORNADOVM_HOME/tornado-argfile`,
-the JVM flags jitcast runs with; `tornado --generate-argfile` rewrites it after a JDK change.
+| Platform | SDKMAN! identifier |
+|---|---|
+| macOS, Apple Silicon | `8.1.0-jdk22plus-metal` (recommended) or `8.1.0-jdk22plus-opencl` |
+| Linux x86-64, NVIDIA GPU | `8.1.0-jdk22plus-cuda` |
+| Linux x86-64, other OpenCL GPU | `8.1.0-jdk22plus-opencl` |
+| Linux x86-64, every backend in one SDK | `8.1.0-jdk22plus-full` |
+| Linux AArch64 (such as NVIDIA Grace), Windows | not on SDKMAN!: see below |
+
+Use the `jdk22plus` SDKs; the `jdk21` ones do not run jitcast. SDKMAN! sets `TORNADOVM_HOME` and
+`PATH` for the default version, which `sdk default tornadovm <identifier>` changes; `sdk use
+tornadovm <identifier>` switches the current shell only, and `sdk list tornadovm` shows what is
+available. The first `tornado` command writes `$TORNADOVM_HOME/tornado-argfile`, the JVM flags
+jitcast runs with; `tornado --generate-argfile` rewrites it after a JDK change.
+
+### Without SDKMAN!
+
+Every SDK, including CUDA for Linux AArch64 and Windows, is attached to the
+[TornadoVM 8.1.0 release](https://github.com/beehive-lab/TornadoVM/releases/tag/v8.1.0) and on
+[tornadovm.org/downloads](https://www.tornadovm.org/downloads). Unpack it and point `TORNADOVM_HOME`
+at it:
+
+```bash
+curl -fLO https://github.com/beehive-lab/TornadoVM/releases/download/v8.1.0/tornadovm-8.1.0-jdk22plus-cuda-linux-aarch64.tar.gz
+tar xzf tornadovm-8.1.0-jdk22plus-cuda-linux-aarch64.tar.gz
+export TORNADOVM_HOME=$PWD/tornadovm-8.1.0-cuda PATH=$PWD/tornadovm-8.1.0-cuda/bin:$PATH
+tornado --devices
+```
 
 ### Building TornadoVM
 
-Build an SDK for `develop`, or for hosts without a prebuilt one, inside a Python venv, with
+Build an SDK from source for TornadoVM's `develop` branch, inside a Python venv, with
 `JAVA_HOME` at the JDK you will run jitcast with:
 
 ```bash
-git clone --depth 1 -b v8.0.0 https://github.com/beehive-lab/TornadoVM && cd TornadoVM    # or -b develop
+git clone --depth 1 -b develop https://github.com/beehive-lab/TornadoVM && cd TornadoVM
 python3 -m venv .venv && . .venv/bin/activate && pip install requests tqdm
 make jdk22plus BACKEND=cuda,opencl              # or BACKEND=metal,opencl on macOS
 export TORNADOVM_HOME=$(ls -d dist/*/tornadovm-*)
@@ -42,7 +64,7 @@ $TORNADOVM_HOME/bin/tornado --devices
 ```
 
 Build jitcast against it with `-Dtornadovm.version=<its version>` (for example
-`8.0.1-jdk22plus-dev`); the SDK build installs its artifacts in `~/.m2`.
+`8.1.1-jdk22plus-dev`); the SDK build installs its artifacts in `~/.m2`.
 
 ### Device numbering
 
@@ -73,8 +95,8 @@ backend with the highest `-Dtornado.<backend>.priority` is numbered `0`.
 
 ```bash
 git clone https://github.com/beestream-ai/jitcast && cd jitcast
-./mvnw -q package -DskipTests                                         # TornadoVM 8.0.0 API from Maven Central
-./mvnw -q package -DskipTests -Dtornadovm.version=8.0.1-jdk22plus-dev # or an SDK you built
+./mvnw -q package -DskipTests                                         # TornadoVM 8.1.0 API from Maven Central
+./mvnw -q package -DskipTests -Dtornadovm.version=8.1.1-jdk22plus-dev # or a develop SDK you built
 ```
 
 ## Get the weights
