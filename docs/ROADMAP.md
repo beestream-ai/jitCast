@@ -2,78 +2,52 @@
 
 [← back to the README](../README.md)
 
-Planned work on jitcast, and the TornadoVM issues that limit it today. The current results are in
-[PERFORMANCE.md](https://github.com/beestream-ai/jitCast-benchmarking/blob/main/docs/PERFORMANCE.md) and [VALIDATION.md](https://github.com/beestream-ai/jitCast-benchmarking/blob/main/docs/VALIDATION.md).
+Planned work on jitcast, and the TornadoVM limits that affect it today.
 
 ## Models
 
-1. **Chronos-2** (Amazon): done ([models/CHRONOS2.md](models/CHRONOS2.md)). Still open: categorical
-   covariates (target-encoded in the reference, as for Timestral), and benchmark parity (fev-bench,
-   GIFT-Eval).
-2. **Further candidates**: TimesFM, Toto, Moirai 2, TTM, Sundial, checked against the GIFT-Eval
-   leaderboard and each model's weight licence before porting.
-3. **GIFT-Eval parity for Timestral** (fev-bench is done: [VALIDATION.md](https://github.com/beestream-ai/jitCast-benchmarking/blob/main/docs/VALIDATION.md#timestral)).
-4. **Timestral's long-context attention**: its time attention kernel walks the keys one at a time,
-   which makes the longest fev-bench tasks slower than in PyTorch. On CUDA, small batches of long rows
-   already go to cuBLAS batched GEMMs (`timestral.tornado.attention`); the kernel is used everywhere
-   else. Chronos-2's time attention takes blocks of
-   32 keys with register tiles, 2.6× faster than one key at a time on 517-token rows; the same
-   structure would apply to Timestral's kernel.
+- **Chronos-2:** categorical covariates (target-encoded in the reference, as for Timestral).
+- **New families:** TimesFM, Toto, Moirai 2, TTM and Sundial are candidates, each checked against the
+  GIFT-Eval leaderboard and its weight licence before porting.
+- **Timestral's long-context attention:** its time attention kernel walks keys one at a time. The
+  blocked, register-tiled structure of Chronos-2's kernel would apply.
 
 ## Engine
 
-1. **One GEMM layer for every family.** Timestral and Chronos-2 select their GEMMs through the shared
-   `GemmMode` (TornadoVM FP32 and FP16 kernels, simdgroup matrices, cuBLAS); TiRex-2 still has its own
-   dispatch, with its FP16 twins, cuBLASLt and CUDA Tile paths. Moving TiRex-2 onto the shared layer
-   also gives it the register-blocked and simdgroup FP32 GEMMs, much faster than `tiled` on Apple
-   GPUs.
-2. **Timestral's host steps on the device where it has float64** (CUDA, OpenCL with fp64): the scaler,
-   the quantile head's fan-out and denormalization, the refine frames and the cap. With the rows in
-   parallel they still cost about 100 ms per forecast at 512 series on the A100's host, against about
-   66 ms of device time for Timestral-5M and 265 ms for 28M.
-3. **One copy of the weights with cuBLAS.** cuBLAS library tasks take whole arrays, so every GEMM
-   weight is held twice (packed, and one array per matrix): about 0.8 GB more for Timestral-209M and
-   300 MB for TiRex-2.
-4. **One plan for every batch size.** Each new batch shape builds its own plan (kernel compilation,
-   buffer allocation, weight upload, CUDA graph capture: 0.4–2 s), and `TiRexServer` restarts after
-   `--max-shapes` shapes. Allocating the buffers once for the largest batch and passing the row count
-   at run time removes the rebuilds. Timestral already pads its block shapes to shared sizes
-   (`timestral.tornado.buckets`), which bounds its plans without removing the rebuilds.
-5. **Share the weights across plans.** Every cached plan uploads its own weights (about 630 MB for
-   TiRex-2), which limits how many large plans fit on a GPU. This needs device buffers shared across
-   TornadoVM execution plans (see below).
-6. **Sign-flip TTA in one batch.** TiRex-2 and Timestral forecast the series and its negation as two forward
-   passes; concatenating them into one halves the kernel launches.
-7. **Faster portable FP16 GEMM** (`half`): vectorised half2 loads, a larger K slice, double buffering.
-8. **Smaller items.**
-   - Fuse the SwiGLU activation into a GEMM (about 11% of GPU time at 256 series with TiRex-2's
-     `cublas-auto`).
-   - Lower host memory: drop the host weight copies after upload, or map them straight from the
-     safetensors file.
-   - TiRex-2: re-check the server's restart guard (`--max-shapes`) on TornadoVM 8.
+- **One GEMM layer for every family.** Timestral and Chronos-2 share `tornado.GemmMode`; TiRex-2
+  still has its own dispatch (FP16 twins, cuBLASLt, CUDA Tile). Moving it over also gives TiRex-2
+  the register-blocked and simdgroup FP32 GEMMs.
+- **One plan for every batch size.** Each new batch shape builds a plan (compilation, allocation,
+  weight upload, CUDA graph capture). Allocating once for the largest batch and passing the row count
+  at run time would remove the rebuilds.
+- **Weights shared across plans.** Every cached plan holds its own copy of the weights, which limits
+  how many large plans fit on a GPU. This needs device buffers shared across TornadoVM execution
+  plans.
+- **One copy of the weights with cuBLAS.** cuBLAS tasks take whole arrays, so each GEMM weight is
+  held twice: packed, and as its own array.
+- **Timestral's host steps on the device** where it has float64 (CUDA, OpenCL with fp64): the
+  scaler, the quantile fan-out and denormalization, the refine frames and the cap.
+- **Sign-flip TTA in one batch.** TiRex-2 and Timestral run a series and its negation as two passes;
+  one concatenated pass halves the kernel launches.
+- **Smaller items:** a faster portable FP16 GEMM (`half`: vector loads, larger K slices, double
+  buffering); SwiGLU fused into its GEMM; lower host memory by dropping host weight copies after
+  upload; tuning the CUDA Tile GEMM.
 
-## Evaluation
+## TornadoVM limits that affect jitcast
 
-- TiRex-2: re-measure Metal and OpenCL on TornadoVM 8; GIFT-Eval parity in multivariate mode.
-- CUDA Tile (`cutile`): tuning its GEMM. It runs on TornadoVM 8, at 0.5–0.9× the speed of
-  `cublas-auto` on an A10, and its first call per shape compiles for about 40 s.
-- Chronos-2: Metal with the simdgroup GEMMs (its Apple silicon numbers are on the portable GEMMs).
-
-## TornadoVM issues that affect jitcast
-
-| Issue | Effect on jitcast | Workaround in jitcast |
+| Limit | Effect on jitcast | Workaround |
 |---|---|---|
-| The Tile API's `TileContext.checkShape` cannot be compiled into a kernel (its message uses string concatenation) | `gemm=cutile` fails on TornadoVM 7.3.1 and earlier; fixed in 8.0.0 | use 8.0.0, or `cublas-auto` or `half` |
-| An assertion in the runtime (`TornadoVMInterpreter.rewindBufferToBegin`) fails for any device but a backend's first, on 7.3.1 and earlier; fixed in 8.0.0 ([beehive-lab/TornadoVM#1291](https://github.com/beehive-lab/TornadoVM/pull/1291)) | the accelerated tests fail on a second GPU when assertions are on (the results are correct) | use 8.0.0, or run the tests on the first device or with `-DenableAssertions=false` |
-| Device numbering differs between JVMs launched with and without the test profile, on SDKs with several backends | the accelerated tests can pick a different backend than the benchmarks | set `-Djitcast.tornado.device` per JVM (`TEST_CUDA_DEVICE` in the evaluation scripts) |
-| A kernel that cannot launch for lack of registers fails silently on NVIDIA's OpenCL (the error code of `clEnqueueNDRangeKernel` is not checked) | wrong results instead of an error | `slstmR=auto` avoids the register-resident sLSTM kernel there |
-| The TC compiler (TornadoVM 8) does not unroll loops, so a per-thread array indexed in a loop is kept in memory rather than registers | attention and sLSTM kernels written with such arrays ran up to 3× slower than with Graal | the kernels keep per-thread accumulators and state in named scalars |
-| Metal's dispatch spin wait | up to 2× slower on Metal | jitcast turns it off by default |
-| Simdgroup matrices that meet after an if/else are merged wrongly (Metal): the copy from one branch runs on every path | a kernel that keeps its accumulators across such a join gets the other branch's values (TornadoVM 7.3.1 and earlier; fixed in 8.0.0) | `gemmSimdgroupWide` stores each branch's accumulators to threadgroup memory before the join |
-| No float64 on Apple GPUs | statistics that need float64 run on the host | Timestral's scaler and refine step run on the host |
-| Fast math folds NaN checks away (Metal) | in-kernel NaN tests do not work | the host uploads NaN as 0 plus a mask |
-| The cuBLAS provider prefers CUDA 12 libraries over CUDA 13 | slow fallback GEMM kernels on newer GPUs (TornadoVM 7.3.1 and earlier; fixed in 8.0.0) | a library shim directory ([INSTALL.md](INSTALL.md#nvidia-extras)) |
-| cuBLAS library tasks take whole arrays, with no element offsets | each GEMM weight needs its own array (about 300 MB extra) | separate weight arrays |
-| No device buffers shared across execution plans | weights are uploaded once per cached plan | fewer cached plans (`--plans`) |
-| Grid sizes are not checked against device limits, and errors lose their cause | launch failures are hard to diagnose | — |
-| Cleanup after a failed device allocation frees buffers that were never allocated | the server can fail on shutdown after an out-of-memory error | `TiRexServer` catches it on close |
+| No device buffers shared across execution plans | each cached plan uploads its own weights | the plan cache counts weights against its budget |
+| cuBLAS tasks take whole arrays, without offsets | each GEMM weight needs its own array | separate weight arrays |
+| TC (TornadoVM 8) does not unroll loops, so per-thread arrays indexed in loops stay in memory | slow attention and sLSTM kernels | kernels keep accumulators in named scalars |
+| Metal spin-waits on each dispatch | slow Metal runs | jitcast turns it off |
+| Fast math folds NaN checks away (Metal) | in-kernel NaN tests fail | the host uploads NaN as 0 plus a mask |
+| No float64 on Apple GPUs | float64 statistics run on the host | Timestral's scaler and refine step run on the host |
+| Launch failures from register pressure go unchecked on NVIDIA's OpenCL | wrong results instead of an error | `slstmR=auto` avoids the register-resident sLSTM kernel there |
+| Device numbering can differ between JVMs with and without the test profile, on multi-backend SDKs | tests and applications can pick different backends | set `-Djitcast.tornado.device` per JVM |
+| Grid sizes are not checked against device limits; errors lose their cause | launch failures are hard to diagnose | — |
+| Cleanup after a failed allocation frees buffers that were never allocated | shutdown can fail after an out-of-memory error | the servers catch it on close |
+
+Fixed in TornadoVM 8.0.0, so jitcast needs no workaround there: the CUDA Tile `checkShape`
+compile failure, the runtime assertion on a backend's second device, simdgroup matrices merged wrongly
+after an if/else on Metal, and cuBLAS preferring CUDA 12 libraries.

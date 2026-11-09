@@ -6,21 +6,19 @@
 foundation models: 5M, 28M, 123M and 209M parameters, one architecture. jitcast reproduces
 `TimestralForecaster.forecast()` from Mistral's [`timestral`](https://github.com/mistralai/timestral)
 package end to end: 21-quantile forecasts for univariate and multivariate series, with past-only and
-known-future covariates (numeric or categorical), any horizon (decoded block by block), and the clampsym test-time
+known-future covariates (numeric or categorical), any horizon, and the reference's test-time
 augmentation.
 
 | | |
 |---|---|
-| Architecture | patch transformer (32 steps per patch): time attention with partial RoPE and a sigmoid gate, attention across the variates of a series, SwiGLU MLPs, RMSNorm; a monotone 21-quantile head |
-| Checkpoints | `mistralai/Timestral-5M`, `-28M`, `-123M`, `-209M` on Hugging Face, loaded as published (`config.json` + `model.safetensors`) |
-| Validated | all four checkpoints on CPU, Metal, OpenCL and CUDA ([VALIDATION.md](https://github.com/beestream-ai/jitCast-benchmarking/blob/main/docs/VALIDATION.md#timestral)) |
-| Performance | [PERFORMANCE.md](https://github.com/beestream-ai/jitCast-benchmarking/blob/main/docs/PERFORMANCE.md#timestral) |
+| Architecture | patch transformer (32 steps per patch): time attention with partial RoPE and a sigmoid gate, attention across a series' variates, SwiGLU MLPs, RMSNorm; a monotone 21-quantile head |
+| Checkpoints | `mistralai/Timestral-5M`, `-28M`, `-123M`, `-209M`, loaded as published (`config.json` + `model.safetensors`) |
+| Validated | all four checkpoints on CPU, Metal, OpenCL and CUDA |
 | Engines | `timestral.tornado.TornadoTimestralEngine` (TornadoVM), `timestral.cpu.CpuTimestralEngine` (FP32 reference) |
 
 ## Quick start
 
 ```bash
-# a checkpoint (any size; the weights' licence is below)
 mkdir -p Timestral-5M && for f in config.json model.safetensors; do
   curl -L -o Timestral-5M/$f https://huggingface.co/mistralai/Timestral-5M/resolve/main/$f
 done
@@ -37,8 +35,7 @@ try (ForecastEngine engine = TornadoTimestralEngine.load(Path.of("Timestral-5M")
 }
 ```
 
-The forecaster's settings (context cap, block size, the cap to the observed range, sign-flip
-averaging, non-negative clipping) are `TimestralPipeline.Options`, with the reference's defaults:
+Forecaster settings are `TimestralPipeline.Options`, with the reference's defaults:
 
 ```java
 TimestralPipeline p = engine.pipeline().withOptions(
@@ -49,11 +46,11 @@ TimestralPipeline p = engine.pipeline().withOptions(
 
 | Feature | Supported |
 |---|---|
-| Inputs | univariate series, several jointly forecast targets, past-only and known-future covariates, numeric and categorical, mixed batches, NaN gaps and late starts, series of different lengths in one batch |
-| Context | up to the checkpoint's 32,768 steps (longer contexts keep the most recent) |
-| Horizon | any: up to 32 patches (1,024 steps) per block, then block by block with the median fed back and each block in the advancing refine frame |
-| Test-time augmentation | sign-flip averaging and clipping non-negative series at 0, both on by default as in the reference |
-| Precision | FP32 throughout by default; optional FP16 or TF32 GEMM inputs |
+| Inputs | univariate, several joint targets, past-only and known-future covariates (numeric and categorical), mixed batches, NaN gaps and late starts, ragged lengths |
+| Context | up to 32,768 steps (longer contexts keep the most recent) |
+| Horizon | any: up to 1,024 steps per block, then block by block with the median fed back |
+| Test-time augmentation | sign-flip averaging and non-negative clipping, on by default as in the reference |
+| Precision | FP32 by default; optional FP16 or TF32 GEMM inputs |
 
 ## How it maps onto jitcast
 
@@ -62,61 +59,35 @@ TimestralPipeline p = engine.pipeline().withOptions(
 | `TimestralConfig` | `timestral.TimestralConfig` (unknown keys and unsupported settings fail the load) |
 | `load_model` | `timestral.TimestralWeights`: every tensor bound by name and shape |
 | `TimestralModel.predict_block` | `timestral.BlockForward`: `cpu.CpuTimestral`, `tornado.TimestralForward` |
-| masks and positions (`masks.py`) | `timestral.BlockLayout`, shared by both engines |
+| `masks.py` | `timestral.BlockLayout`, shared by both engines |
 | `scaler.py` | `timestral.Scaler` |
 | `monotone_quantiles` | `timestral.Quantiles` |
 | `TimestralForecaster.forecast` | `timestral.TimestralPipeline` |
 | `covariate_encoding.target_encode` | `timestral.TargetEncoding` |
 
-- **Host and device.** The scaler (float64 statistics, which Apple GPUs do not have), the patch
-  tokens, the monotone quantile fan-out and the denormalization (which clamps infinities, which
-  fast-math device compilers may drop) run on the host, in `timestral.BlockPrep`, with the rows in
-  parallel. The patch embedding, the transformer and the head's projections run on the device as one
-  task graph per block shape.
-- **Rearranged weights.** The fused `q|k|v` projection is stored head-dim-major and becomes
-  heads-major; the MLP's fused input projection, whose SiLU half is second, is swapped so the shared
-  SwiGLU kernel applies.
-- **Categorical covariates.** As in the reference, each category becomes the smoothed mean of the
-  target where it occurs in the context, per series, on the host before the forward pass: `NaN` is a
-  category of its own, a code the context never shows becomes the series mean, and a series with
-  several targets uses its codes as they are. Codes are any finite numbers (`double`), so map strings
-  to numbers first.
-- **Covariates.** With covariates the reference also runs a decoder token for every context patch.
-  Those tokens attend only to themselves and nothing reads them, so jitcast leaves them out; the
-  forecasts are the same.
+- **Host and device.** The scaler (float64, which Apple GPUs lack), patch tokens, quantile fan-out
+  and denormalization run on the host in `timestral.BlockPrep`, rows in parallel. The patch
+  embedding, transformer and head projections run on the device, one plan per block shape.
+- **Rearranged weights.** The fused q|k|v projection becomes heads-major; the MLP input projection's
+  halves are swapped so the shared SwiGLU kernel applies.
+- **Categorical covariates.** As in the reference, each category becomes the smoothed target mean
+  where it occurs in the context, per series, on the host. `NaN` is its own category; an unseen code
+  becomes the series mean. Codes are any finite numbers, so map strings to numbers first.
+- **Covariates.** The reference also runs a decoder token per context patch when covariates are
+  present. Nothing reads those tokens, so jitcast skips them; forecasts are the same.
 - **Kernels.** Token assembly, RoPE, time and variate attention, the gate and the decoder gather are
-  Timestral's own ([KERNELS.md](../KERNELS.md#timestral)); the GEMMs, RMSNorm and SwiGLU are shared.
+  Timestral's own ([KERNELS.md](../KERNELS.md#timestral)); GEMMs, RMSNorm and SwiGLU are shared.
 
-## Options
+## Options and tuning
 
-| Property | Default | Effect |
-|---|---|---|
-| `jitcast.tornado.device` | TornadoVM's default | The device, `<backend>:<device>` |
-| `timestral.tornado.gemm` | `auto` | `auto`: `cublas` on CUDA, `simdgroup` on Metal when Metal is TornadoVM's default backend, `blocked` elsewhere. `simdgroup`: FP32 GEMM on Apple's simdgroup matrix units (Metal, TornadoVM 7.3.1+); `blocked`: TornadoVM's register-blocked FP32 GEMM from `blockedMinRows` rows and the tiled one under it; `tiled`; `half`: TornadoVM's FP16 GEMM (FP32 accumulation); `cublas`, `cublas-tf32`, `cublas-fp16` (CUDA) |
-| `timestral.tornado.blockedMinRows` | `128` | The fewest GEMM rows that use the register-blocked kernel |
-| `timestral.tornado.wideMinRows` | `1024` | The fewest GEMM rows that use the register-blocked kernel with 64 × 128 tiles |
-| `timestral.tornado.simdgroupWideMinRows` | `64` | The fewest GEMM rows that use the 64 × 64 simdgroup kernel (the 32 × 32 one below) |
-| `timestral.tornado.splitKTarget` | `320` | A 64 × 64 simdgroup GEMM with fewer tiles than this also splits K across work-groups (`1`: off) |
-| `timestral.tornado.splitKMax` | `16` | The most K slices of a split GEMM |
-| `timestral.tornado.cudaGraph` | `true` with cuBLAS | Capture the task graph once and replay it as a CUDA graph |
-| `timestral.tornado.attention` | `auto` | Time attention: `auto` uses cuBLAS FP32 batched GEMMs with a cuBLAS GEMM mode for blocks of at least `blasAttentionMinTokens` (128) tokens per row and at most `blasAttentionMaxRows` (8) rows, TornadoVM's attention kernel otherwise; `cublas` or `kernel` force one |
-| `timestral.tornado.attentionScoreBytes` | `536870912` (512 MB) | The most memory the cuBLAS time attention's scores take at once |
-| `timestral.tornado.buckets` | `true` | Pad each block to a shared shape (leading empty patches, empty series), so that few plans are compiled; the forecasts do not change |
-| `timestral.tornado.plans` | `8` | Block shapes kept compiled (least recently used are evicted) |
-| `timestral.tornado.planBytes` | `tornado.device.memory` | The device memory the cached plans may hold together, each counting its own copy of the weights; see [CONFIGURATION.md](../CONFIGURATION.md#compiled-plans) |
-| `timestral.tornado.profile` | `false` | Print TornadoVM's per-task kernel times after every execution |
-| `timestral.timing` | `false` | Print the time of each host and device phase per forecast (analysis only) |
-| `timestral.maxTokens` | `131072` | The most tokens one forward pass takes; forecasts do not depend on the split |
-
-With cuBLAS each plan holds the weights twice on the device (the packed buffer and one array per
-GEMM matrix), about 0.8 GB more for the 209M checkpoint; the FP16 modes add an FP16 copy of the GEMM
-weights. TornadoVM gives every plan its own device buffers, so each cached plan holds its own copy,
-which the plan cache counts against its budget.
+`timestral.*` options are in [CONFIGURATION.md](../CONFIGURATION.md#timestral). The defaults use
+cuBLAS FP32 with CUDA graphs on NVIDIA and simdgroup GEMMs on Metal; `-Dtimestral.tornado.gemm=cublas-fp16`
+is fastest on NVIDIA. With cuBLAS each plan holds the GEMM weights twice (packed and per matrix), and
+the FP16 modes add an FP16 copy; raise `tornado.device.memory` for the larger checkpoints.
 
 ## Limits
 
-- Every checkpoint has 64-wide attention heads; the attention kernels support up to 128, in
-  multiples of 8.
+- Attention heads up to 128 wide, in multiples of 8 (every checkpoint has 64).
 
 ## Licence
 

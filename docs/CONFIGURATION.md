@@ -2,176 +2,151 @@
 
 [← back to the README](../README.md)
 
-Engine options are JVM properties (`-D…`), read when an engine is created. A value that does not
-parse, or a GEMM mode the device cannot run, fails the engine's creation with the property's name;
-nothing falls back to a default silently. The options every model shares come first; each model then
-has its own, with its own prefix (`tirex.*`, `timestral.*`, `chronos2.*`).
+Options are JVM properties (`-D…`), read when an engine is created. A value that does not parse, or a
+GEMM mode the device cannot run, fails engine creation with the property's name; nothing falls back
+silently. Shared options come first, then each model's own (`tirex.*`, `timestral.*`, `chronos2.*`).
 
-An engine can be shared between threads: a TornadoVM engine runs their calls one at a time, since
-every call of a shape reuses that shape's device buffers.
+An engine can be shared between threads. A TornadoVM engine runs calls one at a time, because every
+call of a shape reuses that shape's device buffers.
+
+## Tuning by platform
+
+The defaults are accurate to FP32 on every platform. Start from them and add flags from this table.
+
+| Platform | TiRex-2 | Timestral | Chronos-2 |
+|---|---|---|---|
+| **NVIDIA, CUDA** (default: cuBLAS FP32 with CUDA graphs) | fastest: `-Dtirex.tornado.gemm=cublas-auto` | fastest: `-Dtimestral.tornado.gemm=cublas-fp16` | fastest: `-Dchronos2.tornado.gemm=cublas-fp16` |
+| NVIDIA, closest to FP32 | `-Dtirex.tornado.slstmR=fp32` | defaults | defaults |
+| NVIDIA, no vendor libraries | `-Dtirex.tornado.gemm=cutile` (toolkit 13.3+) or `half` | `-Dtimestral.tornado.gemm=half` | `-Dchronos2.tornado.gemm=half` |
+| **Apple Silicon, Metal** | `-Dtirex.tornado.gemm=half` | defaults (simdgroup GEMMs) | defaults (simdgroup GEMMs) |
+| Apple Silicon, SDK with Metal and OpenCL | as above, plus `-Dtornado.metal.priority=100` | `-Dtornado.metal.priority=100` | `-Dtornado.metal.priority=100` |
+| Other OpenCL GPUs | `-Dtirex.tornado.gemm=half` (`tiled` for FP32) | defaults | defaults |
+
+The FP16 modes keep FP32 accumulation; their forecasts move slightly off the FP32 reference
+(tolerances in [jitCast-benchmarking](https://github.com/beestream-ai/jitCast-benchmarking)).
+
+For every platform and model:
+
+- **Device memory.** TornadoVM caps the memory it allocates at 4 GB unless
+  `-Dtornado.device.memory` says otherwise (for example `20GB`). Raise it toward the GPU's size: the
+  plan cache (below) uses it as its budget, and large checkpoints or batches need more than 4 GB.
+- **Compiled plans.** Each new input shape compiles a plan. Raise `<model>.tornado.plans` when a
+  workload cycles through more shapes than the cache keeps. For TiRex-2 with many different batch
+  sizes, `-Dtirex.tornado.rowBuckets=pow2` lets sizes share plans; Timestral pads its shapes by
+  default (`timestral.tornado.buckets`).
+- **Batching.** One `forecast()` call with many series costs far less than many calls with one.
+- **Long contexts.** Memory grows with rows × patches; `<model>.maxTokens` bounds one forward pass
+  without changing the forecasts.
 
 ## Shared options
 
-| Property | Values (default first) | Effect |
+| Property | Default | Effect |
 |---|---|---|
-| `jitcast.tornado.device` | `<backend>:<device>` (TornadoVM's default device) | Device to run on, numbered as in `tornado --devices` |
-| `tornado.metal.dispatch.spinWait` (TornadoVM) | `False` (set by jitcast unless given) | TornadoVM's Metal backend spin-waits up to 1 ms on each dispatch before it blocks. A forward pass runs dozens of kernels per task graph, so the waits outlast the spin and jitcast runs up to 2× slower on Metal; jitcast turns it off, for every model. Code that calls TornadoVM before creating an engine should call `tornado.Devices.defaults()` first |
-| `tornado.cuda.host.pinning` (TornadoVM) | `True`; `False` in `TiRexServer` and `TimestralServer` | Pinned host buffers for transfers. Applications that keep several plans alive and evict them often (such as the harness servers) should turn it off: on TornadoVM's CUDA backend that churn can make device allocations fail, and it gave no speed-up on fev-bench |
-
-TornadoVM properties used alongside: `tornado.device.memory` (TornadoVM's cap on the device memory it
-allocates, 4 GB unless set, e.g. `15GB`), `tornado.cuda.nvcc` (for CUDA Tile).
+| `jitcast.tornado.device` | TornadoVM's default device | Device, `<backend>:<device>` as in `tornado --devices` |
+| `tornado.device.memory` (TornadoVM) | `4GB` | Device memory TornadoVM may allocate; also the default plan budget |
+| `tornado.metal.dispatch.spinWait` (TornadoVM) | `False`, set by jitcast | Metal spin-waits on each dispatch, which slows jitcast's many short kernels; jitcast turns it off. Code that calls TornadoVM before creating an engine should call `tornado.Devices.defaults()` first |
+| `tornado.cuda.host.pinning` (TornadoVM) | `True`; `False` in the harness servers | Pinned host buffers. Turn off in applications that create and evict plans often: the churn can make CUDA allocations fail |
+| `tornado.metal.priority` (TornadoVM) | — | `100` makes Metal backend `0` in an SDK that also has OpenCL; the simdgroup GEMMs need it |
+| `tornado.cuda.nvcc` (TornadoVM) | — | `nvcc` with `tileiras`, for CUDA Tile (`cutile`) |
 
 ### Compiled plans
 
-Each model compiles one plan per input shape and keeps the most recently used ones. TornadoVM gives
-every plan its own device buffers, a copy of the model's weights included, so a plan's footprint is
-its weights plus its activations. A cache holds at most `<model>.tornado.plans` plans (8) and keeps
-their device memory, as TornadoVM reports it after each plan's first run, within
-`<model>.tornado.planBytes` (by default `tornado.device.memory`), evicting the least recently used
-first; a plan larger than the budget still runs, alone. A plan whose first run fails is not kept;
-if other plans were cached, they are evicted and the plan is built once more, in case the device
-was out of memory.
+Each model compiles one plan per input shape and keeps the most recently used. TornadoVM gives every
+plan its own device buffers, weights included, so a plan's footprint is its weights plus its
+activations. The cache keeps at most `<model>.tornado.plans` plans (8) within `<model>.tornado.planBytes`
+of device memory (default `tornado.device.memory`), measured after each plan's first run, and evicts
+the least recently used first. A plan larger than the budget still runs, alone. A plan whose first run
+fails is dropped; if others were cached, they are evicted and the plan is retried once.
 
-## Hardware and backends
+## Vendor libraries and CUDA features
 
-| Hardware | TornadoVM backend | TiRex-2 | Timestral | Chronos-2 |
-|---|---|---|---|---|
-| NVIDIA GPU | CUDA | validated and benchmarked (A100, A10) | validated and benchmarked (A100, RTX 5070 Ti, A10) | validated and benchmarked (RTX 5070 Ti, A10) |
-| NVIDIA GPU | OpenCL | validated (A100) | validated (A100) | not tested |
-| Apple Silicon GPU | Metal | validated (M4 Pro) | validated and benchmarked (M4 Pro) | validated and benchmarked (M4 Pro) |
-| Apple Silicon GPU | OpenCL | validated (M4 Pro) | validated and benchmarked (M4 Pro) | validated (M4 Pro) |
-| Intel / AMD GPUs, OpenCL CPU runtimes | OpenCL | expected to work, not tested | expected to work, not tested | expected to work, not tested |
-| Any CPU | none (plain JVM) | `CpuTiRex2Engine`, the FP32 reference | `CpuTimestralEngine`, the FP32 reference | `CpuChronos2Engine`, the FP32 reference |
-
-The CPU engines are the references the device kernels are validated against, not fast paths.
-
-## Hybrid APIs and CUDA features
-
-| API | Used for | How to enable | Requirements |
+| API | Used for | Enable with | Needs |
 |---|---|---|---|
-| cuBLAS: `cublasSgemm`, `cublasSgemmTF32` | FP32 / TF32 GEMMs | `tirex.tornado.gemm` / `timestral.tornado.gemm` / `chronos2.tornado.gemm` = `cublas`, `cublas-tf32` | CUDA backend; `tornado-cublas` in the SDK |
-| cuBLAS: `cublasGemmEx` (FP16 in, FP32 or FP16 out) | FP16 tensor-core GEMMs | `cublas-fp16` (all), `cublas-auto` (TiRex-2) | cuBLAS 13 on Blackwell (see [INSTALL.md](INSTALL.md#nvidia-extras)) |
-| cuBLASLt: `ltMatmulFP16` | FP16 GEMMs | `-Dtirex.tornado.fp16Kernel=lt-h16` (TiRex-2) | as above |
-| CUDA Tile (`TileContext`) | FP16 GEMM on tensor cores, written in TornadoVM | `-Dtirex.tornado.gemm=cutile` (TiRex-2) | TornadoVM 8, CUDA Toolkit 13.3+ (`tileiras`), compute capability 8.0+, driver R580+ |
-| CUDA graphs | replaying the plan's task graph | `tirex.tornado.cudaGraph`, `timestral.tornado.cudaGraph`, `chronos2.tornado.cudaGraph` (on by default with cuBLAS) | CUDA backend |
-| cuDNN | — | not used | — |
+| cuBLAS SGEMM | FP32 / TF32 GEMMs | `<model>.tornado.gemm=cublas`, `cublas-tf32` | CUDA backend |
+| cuBLAS GemmEx | FP16 tensor-core GEMMs | `cublas-fp16` (all), `cublas-auto` (TiRex-2) | CUDA backend |
+| cuBLASLt | FP16 GEMMs | `-Dtirex.tornado.fp16Kernel=lt-h16` | CUDA backend |
+| CUDA Tile | FP16 GEMM on tensor cores, written in TornadoVM | `-Dtirex.tornado.gemm=cutile` | CUDA Toolkit 13.3+ (`tileiras`), compute capability 8.0+, driver R580+ |
+| CUDA graphs | replaying a plan | `<model>.tornado.cudaGraph` (on with cuBLAS) | CUDA backend |
+| Apple simdgroup matrices | FP32 GEMMs | `<model>.tornado.gemm=simdgroup` (Timestral, Chronos-2) | Metal as TornadoVM's default backend |
 
 ## TiRex-2
 
 | Property | Values (default first) | Effect |
 |---|---|---|
-| `tirex.tornado.gemm` | `auto`, `tiled`, `half`, `cublas`, `cublas-tf32`, `cublas-fp16`, `cublas-auto`, `cutile` | GEMM implementation (see *GEMM modes*). `auto`: `cublas` (FP32) on CUDA, `tiled` elsewhere |
-| `tirex.tornado.plans` | `8` | Shapes kept compiled (rows, known covariates, rows in multi-row groups); see *Compiled plans* |
-| `tirex.tornado.planBytes` | `tornado.device.memory` | The device memory the cached plans may hold together (bytes, or `16GB` and so on) |
-| `tirex.tornado.fp16MinTokens` | `0` | `cublas-auto`: GEMMs over at least this many rows use FP16, smaller ones FP32. 0 is FP16 everywhere, the fastest at every size with CUDA 13 cuBLAS; a threshold only helps where CUDA 12 cuBLAS is loaded |
-| `tirex.tornado.fp16Kernel` | `gemmex-mixed`, `gemmex-h16`, `lt-h16` | cuBLAS call for an FP16 GEMM: GemmEx FP16→FP32, GemmEx all-FP16, or cuBLASLt all-FP16 (the last two with an FP32 epilogue kernel) |
-| `tirex.tornado.slstmR` | `auto`, `fp16-reg`, `fp16`, `fp32` | The sLSTM recurrent weights R. `fp16-reg`: FP16, with half of each thread's R values held in registers for the whole sequence where that is faster (up to ~64 rows; it needs 512-thread work-groups and falls back to `fp16` elsewhere). `fp16`: FP16, streamed every step. `fp32`: FP32, streamed. `auto`: `fp16-reg` where that kernel is known to fit (CUDA compute capability 12 and up, Apple GPUs on Metal or OpenCL), `fp16` elsewhere (see below). The state is FP32 in all of them |
-| `tirex.tornado.slstmRows` | `0` (auto) | Rows per sLSTM work-group. Auto picks the largest value that still gives 64 work-groups |
-| `tirex.tornado.mlstm` | `auto`, `chunk`, `step` | mLSTM kernel: `chunk` (blocks of 16 query steps share each staged key/value block) or `step` (one work-group per time step). `auto` takes `chunk` unless its grid would have fewer than 64 work-groups (a single 74-patch series) |
-| `tirex.tornado.rowBuckets` | `off`, `pow2` | `pow2` pads each batch's row count to a power of two, so different batch sizes share plans (each new plan compiles its kernels). The padding rows are computed, which costs time on every call whose size is not a power of two, so use it only when many sizes each occur a few times |
-| `tirex.tornado.profile` | `false`, `true` | Print TornadoVM's per-task kernel times after every execution (analysis only: it slows every call) |
-| `tirex.tornado.fuse` | `true`, `false` | Fused epilogues: bias + SiLU after the GEMM, residual + RMSNorm, sLSTM head norm + residual + RMSNorm |
-| `tirex.tornado.cudaGraph` | `true` for `cublas*` / `cutile`, `false` otherwise | Capture and replay the plan's task graph as a CUDA graph |
-| `tirex.tornado.ffnHalf` | `true` | FP16 GEMM modes (`cublas-auto`, `cublas-fp16`, `half`): keep the FFN's intermediates in FP16 only, which cuts a plan's memory by about 15%; `false` keeps them in FP32 |
-| `tirex.tornado.memReport` | `false` | Print each plan's activation buffers and its memory per token when the plan is built |
-| `tirex.maxTokens` | `131072` | The most tokens (rows × patches) one forward pass takes; a forecast call is split into passes by this and by the batch size, which bounds a plan's memory (about 4 GB at the default) whatever the series' covariate counts. Forecasts do not depend on the split. `TiRexBench` ignores it unless set |
+| `tirex.tornado.gemm` | `auto`, `tiled`, `half`, `cublas`, `cublas-tf32`, `cublas-fp16`, `cublas-auto`, `cutile` | GEMM mode (below). `auto`: `cublas` on CUDA, `tiled` elsewhere |
+| `tirex.tornado.fp16MinTokens` | `0` | `cublas-auto`: GEMMs with at least this many rows use FP16, smaller ones FP32. 0 is FP16 everywhere |
+| `tirex.tornado.fp16Kernel` | `gemmex-mixed`, `gemmex-h16`, `lt-h16` | cuBLAS call for FP16 GEMMs: GemmEx FP16→FP32, GemmEx all-FP16, or cuBLASLt all-FP16 |
+| `tirex.tornado.slstmR` | `auto`, `fp16-reg`, `fp16`, `fp32` | sLSTM recurrent weights: FP16 partly held in registers, FP16 streamed, or FP32 streamed. `auto` picks `fp16-reg` where it fits (see below). State is FP32 in all |
+| `tirex.tornado.slstmRows` | `0` (auto) | Rows per sLSTM work-group; auto keeps 64 work-groups |
+| `tirex.tornado.mlstm` | `auto`, `chunk`, `step` | mLSTM kernel: chunkwise, or one work-group per step. `auto` takes `chunk` unless its grid has fewer than 64 work-groups |
+| `tirex.tornado.rowBuckets` | `off`, `pow2` | Pad row counts to powers of two so batch sizes share plans; the padding rows cost compute |
+| `tirex.tornado.fuse` | `true`, `false` | Fused epilogues: bias + SiLU, residual + RMSNorm, sLSTM head norm + residual + RMSNorm |
+| `tirex.tornado.cudaGraph` | `true` with `cublas*` / `cutile` | Replay each plan as a CUDA graph |
+| `tirex.tornado.ffnHalf` | `true` | FP16 modes: keep FFN intermediates in FP16 only (about 15% less plan memory) |
+| `tirex.tornado.plans` | `8` | Shapes kept compiled (rows, known covariates, rows in multi-row groups) |
+| `tirex.tornado.planBytes` | `tornado.device.memory` | Device memory the cached plans may hold together |
+| `tirex.maxTokens` | `131072` | Most tokens (rows × patches) per forward pass; bounds plan memory. `TiRexBench` ignores it unless set |
+| `tirex.tornado.profile` | `false` | Print per-task kernel times after every run (analysis only) |
+| `tirex.tornado.memReport` | `false` | Print each plan's buffers when it is built |
+
+Programmatic: `ForecastPipeline(config, forward, batchSize, ttaDiff, ttaSignFlip)` sets series per
+forward pass (512) and the TTA switches; `TornadoForward(config, weights, maxCachedPlans)` the plan count.
 
 ### GEMM modes
 
 | Mode | Kernel | Precision | Backends |
 |---|---|---|---|
-| `tiled` | `Kernels.gemm` (KernelContext) | FP32 | all |
-| `half` | `Kernels.gemmHalf` (KernelContext, register-blocked) | FP16 in, FP32 accumulation and output | all |
-| `cublas` / `cublas-tf32` | cuBLAS SGEMM | FP32 / TF32 | CUDA |
-| `cublas-fp16` | cuBLAS GemmEx on every GEMM | FP16 in, FP32 accumulation | CUDA |
-| `cublas-auto` | FP16 GemmEx from `fp16MinTokens` rows, SGEMM below | mixed | CUDA |
-| `cutile` | `Kernels.gemmHalfTile` (CUDA Tile, tensor cores) | FP16 in, FP32 accumulation | CUDA with toolkit 13.3+ |
-
-These are TiRex-2's modes; Timestral's are [below](#timestral).
-
-### Programmatic options
-
-- `ForecastPipeline(config, forward, batchSize, ttaDiff, ttaSignFlip)`: series per forward (512); trend differencing and sign flip, defaulting to the checkpoint's values.
-- `TornadoForward(config, weights, maxCachedPlans)`: the number of cached plans, one per batch shape (8).
-
-### Recommendations
-
-| Platform | Recommended flags | Why |
-|---|---|---|
-| **NVIDIA** (tested: A100, A10) | `-Dtirex.tornado.gemm=cublas-auto` (CUDA graphs are the default), plus, with TornadoVM 7.3.1 or earlier, the cuBLAS 13 shim on machines that also have CUDA 12 cuBLAS | The fastest configuration: cuBLAS FP16 tensor-core GEMMs |
-| NVIDIA, closest to FP32 | `-Dtirex.tornado.gemm=cublas -Dtirex.tornado.slstmR=fp32` | FP32 GEMMs; slower than `cublas-auto` at large batches, where the FP16 tensor-core GEMMs pay off |
-| NVIDIA, no vendor libraries | `-Dtirex.tornado.gemm=cutile` (TornadoVM 8, toolkit 13.3+), or `half` | TornadoVM's own FP16 GEMMs; `cutile` on tensor cores is 2.3× faster than `half` at one series on an A10 |
-| **Apple Silicon** (tested: M4 Pro), Metal or OpenCL | `-Dtirex.tornado.gemm=half`, on either backend | `half` is faster than `tiled` from small batches up; Metal and OpenCL run the same kernels |
-| NVIDIA with OpenCL | `-Dtirex.tornado.gemm=half` | Works, but use CUDA where you can: OpenCL `half` is slower than CUDA `half` and has no vendor libraries or CUDA graphs |
-| Other OpenCL devices | `-Dtirex.tornado.gemm=half` (or `tiled` for FP32) | Portable; not tuned |
-| Long contexts (GIFT-Eval checkpoints, 285 patches) | the platform's flags (the chunkwise mLSTM is the default), plus `-Dtirex.tornado.cudaGraph=false`, and batch sizes that fit the device | Device memory grows with rows × patches; `tirex.maxTokens` bounds it per forward pass. With several cached plans and CUDA graphs, closing one plan could crash the others on TornadoVM's CUDA backend (fixed by [beehive-lab/TornadoVM#1160](https://github.com/beehive-lab/TornadoVM/pull/1160)); with an older TornadoVM keep one cached plan or turn CUDA graphs off |
+| `tiled` | `Kernels.gemm` | FP32 | all |
+| `half` | `Kernels.gemmHalf` | FP16 in, FP32 accumulation | all |
+| `cublas`, `cublas-tf32` | cuBLAS SGEMM | FP32, TF32 | CUDA |
+| `cublas-fp16` | cuBLAS GemmEx | FP16 in, FP32 accumulation | CUDA |
+| `cublas-auto` | GemmEx from `fp16MinTokens` rows, SGEMM below | mixed | CUDA |
+| `cutile` | `Kernels.gemmHalfTile` (CUDA Tile) | FP16 in, FP32 accumulation | CUDA, toolkit 13.3+ |
 
 ### Kernel choices by device
 
-The register-resident sLSTM kernel (`slstmR=fp16-reg`) needs 512 threads per work-group with up to 128 registers each, and whether the compiler fits it depends on the GPU: it does for CUDA compute capability 12 and Apple GPUs, not for an A100 (sm_80), where CUDA refuses to launch it (`CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES`) and NVIDIA's OpenCL returns wrong results without an error. The default, `slstmR=auto`, therefore uses it only on CUDA devices of compute capability 12 and up and on Apple GPUs, and the streamed FP16 kernel elsewhere; OpenCL does not report the compute capability, so on other OpenCL devices it stays with the streamed kernel. Setting `slstmR` explicitly overrides this. `cutile` needs TornadoVM 8: releases up to 7.3.1 fail to parse `TileContext.checkShape` ("Unable to build sketch for method: gemmHalfTile").
+`slstmR=fp16-reg` needs 512-thread work-groups with up to 128 registers per thread. It fits on CUDA
+compute capability 12+ and on Apple GPUs, but not on an A100 (sm_80), where CUDA refuses the launch
+and NVIDIA's OpenCL returns wrong results without an error. `auto` therefore uses it only on CUDA
+12+ and Apple GPUs. OpenCL does not report the compute capability, so other OpenCL devices get the
+streamed kernel.
 
-Some kernels adapt to the device's maximum work-group size (for example 256 on OpenCL on macOS, 1024 on Metal and CUDA). The fused sLSTM norm kernel needs 512 threads and is skipped on smaller devices.
+Some kernels adapt to the device's largest work-group (256 on OpenCL on macOS, 1024 on Metal and
+CUDA). The fused sLSTM norm kernel needs 512 threads and is skipped on smaller devices.
 
 ## Timestral
 
 | Property | Values (default first) | Effect |
 |---|---|---|
-| `timestral.tornado.gemm` | `auto`, `simdgroup`, `blocked`, `tiled`, `half`, `cublas`, `cublas-tf32`, `cublas-fp16` | GEMM implementation. `auto`: `cublas` on CUDA, `simdgroup` on Metal when Metal is TornadoVM's default backend (`-Dtornado.metal.priority=100`), `blocked` elsewhere. `simdgroup`: FP32 on Apple's simdgroup matrix units (TornadoVM 7.3.1+). `blocked`: TornadoVM's register-blocked FP32 kernel from `blockedMinRows` rows and the tiled one under it. `half`: TornadoVM's FP16 kernel (FP32 accumulation). `cublas*`: cuBLAS in FP32, TF32, or FP16 with FP32 accumulation |
-| `timestral.tornado.blockedMinRows` | `128` | The fewest GEMM rows that use the register-blocked kernel (its 64-row tiles waste most of their work below that) |
-| `timestral.tornado.wideMinRows` | `1024` | The fewest GEMM rows that use the register-blocked kernel with 64 × 128 tiles (4 × 8 outputs per thread), which leave the GPU idle with fewer rows |
-| `timestral.tornado.simdgroupWideMinRows` | `64` | The fewest GEMM rows that use the 64 × 64 simdgroup kernel; fewer use the 32 × 32 one, which spreads over more work-groups |
-| `timestral.tornado.splitKTarget` | `320` | Split K: a 64 × 64 simdgroup GEMM with fewer tiles than this also splits K across work-groups (into slices of at least 128) and adds the partial tiles in a second kernel, so GEMMs with few rows fill the GPU. `1` turns it off |
-| `timestral.tornado.splitKMax` | `16` | The most K slices of a split GEMM |
-| `timestral.tornado.cudaGraph` | `true` with cuBLAS, `false` otherwise | Capture the plan's task graph once and replay it as a CUDA graph |
-| `timestral.tornado.attention` | `auto`, `kernel`, `cublas` | Time attention. `auto`: with a cuBLAS GEMM mode, as cuBLAS FP32 batched GEMMs (scores, then the masked softmax, then the weighted values) for blocks of at least `blasAttentionMinTokens` tokens per row and at most `blasAttentionMaxRows` rows, and TornadoVM's attention kernel otherwise and on other backends (the batched GEMMs compute every score, masked or not, and lose to the kernel on large batches). `cublas`: always with a cuBLAS GEMM mode; `kernel`: never |
-| `timestral.tornado.blasAttentionMinTokens` | `128` | The fewest tokens per row (patches of context plus horizon) that use the cuBLAS time attention under `auto` |
-| `timestral.tornado.blasAttentionMaxRows` | `8` | The most rows (series × variates) a block may have to use the cuBLAS time attention under `auto` |
-| `timestral.tornado.attentionScoreBytes` | `536870912` (512 MB) | The most memory the cuBLAS time attention's scores take at once; larger blocks run in chunks of (row, head) batches |
-| `timestral.tornado.buckets` | `true`, `false` | Pad each block to a shared shape (the context with leading empty patches, the rows with empty series, each by at most a quarter), so that few plans are compiled; the forecasts do not change |
-| `timestral.tornado.plans` | `8` | Block shapes kept compiled (rows, encoder tokens, horizon patches, covariates); see *Compiled plans* |
-| `timestral.tornado.planBytes` | `tornado.device.memory` | The device memory the cached plans may hold together (bytes, or `16GB` and so on) |
-| `timestral.tornado.profile` | `false`, `true` | Print TornadoVM's per-task kernel times after every execution (analysis only) |
-| `timestral.timing` | `false`, `true` | Print the time of each host and device phase per forecast (analysis only) |
-| `timestral.maxTokens` | `131072` | The most tokens (rows × patches) one forward pass takes; forecasts do not depend on the split |
+| `timestral.tornado.gemm` | `auto`, `simdgroup`, `blocked`, `tiled`, `half`, `cublas`, `cublas-tf32`, `cublas-fp16` | `auto`: `cublas` on CUDA, `simdgroup` when Metal is the default backend, `blocked` elsewhere. `blocked`: register-blocked FP32 from `blockedMinRows` rows, tiled below |
+| `timestral.tornado.blockedMinRows` | `128` | Fewest GEMM rows for the register-blocked kernel |
+| `timestral.tornado.wideMinRows` | `1024` | Fewest GEMM rows for its 64 × 128 tiles |
+| `timestral.tornado.simdgroupWideMinRows` | `64` | Fewest GEMM rows for the 64 × 64 simdgroup kernel (32 × 32 below) |
+| `timestral.tornado.splitKTarget` | `320` | Simdgroup GEMMs with fewer 64 × 64 tiles also split K across work-groups; `1` turns it off |
+| `timestral.tornado.splitKMax` | `16` | Most K slices |
+| `timestral.tornado.cudaGraph` | `true` with cuBLAS | Replay each plan as a CUDA graph |
+| `timestral.tornado.attention` | `auto`, `kernel`, `cublas` | Time attention. `auto`, with a cuBLAS mode: cuBLAS batched GEMMs for blocks of at least `blasAttentionMinTokens` (128) tokens per row and at most `blasAttentionMaxRows` (8) rows, the kernel otherwise |
+| `timestral.tornado.attentionScoreBytes` | `536870912` | Most memory the cuBLAS attention scores take at once; larger blocks run in chunks |
+| `timestral.tornado.buckets` | `true` | Pad blocks to shared shapes so few plans compile; forecasts unchanged |
+| `timestral.tornado.plans` | `8` | Block shapes kept compiled |
+| `timestral.tornado.planBytes` | `tornado.device.memory` | Device memory the cached plans may hold together |
+| `timestral.maxTokens` | `131072` | Most tokens (rows × patches) per forward pass |
+| `timestral.tornado.profile`, `timestral.timing` | `false` | Print kernel times, or host and device phase times (analysis only) |
 
-`TimestralPipeline.Options` sets the forecaster: the context cap, the patches decoded per block, the
-cap to the observed range, the threshold for fed-back medians, sign-flip averaging and non-negative
-clipping, with the reference's defaults.
-
-### Recommendations
-
-| Platform | Recommended flags | Why |
-|---|---|---|
-| **NVIDIA** (tested: A100, A10, RTX 5070 Ti) | the defaults (`auto`: cuBLAS FP32 with CUDA graphs) | Matches the reference to 1e-5 and is faster than it from 1 to 512 series on every checkpoint tried |
-| NVIDIA, fastest | `-Dtimestral.tornado.gemm=cublas-fp16` | 3–4× faster again on Timestral-209M from 32 series up; forecasts move by up to 1e-2 of the series' range (see [VALIDATION.md](https://github.com/beestream-ai/jitCast-benchmarking/blob/main/docs/VALIDATION.md#timestral)) |
-| **Apple Silicon** (tested: M4 Pro) | the defaults on Metal (`auto`: `simdgroup`; with an SDK that also has OpenCL, add `-Dtornado.metal.priority=100`) | The simdgroup GEMMs are 2–4× faster than the portable `blocked` ones on the larger checkpoints; Metal is faster than OpenCL on Apple GPUs |
-| Other OpenCL devices | the defaults | Portable; not tuned |
+Programmatic: `TimestralPipeline.Options` (context cap, patches per block, cap to the observed range,
+fed-back median threshold, sign-flip averaging, non-negative clipping), with the reference's defaults.
 
 ## Chronos-2
 
 | Property | Values (default first) | Effect |
 |---|---|---|
-| `chronos2.tornado.gemm` | `auto`, `simdgroup`, `blocked`, `tiled`, `half`, `cublas`, `cublas-tf32`, `cublas-fp16` | GEMM implementation, as `timestral.tornado.gemm`: `cublas` on CUDA, `simdgroup` on Metal when Metal is TornadoVM's default backend, `blocked` elsewhere |
-| `chronos2.tornado.blockedMinRows` | `128` | The fewest GEMM rows that use the register-blocked kernel |
-| `chronos2.tornado.wideMinRows` | `1024` | The fewest GEMM rows that use the register-blocked kernel with 64 × 128 tiles |
-| `chronos2.tornado.simdgroupWideMinRows` | `64` | The fewest GEMM rows that use the 64 × 64 simdgroup kernel |
-| `chronos2.tornado.splitKTarget` | `320` | Split K for 64 × 64 simdgroup GEMMs with fewer tiles than this (`1`: off) |
-| `chronos2.tornado.splitKMax` | `16` | The most K slices of a split GEMM |
-| `chronos2.tornado.cudaGraph` | `true` with cuBLAS, `false` otherwise | Capture the plan's task graph once and replay it as a CUDA graph |
-| `chronos2.tornado.plans` | `8` | Shapes kept compiled (rows, context patches, output patches); see *Compiled plans* |
-| `chronos2.tornado.planBytes` | `tornado.device.memory` | The device memory the cached plans may hold together (bytes, or `16GB` and so on) |
-| `chronos2.tornado.profile` | `false`, `true` | Print TornadoVM's per-task kernel times after every execution (analysis only) |
-| `chronos2.maxTokens` | `131072` | The most tokens (rows × tokens per row) one forward pass takes; larger passes run as several, split between groups, and the forecasts do not depend on the split. A group is never split, so with cross-learning (one group per batch) a batch can exceed it |
+| `chronos2.tornado.gemm` | as `timestral.tornado.gemm` | Same modes and `auto` rule |
+| `chronos2.tornado.blockedMinRows`, `wideMinRows`, `simdgroupWideMinRows`, `splitKTarget`, `splitKMax` | `128`, `1024`, `64`, `320`, `16` | As for Timestral |
+| `chronos2.tornado.cudaGraph` | `true` with cuBLAS | Replay each plan as a CUDA graph |
+| `chronos2.tornado.plans` | `8` | Shapes kept compiled (rows, context patches, output patches) |
+| `chronos2.tornado.planBytes` | `tornado.device.memory` | Device memory the cached plans may hold together |
+| `chronos2.maxTokens` | `131072` | Most tokens per forward pass, split between groups. A group is never split, so with cross-learning a batch can exceed it |
+| `chronos2.tornado.profile` | `false` | Print per-task kernel times (analysis only) |
 
-`Chronos2Pipeline.Options` sets the pipeline: the context cap, cross-learning, the patches per forward
-pass before the long-horizon unrolling and the unrolled quantile levels, with the reference's
-defaults; `withBatchSize` sets the rows per batch (256).
-
-### Recommendations
-
-| Platform | Recommended flags | Why |
-|---|---|---|
-| **NVIDIA** (tested: RTX 5070 Ti, A10) | the defaults (`auto`: cuBLAS FP32 with CUDA graphs) | Matches the reference to 4.5e-5 and is level with it or faster from 1 to 512 series |
-| NVIDIA, fastest | `-Dchronos2.tornado.gemm=cublas-fp16` | 1.4–13.9× faster than the reference on an RTX 5070 Ti and an A10; forecasts move by up to 5e-3 of the series' range (see [VALIDATION.md](https://github.com/beestream-ai/jitCast-benchmarking/blob/main/docs/VALIDATION.md#chronos-2)) |
-| **Apple Silicon** (tested: M4 Pro) | the defaults on Metal (`auto`: `simdgroup`; with an SDK that also has OpenCL, add `-Dtornado.metal.priority=100`) | Metal is faster than OpenCL on Apple GPUs |
-| Other OpenCL devices | the defaults | Portable; not tuned |
+Programmatic: `Chronos2Pipeline.Options` (context cap, cross-learning, patches per pass, unrolled
+quantile levels) with the reference's defaults; `withBatchSize` sets rows per batch (256).
