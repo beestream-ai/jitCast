@@ -71,7 +71,8 @@ CI builds, runs the CPU tests and builds the API reference on every push.
 
 `./mvnw javadoc:javadoc` writes the Javadoc of the public API (`api`, the engines, their pipelines
 and configurations, `tornado.Devices`) to `target/reports/apidocs`. The build fails on a missing or
-broken doc comment.
+broken doc comment. Every push to `main` publishes it at
+[beestream-ai.github.io/jitCast](https://beestream-ai.github.io/jitCast/).
 
 ## Scripts (`scripts/`)
 

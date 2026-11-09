@@ -9,6 +9,7 @@
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg"></a>
   <img alt="Java 22+" src="https://img.shields.io/badge/java-22%2B-orange.svg">
   <img alt="TornadoVM" src="https://img.shields.io/badge/TornadoVM-8.0.0%2B-0B1F33.svg">
+  <a href="https://beestream-ai.github.io/jitCast/"><img alt="Javadoc" src="https://img.shields.io/badge/javadoc-API-brightgreen.svg"></a>
 </p>
 
 # jitcast
@@ -114,7 +115,7 @@ rather than one series at a time. Every option, with per-model recommendations, 
 | [USAGE.md](docs/USAGE.md) | The Java API, the benchmark tools, the harness servers, the tests |
 | [CONFIGURATION.md](docs/CONFIGURATION.md) | Every option, GEMM modes, recommendations per platform |
 | [TIREX2.md](docs/models/TIREX2.md), [TIMESTRAL.md](docs/models/TIMESTRAL.md), [CHRONOS2.md](docs/models/CHRONOS2.md) | Each model: architecture, checkpoints, features, mapping onto jitcast, licence |
-| API reference | `./mvnw javadoc:javadoc`, then open `target/reports/apidocs/index.html` |
+| [API reference](https://beestream-ai.github.io/jitCast/) | The Javadoc of the public API; `./mvnw javadoc:javadoc` builds it locally |
 | [KERNELS.md](docs/KERNELS.md) | Every device kernel and its vendor-library alternative |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Architecture, code layout, adding a model family, scripts |
 | [ROADMAP.md](docs/ROADMAP.md) | Planned work and the TornadoVM limits that affect jitcast |
