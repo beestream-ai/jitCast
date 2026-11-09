@@ -20,3 +20,5 @@ jobs:
       # tests that need a device (*AccelTest) or recorded goldens are skipped
       - name: Test
         run: ./mvnw -B test
+      - name: API reference
+        run: ./mvnw -B javadoc:javadoc

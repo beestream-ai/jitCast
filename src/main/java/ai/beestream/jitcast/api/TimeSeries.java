@@ -30,6 +30,12 @@ package ai.beestream.jitcast.api;
 public record TimeSeries(float[][] target, float[][] pastCovariates, float[][] futureCovariates, double[][] pastCategorical,
         double[][] futureCategorical) {
 
+    /**
+     * Checks the shapes.
+     *
+     * @throws IllegalArgumentException if there is no target row or time step, a row has the wrong
+     *     length, or a category code is infinite
+     */
     public TimeSeries {
         if (target == null || target.length == 0) {
             throw new IllegalArgumentException("a series needs at least one target row");
@@ -69,45 +75,62 @@ public record TimeSeries(float[][] target, float[][] pastCovariates, float[][] f
         }
     }
 
-    /** A series with numeric covariates only. */
+    /**
+     * A series with numeric covariates only.
+     *
+     * @param target {@code [V_t][T]}
+     * @param pastCovariates {@code [V_p][T]}, or null
+     * @param futureCovariates {@code [V_f][>= T + H]}, or null
+     */
     public TimeSeries(float[][] target, float[][] pastCovariates, float[][] futureCovariates) {
         this(target, pastCovariates, futureCovariates, null, null);
     }
 
+    /**
+     * {@return a series with one target and no covariates}
+     *
+     * @param values the history, {@code NaN} where missing
+     */
     public static TimeSeries univariate(float[] values) {
         return new TimeSeries(new float[][] {values}, null, null);
     }
 
+    /** {@return the number of observed time steps, {@code T}} */
     public int length() {
         return target[0].length;
     }
 
+    /** {@return the number of target rows} */
     public int targets() {
         return target.length;
     }
 
+    /** {@return the number of numeric past-only covariates} */
     public int pastCount() {
         return pastCovariates == null ? 0 : pastCovariates.length;
     }
 
+    /** {@return the number of numeric known-future covariates} */
     public int futureCount() {
         return futureCovariates == null ? 0 : futureCovariates.length;
     }
 
+    /** {@return the number of categorical past-only covariates} */
     public int pastCategoricalCount() {
         return pastCategorical == null ? 0 : pastCategorical.length;
     }
 
+    /** {@return the number of categorical known-future covariates} */
     public int futureCategoricalCount() {
         return futureCategorical == null ? 0 : futureCategorical.length;
     }
 
-    /** Whether the series has categorical covariates. */
+    /** {@return whether the series has categorical covariates} */
     public boolean hasCategorical() {
         return pastCategoricalCount() + futureCategoricalCount() > 0;
     }
 
-    /** Every row the series contributes to a forward pass: targets and all covariates. */
+    /** {@return the rows the series contributes to a forward pass: targets and all covariates} */
     public int rows() {
         return targets() + pastCount() + futureCount() + pastCategoricalCount() + futureCategoricalCount();
     }

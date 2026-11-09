@@ -34,13 +34,27 @@ public final class TornadoTimestralEngine implements ForecastEngine {
     private final TimestralPipeline pipeline;
     private boolean closed;
 
+    /**
+     * An engine over weights already loaded. The engine owns the weights from then on and closes
+     * them in {@link #close()}.
+     *
+     * @param weights the Timestral weights
+     */
     public TornadoTimestralEngine(TimestralWeights weights) {
         this.weights = weights;
         this.forward = new TimestralForward(weights.config(), TimestralPacked.pack(weights));
         this.pipeline = new TimestralPipeline(weights.config(), forward);
     }
 
-    /** Loads a checkpoint directory holding {@code config.json} and {@code model.safetensors}. */
+    /**
+     * Loads a checkpoint directory holding {@code config.json} and {@code model.safetensors}, as published, and builds the engine over it.
+     *
+     * @param checkpoint the checkpoint directory
+     * @return the engine; close it when done
+     * @throws IOException if the files cannot be read
+     * @throws IllegalArgumentException if the checkpoint has settings or tensors the engine does not
+     *     support
+     */
     public static TornadoTimestralEngine load(Path checkpoint) throws IOException {
         TimestralWeights weights = TimestralWeights.load(checkpoint);
         try {
@@ -55,14 +69,20 @@ public final class TornadoTimestralEngine implements ForecastEngine {
         }
     }
 
+    /** {@return the checkpoint's configuration} */
     public TimestralConfig config() {
         return weights.config();
     }
 
+    /** {@return the device forward pass under the pipeline, for benchmarks and tests} */
     public TimestralForward forwardPass() {
         return forward;
     }
 
+    /**
+     * {@return the host pipeline {@link #forecast} runs} Its {@code with…} methods return a
+     * pipeline with other settings, over this engine's forward pass, to forecast through directly.
+     */
     public TimestralPipeline pipeline() {
         return pipeline;
     }

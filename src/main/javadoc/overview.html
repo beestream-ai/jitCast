@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<body>
+<p>jitcast runs zero-shot time-series foundation models in Java, on GPUs through TornadoVM.</p>
+
+<p>Every model is a {@link ai.beestream.jitcast.api.ForecastEngine}. Load one, pass it a batch of
+{@link ai.beestream.jitcast.api.TimeSeries} and a horizon, and read the quantiles from each
+{@link ai.beestream.jitcast.api.Forecast}:</p>
+
+<pre>{@code
+try (ForecastEngine engine = TornadoTimestralEngine.load(Path.of("Timestral-5M"))) {
+    List<Forecast> forecasts = engine.forecast(List.of(TimeSeries.univariate(history)), 64);
+    float[] median = forecasts.get(0).median(0);        // values[target][quantile][step]
+}
+}</pre>
+
+<table class="striped">
+<caption>Engines</caption>
+<thead><tr><th scope="col">Model</th><th scope="col">TornadoVM engine</th><th scope="col">CPU reference</th><th scope="col">Pipeline</th></tr></thead>
+<tbody>
+<tr><th scope="row">TiRex-2</th><td>{@link ai.beestream.jitcast.tirex2.tornado.TornadoTiRex2Engine}</td>
+<td>{@link ai.beestream.jitcast.tirex2.cpu.CpuTiRex2Engine}</td><td>{@link ai.beestream.jitcast.tirex2.ForecastPipeline}</td></tr>
+<tr><th scope="row">Timestral</th><td>{@link ai.beestream.jitcast.timestral.tornado.TornadoTimestralEngine}</td>
+<td>{@link ai.beestream.jitcast.timestral.cpu.CpuTimestralEngine}</td><td>{@link ai.beestream.jitcast.timestral.TimestralPipeline}</td></tr>
+<tr><th scope="row">Chronos-2</th><td>{@link ai.beestream.jitcast.chronos2.tornado.TornadoChronos2Engine}</td>
+<td>{@link ai.beestream.jitcast.chronos2.cpu.CpuChronos2Engine}</td><td>{@link ai.beestream.jitcast.chronos2.Chronos2Pipeline}</td></tr>
+</tbody>
+</table>
+
+<p>The TornadoVM engines run on CUDA, OpenCL and Metal; the CPU engines are FP32 references for
+validation. A pipeline's {@code with…} methods change its settings, such as cross-learning for
+Chronos-2 or sign-flip averaging for Timestral. Engine options are JVM properties, read when an
+engine is created; {@link ai.beestream.jitcast.tornado.Devices} reads the device and memory
+settings. The options are listed in
+<a href="https://github.com/beestream-ai/jitcast/blob/main/docs/CONFIGURATION.md">CONFIGURATION.md</a>.</p>
+</body>
+</html>

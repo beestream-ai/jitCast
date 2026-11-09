@@ -90,6 +90,32 @@
                     </systemPropertyVariables>
                 </configuration>
             </plugin>
+            <!-- API reference: ./mvnw javadoc:javadoc writes target/reports/apidocs -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+                <version>3.11.2</version>
+                <configuration>
+                    <doctitle>jitcast ${project.version} API</doctitle>
+                    <windowtitle>jitcast ${project.version} API</windowtitle>
+                    <overview>${project.basedir}/src/main/javadoc/overview.html</overview>
+                    <show>public</show>
+                    <doclint>all</doclint>
+                    <failOnWarnings>true</failOnWarnings>
+                    <sourceFileIncludes>
+                        <include>ai/beestream/jitcast/api/*.java</include>
+                        <include>ai/beestream/jitcast/*/tornado/Tornado*Engine.java</include>
+                        <include>ai/beestream/jitcast/*/cpu/Cpu*Engine.java</include>
+                        <include>ai/beestream/jitcast/tirex2/ForecastPipeline.java</include>
+                        <include>ai/beestream/jitcast/timestral/TimestralPipeline.java</include>
+                        <include>ai/beestream/jitcast/chronos2/Chronos2Pipeline.java</include>
+                        <include>ai/beestream/jitcast/tirex2/TiRex2Config.java</include>
+                        <include>ai/beestream/jitcast/timestral/TimestralConfig.java</include>
+                        <include>ai/beestream/jitcast/chronos2/Chronos2Config.java</include>
+                        <include>ai/beestream/jitcast/tornado/Devices.java</include>
+                    </sourceFileIncludes>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
 

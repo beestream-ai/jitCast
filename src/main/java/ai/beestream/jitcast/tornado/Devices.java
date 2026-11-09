@@ -31,9 +31,9 @@ public final class Devices {
     /**
      * Sets jitcast's TornadoVM defaults, unless already set. TornadoVM reads them when its backends
      * start, so every engine calls this before its first TornadoVM call, and so does code that calls
-     * TornadoVM before creating an engine. TornadoVM's Metal backend spin-waits up to 1 ms on each
-     * dispatch before it blocks; a forward pass runs dozens of kernels per task graph, so its waits
-     * outlast the spin and jitcast runs up to 2× slower on Metal. The spin is off.
+     * TornadoVM before creating an engine. It turns off the Metal backend's spin wait on each
+     * dispatch ({@code tornado.metal.dispatch.spinWait=False}), which slows jitcast's many short
+     * kernels.
      */
     public static void defaults() {
         if (System.getProperty("tornado.metal.dispatch.spinWait") == null) {
@@ -42,8 +42,10 @@ public final class Devices {
     }
 
     /**
-     * The device of {@code -Djitcast.tornado.device=<backend>:<device>} (as {@code tornado --devices}
-     * numbers them), or TornadoVM's default device.
+     * {@return the device of {@code -Djitcast.tornado.device=<backend>:<device>}, as
+     * {@code tornado --devices} numbers them, or TornadoVM's default device}
+     *
+     * @throws IllegalArgumentException if the property is malformed or names no device
      */
     public static TornadoDevice device() {
         defaults();
@@ -71,9 +73,11 @@ public final class Devices {
     }
 
     /**
-     * The device memory TornadoVM lets jitcast use: {@code tornado.device.memory}, TornadoVM's own
-     * cap on the device buffers it allocates (4 GB unless set). The plan caches keep their plans
-     * within it.
+     * {@return the device memory TornadoVM lets jitcast use, in bytes} This is
+     * {@code tornado.device.memory}, TornadoVM's own cap on the device buffers it allocates (4 GB
+     * unless set); the plan caches keep their plans within it.
+     *
+     * @throws IllegalArgumentException if the property is not a positive size
      */
     public static long memory() {
         String v = System.getProperty("tornado.device.memory");

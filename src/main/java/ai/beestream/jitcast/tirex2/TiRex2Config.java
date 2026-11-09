@@ -26,6 +26,25 @@ import ai.beestream.jitcast.util.Json;
  *
  * <p>Only the values the forward pass needs are kept. Constants that the reference code hard-codes
  * (not in the config) are here as well, so every number the engine uses has one home.
+ *
+ * @param numBlocks the number of blocks
+ * @param embeddingDim the model width
+ * @param patchSize the time steps per patch
+ * @param inputFfDim the inner width of the input patch embedding
+ * @param outputFfDim the inner width of the output patch embedding
+ * @param contextLen the model context in time steps
+ * @param futureLen the longest horizon in time steps
+ * @param quantiles the quantile levels the model forecasts, an odd count with 0.5 in the middle
+ * @param useArcsinh whether the scaler applies arcsinh
+ * @param binaryAware whether binary series are scaled as such
+ * @param stackOutNormEps the epsilon of the norm after the last block
+ * @param ttaDiff whether trend differencing is on by default
+ * @param ttaSignFlip whether sign-flip test-time augmentation is on by default
+ * @param recipe the type of each block, in order
+ * @param timeMixerHeads the mLSTM heads
+ * @param slstmHeads the sLSTM heads
+ * @param variateHeads the variate attention heads
+ * @param useQkNorm whether variate attention normalizes q and k
  */
 public record TiRex2Config(
         int numBlocks,
@@ -47,6 +66,11 @@ public record TiRex2Config(
         int variateHeads,
         boolean useQkNorm) {
 
+    /**
+     * Checks the sizes and quantile levels.
+     *
+     * @throws IllegalArgumentException if the patches, heads or levels are inconsistent
+     */
     public TiRex2Config {
         if (patchSize < 1 || contextLen < 1 || futureLen < 0 || (contextLen + futureLen) % patchSize != 0) {
             throw new IllegalArgumentException("context_len + future_len (" + contextLen + " + " + futureLen
@@ -70,7 +94,10 @@ public record TiRex2Config(
 
     /** The time mixer of a block. Every block's variate mixer is attention. */
     public enum BlockType {
-        MLSTM, SLSTM
+        /** A matrix-memory LSTM time mixer. */
+        MLSTM,
+        /** A scalar-memory LSTM time mixer. */
+        SLSTM
     }
 
     // Constants of the reference implementation (xlstm-large and tirex2 defaults).
@@ -84,27 +111,38 @@ public record TiRex2Config(
     public static final float SCALER_EPS = 1e-8f;
     public static final float SINH_CLAMP = 20f;
 
+    /** {@return the patches of context plus horizon} */
     public int numPatches() {
         return (contextLen + futureLen) / patchSize;
     }
 
+    /** {@return the time steps of context plus horizon} */
     public int paddedLength() {
         return contextLen + futureLen;
     }
 
+    /** {@return the number of quantile levels} */
     public int numQuantiles() {
         return quantiles.length;
     }
 
+    /** {@return the width of the mLSTM's queries and keys} */
     public int mlstmQkDim() {
         return (int) (embeddingDim * QK_DIM_FACTOR);
     }
 
+    /** {@return the inner width of the feed-forward layers} */
     public int ffnDim() {
         int raw = (int) (embeddingDim * FFN_PROJ_FACTOR);
         return (raw + FFN_ROUND_TO - 1) / FFN_ROUND_TO * FFN_ROUND_TO;
     }
 
+    /**
+     * {@return the configuration embedded in a converted checkpoint}
+     *
+     * @param json the {@code tirex2.config} metadata of the safetensors file
+     * @throws IllegalArgumentException if a key is missing or a value is invalid
+     */
     public static TiRex2Config fromJson(String json) {
         Map<String, Object> c = Json.parseObject(json);
         int d = intOf(c, "embedding_dim");

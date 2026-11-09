@@ -45,7 +45,7 @@ public final class Chronos2Pipeline {
     /** The reference's default batch size, in rows. */
     public static final int DEFAULT_BATCH_SIZE = 256;
 
-    /** The most tokens one forward pass takes ({@code -Dchronos2.maxTokens}, default 131,072). */
+    /** {@return the most tokens one forward pass takes: {@code -Dchronos2.maxTokens}, default 131,072} */
     public static long defaultMaxTokens() {
         return ai.beestream.jitcast.util.Options.number("chronos2.maxTokens", 131_072L, 1);
     }
@@ -64,14 +64,29 @@ public final class Chronos2Pipeline {
      */
     public record Options(int contextLength, boolean crossLearning, int maxOutputPatches, float[] unrolledQuantiles) {
 
+        /**
+         * {@return the reference's settings for a checkpoint}
+         *
+         * @param c the checkpoint's configuration
+         */
         public static Options defaults(Chronos2Config c) {
             return new Options(c.contextLength(), false, c.maxOutputPatches(), UNROLLED.clone());
         }
 
+        /**
+         * {@return these settings with cross-learning on or off}
+         *
+         * @param on whether every series of a batch attends every other
+         */
         public Options withCrossLearning(boolean on) {
             return new Options(contextLength, on, maxOutputPatches, unrolledQuantiles);
         }
 
+        /**
+         * {@return these settings with another context cap}
+         *
+         * @param steps the most recent time steps to keep
+         */
         public Options withContextLength(int steps) {
             return new Options(steps, crossLearning, maxOutputPatches, unrolledQuantiles);
         }
@@ -83,10 +98,27 @@ public final class Chronos2Pipeline {
     private final int batchSize;
     private final long maxTokens;
 
+    /**
+     * A pipeline with the reference's settings, the default batch size and the default token budget.
+     *
+     * @param config the checkpoint's configuration
+     * @param forward the forward pass to run
+     */
     public Chronos2Pipeline(Chronos2Config config, ModelForward forward) {
         this(config, forward, Options.defaults(config), DEFAULT_BATCH_SIZE, defaultMaxTokens());
     }
 
+    /**
+     * A pipeline with explicit settings.
+     *
+     * @param config the checkpoint's configuration
+     * @param forward the forward pass to run
+     * @param options the pipeline's settings
+     * @param batchSize the most rows per batch
+     * @param maxTokens the most tokens per forward pass
+     * @throws IllegalArgumentException if a size is below 1 or an unrolled level is not one of the
+     *     model's
+     */
     public Chronos2Pipeline(Chronos2Config config, ModelForward forward, Options options, int batchSize, long maxTokens) {
         if (batchSize < 1 || maxTokens < 1) {
             throw new IllegalArgumentException("batchSize and maxTokens must be >= 1");
@@ -111,18 +143,34 @@ public final class Chronos2Pipeline {
         this.maxTokens = maxTokens;
     }
 
+    /** {@return the pipeline's settings} */
     public Options options() {
         return options;
     }
 
+    /**
+     * {@return the same pipeline with other settings}
+     *
+     * @param o the settings
+     */
     public Chronos2Pipeline withOptions(Options o) {
         return new Chronos2Pipeline(config, forward, o, batchSize, maxTokens);
     }
 
+    /**
+     * {@return the same pipeline with another batch size}
+     *
+     * @param rows the most rows per batch
+     */
     public Chronos2Pipeline withBatchSize(int rows) {
         return new Chronos2Pipeline(config, forward, options, rows, maxTokens);
     }
 
+    /**
+     * {@return the same pipeline with another token budget per forward pass}
+     *
+     * @param tokens the most tokens per forward pass
+     */
     public Chronos2Pipeline withMaxTokens(long tokens) {
         return new Chronos2Pipeline(config, forward, options, batchSize, tokens);
     }
@@ -130,6 +178,15 @@ public final class Chronos2Pipeline {
     /** The rows of one series: targets, past-only covariates, then known covariates. */
     private record Prepared(float[][] context, float[][] future, int targets) {}
 
+    /**
+     * Forecasts every series, as {@link ai.beestream.jitcast.api.ForecastEngine#forecast}.
+     *
+     * @param series the inputs
+     * @param horizon the number of steps to forecast, at least 1
+     * @return one forecast per series, in order
+     * @throws IllegalArgumentException if {@code horizon} is below 1 or a series has inputs the
+     *     model does not take
+     */
     public List<Forecast> forecast(List<TimeSeries> series, int horizon) {
         if (horizon < 1) {
             throw new IllegalArgumentException("horizon must be >= 1, got " + horizon);

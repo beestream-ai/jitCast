@@ -39,8 +39,8 @@ public final class ForecastPipeline {
     public static final int DEFAULT_BATCH_SIZE = 512;
 
     /**
-     * The most tokens one forward pass takes ({@code -Dtirex.maxTokens}, default 131,072): an
-     * engine sizes its buffers by tokens, so this bounds its memory whatever the series' covariate
+     * {@return the most tokens one forward pass takes: {@code -Dtirex.maxTokens}, default 131,072}
+     * An engine sizes its buffers by tokens, so this bounds its memory whatever the series' covariate
      * counts (about 4 GB per plan for the TornadoVM engine). A series with more tokens runs alone.
      * Splitting a batch does not change the forecasts: a row's position in the model input does
      * not depend on the other series of its batch.
@@ -56,14 +56,41 @@ public final class ForecastPipeline {
     private final boolean ttaDiff;
     private final boolean ttaSignFlip;
 
+    /**
+     * A pipeline with the checkpoint's test-time augmentation, the default batch size and the
+     * default token budget.
+     *
+     * @param config the checkpoint's configuration
+     * @param forward the forward pass to run
+     */
     public ForecastPipeline(TiRex2Config config, ForwardPass forward) {
         this(config, forward, DEFAULT_BATCH_SIZE, config.ttaDiff(), config.ttaSignFlip());
     }
 
+    /**
+     * A pipeline with explicit batch size and test-time augmentation, and the default token budget.
+     *
+     * @param config the checkpoint's configuration
+     * @param forward the forward pass to run
+     * @param batchSize the most series per forward pass
+     * @param ttaDiff whether to apply trend differencing
+     * @param ttaSignFlip whether to average with the forecast of the negated series
+     */
     public ForecastPipeline(TiRex2Config config, ForwardPass forward, int batchSize, boolean ttaDiff, boolean ttaSignFlip) {
         this(config, forward, batchSize, defaultMaxTokens(), ttaDiff, ttaSignFlip);
     }
 
+    /**
+     * A pipeline with explicit settings.
+     *
+     * @param config the checkpoint's configuration
+     * @param forward the forward pass to run
+     * @param batchSize the most series per forward pass
+     * @param maxTokens the most tokens (rows × patches) per forward pass
+     * @param ttaDiff whether to apply trend differencing
+     * @param ttaSignFlip whether to average with the forecast of the negated series
+     * @throws IllegalArgumentException if a size is below 1
+     */
     public ForecastPipeline(TiRex2Config config, ForwardPass forward, int batchSize, long maxTokens, boolean ttaDiff,
             boolean ttaSignFlip) {
         if (batchSize < 1) {
@@ -80,26 +107,43 @@ public final class ForecastPipeline {
         this.ttaSignFlip = ttaSignFlip;
     }
 
-    /** Whether trend differencing is on (the checkpoint's {@code tta_diff}). */
+    /** {@return whether trend differencing is on: the checkpoint's {@code tta_diff} unless overridden} */
     public boolean trendDiff() {
         return ttaDiff;
     }
 
-    /** Whether sign-flip TTA is on (the checkpoint's {@code tta_sign_flip} unless overridden). */
+    /** {@return whether sign-flip TTA is on: the checkpoint's {@code tta_sign_flip} unless overridden} */
     public boolean signFlip() {
         return ttaSignFlip;
     }
 
-    /** The same pipeline with sign-flip TTA on or off (the {@code tta_sign_flip} argument of predict). */
+    /**
+     * {@return the same pipeline with sign-flip TTA on or off, as the {@code tta_sign_flip} argument of predict}
+     *
+     * @param signFlip whether to average with the forecast of the negated series
+     */
     public ForecastPipeline withSignFlip(boolean signFlip) {
         return new ForecastPipeline(config, forward, batchSize, maxTokens, ttaDiff, signFlip);
     }
 
-    /** The same pipeline with a different token budget per forward pass. */
+    /**
+     * {@return the same pipeline with another token budget per forward pass}
+     *
+     * @param tokens the most tokens per forward pass
+     */
     public ForecastPipeline withMaxTokens(long tokens) {
         return new ForecastPipeline(config, forward, batchSize, tokens, ttaDiff, ttaSignFlip);
     }
 
+    /**
+     * Forecasts every series, as {@link ai.beestream.jitcast.api.ForecastEngine#forecast}.
+     *
+     * @param series the inputs
+     * @param horizon the number of steps to forecast, at least 1
+     * @return one forecast per series, in order
+     * @throws IllegalArgumentException if {@code horizon} is below 1 or a series has inputs the
+     *     model does not take
+     */
     public List<Forecast> forecast(List<TimeSeries> series, int horizon) {
         if (horizon < 1) {
             throw new IllegalArgumentException("horizon must be >= 1, got " + horizon);

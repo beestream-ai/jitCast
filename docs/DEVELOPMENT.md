@@ -65,7 +65,13 @@ The Timestral port is the template. Validate each step before the next:
 
 `./mvnw test` runs the CPU tests; `-Paccel-tests` adds the device tests (`*AccelTest`). Golden tests
 read their paths from system properties and are skipped without them; see [USAGE.md](USAGE.md#tests).
-CI builds and runs the CPU tests on every push.
+CI builds, runs the CPU tests and builds the API reference on every push.
+
+## API reference
+
+`./mvnw javadoc:javadoc` writes the Javadoc of the public API (`api`, the engines, their pipelines
+and configurations, `tornado.Devices`) to `target/reports/apidocs`. The build fails on a missing or
+broken doc comment.
 
 ## Scripts (`scripts/`)
 

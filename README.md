@@ -114,6 +114,7 @@ rather than one series at a time. Every option, with per-model recommendations, 
 | [USAGE.md](docs/USAGE.md) | The Java API, the benchmark tools, the harness servers, the tests |
 | [CONFIGURATION.md](docs/CONFIGURATION.md) | Every option, GEMM modes, recommendations per platform |
 | [TIREX2.md](docs/models/TIREX2.md), [TIMESTRAL.md](docs/models/TIMESTRAL.md), [CHRONOS2.md](docs/models/CHRONOS2.md) | Each model: architecture, checkpoints, features, mapping onto jitcast, licence |
+| API reference | `./mvnw javadoc:javadoc`, then open `target/reports/apidocs/index.html` |
 | [KERNELS.md](docs/KERNELS.md) | Every device kernel and its vendor-library alternative |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Architecture, code layout, adding a model family, scripts |
 | [ROADMAP.md](docs/ROADMAP.md) | Planned work and the TornadoVM limits that affect jitcast |

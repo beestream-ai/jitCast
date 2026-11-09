@@ -33,12 +33,26 @@ public final class CpuChronos2Engine implements ForecastEngine {
     private boolean closed;
     private final Chronos2Pipeline pipeline;
 
+    /**
+     * An engine over weights already loaded. The engine owns the weights from then on and closes
+     * them in {@link #close()}.
+     *
+     * @param weights the Chronos-2 weights
+     */
     public CpuChronos2Engine(Chronos2Weights weights) {
         this.weights = weights;
         this.pipeline = new Chronos2Pipeline(weights.config(), new CpuChronos2(weights));
     }
 
-    /** Loads a checkpoint directory holding {@code config.json} and {@code model.safetensors}. */
+    /**
+     * Loads a checkpoint directory holding {@code config.json} and {@code model.safetensors}, as published, and builds the engine over it.
+     *
+     * @param checkpoint the checkpoint directory
+     * @return the engine; close it when done
+     * @throws IOException if the files cannot be read
+     * @throws IllegalArgumentException if the checkpoint has settings or tensors the engine does not
+     *     support
+     */
     public static CpuChronos2Engine load(Path checkpoint) throws IOException {
         Chronos2Weights weights = Chronos2Weights.load(checkpoint);
         try {
@@ -53,10 +67,15 @@ public final class CpuChronos2Engine implements ForecastEngine {
         }
     }
 
+    /** {@return the checkpoint's configuration} */
     public Chronos2Config config() {
         return weights.config();
     }
 
+    /**
+     * {@return the host pipeline {@link #forecast} runs} Its {@code with…} methods return a
+     * pipeline with other settings, over this engine's forward pass, to forecast through directly.
+     */
     public Chronos2Pipeline pipeline() {
         return pipeline;
     }

@@ -30,8 +30,25 @@ import ai.beestream.jitcast.util.Json;
  * decoding, as {@code timestral.config.TimestralConfig}. Unknown keys fail the load, as in the
  * reference, and so do the settings this engine does not implement.
  *
+ * @param patchSize the time steps per patch
+ * @param dModel the model width
+ * @param numHeads the attention heads per layer
+ * @param mlpHiddenDim the MLP inner width
  * @param layers one entry per transformer layer: its attention axes in order, {@code true} for
  *     time and {@code false} for variate, each followed by the layer's one MLP
+ * @param quantileKnots the quantile levels the head forecasts
+ * @param blockSize the most forecast patches decoded per block
+ * @param contextLength the longest context in time steps
+ * @param ropeTheta the RoPE base
+ * @param ropePartialFactor the fraction of each head's dimensions RoPE rotates
+ * @param normEps the RMSNorm epsilon
+ * @param timeAttnGate whether time attention's output has a sigmoid gate
+ * @param variateAttnGate whether variate attention's output has a sigmoid gate
+ * @param minimumScale the smallest scale the scaler divides by
+ * @param useAsinh whether the scaler applies arcsinh
+ * @param covariateEnabled whether the checkpoint takes covariates
+ * @param attendMissingPatches the reference's {@code attend_missing_patches}
+ * @param quantileWidthFactor the reference's {@code quantile_width_factor}
  */
 public record TimestralConfig(
         int patchSize,
@@ -59,16 +76,17 @@ public record TimestralConfig(
             "stabilize_with_global", "covariate_enabled", "split_context_horizon_attn", "attend_missing_patches",
             "quantile_width_factor");
 
+    /** {@return the width of one attention head} */
     public int headDim() {
         return dModel / numHeads;
     }
 
-    /** Head dimensions rotated by RoPE; the rest pass through unrotated. */
+    /** {@return the head dimensions RoPE rotates; the rest pass through unrotated} */
     public int ropeDim() {
         return (int) (headDim() * ropePartialFactor);
     }
 
-    /** The quantile levels, as the forecasts report them. */
+    /** {@return the quantile levels, as the forecasts report them} */
     public float[] quantileLevels() {
         float[] q = new float[quantileKnots.length];
         for (int i = 0; i < q.length; i++) {
@@ -77,10 +95,16 @@ public record TimestralConfig(
         return q;
     }
 
+    /** {@return the number of quantile levels} */
     public int numQuantiles() {
         return quantileKnots.length;
     }
 
+    /**
+     * {@return the index of the 0.5 level}
+     *
+     * @throws IllegalStateException if there is no 0.5 level
+     */
     public int medianIndex() {
         for (int i = 0; i < quantileKnots.length; i++) {
             if (quantileKnots[i] == 0.5) {
@@ -90,14 +114,14 @@ public record TimestralConfig(
         throw new IllegalStateException("no 0.5 quantile knot");
     }
 
-    /** The patches of the trained context length. */
+    /** {@return the patches of the trained context length} */
     public int contextPatches() {
         return contextLength / patchSize;
     }
 
     /**
-     * Whether the layer schedule can route a known covariate's future to the targets: some time
-     * attention must be followed by at least one more time attention and at least one variate one.
+     * {@return whether the layer schedule can route a known covariate's future to the targets} Some
+     * time attention must be followed by at least one more time attention and at least one variate one.
      */
     public boolean supportsKnownCovariates() {
         if (!covariateEnabled) {
@@ -118,10 +142,23 @@ public record TimestralConfig(
         return false;
     }
 
+    /**
+     * {@return the configuration in a {@code config.json} file}
+     *
+     * @param configJson the file
+     * @throws IOException if the file cannot be read
+     * @throws IllegalArgumentException if it has unknown keys or unsupported settings
+     */
     public static TimestralConfig load(Path configJson) throws IOException {
         return fromJson(Files.readString(configJson));
     }
 
+    /**
+     * {@return the configuration in a {@code config.json} document}
+     *
+     * @param json the document
+     * @throws IllegalArgumentException if it has unknown keys or unsupported settings
+     */
     public static TimestralConfig fromJson(String json) {
         Map<String, Object> c = Json.parseObject(json);
         for (String key : c.keySet()) {

@@ -32,11 +32,26 @@ public final class CpuTiRex2Engine implements ForecastEngine {
     private boolean closed;
     private final ForecastPipeline pipeline;
 
+    /**
+     * An engine over weights already loaded. The engine owns the weights from then on and closes
+     * them in {@link #close()}.
+     *
+     * @param weights the TiRex-2 weights
+     */
     public CpuTiRex2Engine(TiRex2Weights weights) {
         this.weights = weights;
         this.pipeline = new ForecastPipeline(weights.config(), new CpuReference(weights));
     }
 
+    /**
+     * Loads a TiRex-2 checkpoint converted to one safetensors file ({@code scripts/convert_ckpt.py}), and builds the engine over it.
+     *
+     * @param safetensors the safetensors file
+     * @return the engine; close it when done
+     * @throws IOException if the files cannot be read
+     * @throws IllegalArgumentException if the checkpoint has settings or tensors the engine does not
+     *     support
+     */
     public static CpuTiRex2Engine load(Path safetensors) throws IOException {
         TiRex2Weights weights = TiRex2Weights.load(safetensors);
         try {
@@ -51,6 +66,10 @@ public final class CpuTiRex2Engine implements ForecastEngine {
         }
     }
 
+    /**
+     * {@return the host pipeline {@link #forecast} runs} Its {@code with…} methods return a
+     * pipeline with other settings, over this engine's forward pass, to forecast through directly.
+     */
     public ForecastPipeline pipeline() {
         return pipeline;
     }

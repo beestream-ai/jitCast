@@ -30,6 +30,18 @@ import ai.beestream.jitcast.util.Json;
  * the load, and so do the settings this engine does not implement (gated or non-ReLU feed-forward
  * layers, overlapping patches, different input and output patch sizes).
  *
+ * @param dModel the model width
+ * @param dKv the width of one attention head
+ * @param dFf the feed-forward layers' inner width
+ * @param numLayers the number of encoder blocks
+ * @param numHeads the attention heads per block
+ * @param layerNormEps the RMSNorm epsilon
+ * @param ropeTheta the RoPE base
+ * @param contextLength the longest context in time steps
+ * @param patchSize the time steps per patch
+ * @param quantiles the quantile levels the model forecasts
+ * @param useRegToken whether a {@code [REG]} token separates context and forecast tokens
+ * @param useArcsinh whether the instance norm applies arcsinh
  * @param timeEncodingScale the divisor of the time index fed to the patch embedding
  * @param maxOutputPatches the patches one forward pass forecasts before the long-horizon unrolling
  */
@@ -56,16 +68,17 @@ public record Chronos2Config(
     private static final Set<String> CHRONOS_KEYS = Set.of("context_length", "input_patch_size", "input_patch_stride",
             "output_patch_size", "max_output_patches", "quantiles", "use_reg_token", "use_arcsinh", "time_encoding_scale");
 
-    /** {@code num_heads · d_kv}, the width of q, k and v. */
+    /** {@return {@code num_heads · d_kv}, the width of q, k and v} */
     public int inner() {
         return numHeads * dKv;
     }
 
+    /** {@return the number of quantile levels} */
     public int numQuantiles() {
         return quantiles.length;
     }
 
-    /** The quantile levels, as the forecasts report them. */
+    /** {@return the quantile levels, as the forecasts report them} */
     public float[] quantileLevels() {
         float[] q = new float[quantiles.length];
         for (int i = 0; i < q.length; i++) {
@@ -74,20 +87,33 @@ public record Chronos2Config(
         return q;
     }
 
-    /** The rows of the learned token table: the padding token, and {@code [REG]} when used. */
+    /** {@return the rows of the learned token table: the padding token, and {@code [REG]} when used} */
     public int vocabSize() {
         return useRegToken ? 2 : 1;
     }
 
-    /** The steps one forward pass forecasts before the long-horizon unrolling. */
+    /** {@return the steps one forward pass forecasts before the long-horizon unrolling} */
     public int predictionLength() {
         return maxOutputPatches * patchSize;
     }
 
+    /**
+     * {@return the configuration in a {@code config.json} file}
+     *
+     * @param configJson the file
+     * @throws IOException if the file cannot be read
+     * @throws IllegalArgumentException if it has unknown keys or unsupported settings
+     */
     public static Chronos2Config load(Path configJson) throws IOException {
         return fromJson(Files.readString(configJson));
     }
 
+    /**
+     * {@return the configuration in a {@code config.json} document}
+     *
+     * @param json the document
+     * @throws IllegalArgumentException if it has unknown keys or unsupported settings
+     */
     @SuppressWarnings("unchecked")
     public static Chronos2Config fromJson(String json) {
         Map<String, Object> c = Json.parseObject(json);

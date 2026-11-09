@@ -41,7 +41,7 @@ public final class TimestralPipeline {
     /** The default batch size, as {@code jitcast}'s other pipelines. */
     public static final int DEFAULT_BATCH_SIZE = 512;
 
-    /** The most tokens one forward pass takes ({@code -Dtimestral.maxTokens}, default 131,072). */
+    /** {@return the most tokens one forward pass takes: {@code -Dtimestral.maxTokens}, default 131,072} */
     public static long defaultMaxTokens() {
         return ai.beestream.jitcast.util.Options.number("timestral.maxTokens", 131_072L, 1);
     }
@@ -60,14 +60,29 @@ public final class TimestralPipeline {
     public record Options(int maxContext, int perShotHorizonPatches, float capK, float extremeValueThreshold,
             boolean symmetricAveraging, boolean clipNonnegative) {
 
+        /**
+         * {@return the reference's settings for a checkpoint}
+         *
+         * @param c the checkpoint's configuration
+         */
         public static Options defaults(TimestralConfig c) {
             return new Options(c.contextLength(), 32, 1e4f, 1e30f, true, true);
         }
 
+        /**
+         * {@return these settings with sign-flip averaging on or off}
+         *
+         * @param on whether to average with the reflected forecast of the negated series
+         */
         public Options withSymmetricAveraging(boolean on) {
             return new Options(maxContext, perShotHorizonPatches, capK, extremeValueThreshold, on, clipNonnegative);
         }
 
+        /**
+         * {@return these settings with non-negative clipping on or off}
+         *
+         * @param on whether to clamp at 0 the series whose context is non-negative
+         */
         public Options withClipNonnegative(boolean on) {
             return new Options(maxContext, perShotHorizonPatches, capK, extremeValueThreshold, symmetricAveraging, on);
         }
@@ -80,10 +95,26 @@ public final class TimestralPipeline {
     private final long maxTokens;
     private final int[] complement;
 
+    /**
+     * A pipeline with the reference's settings, the default batch size and the default token budget.
+     *
+     * @param config the checkpoint's configuration
+     * @param forward the forward pass to run each block on
+     */
     public TimestralPipeline(TimestralConfig config, BlockForward forward) {
         this(config, forward, Options.defaults(config), DEFAULT_BATCH_SIZE, defaultMaxTokens());
     }
 
+    /**
+     * A pipeline with explicit settings.
+     *
+     * @param config the checkpoint's configuration
+     * @param forward the forward pass to run each block on
+     * @param options the forecaster's settings
+     * @param batchSize the most series per forward pass
+     * @param maxTokens the most tokens (rows × patches) per forward pass
+     * @throws IllegalArgumentException if a size is below 1 or the context cap holds no patch
+     */
     public TimestralPipeline(TimestralConfig config, BlockForward forward, Options options, int batchSize, long maxTokens) {
         if (batchSize < 1 || maxTokens < 1) {
             throw new IllegalArgumentException("batchSize and maxTokens must be >= 1");
@@ -99,18 +130,38 @@ public final class TimestralPipeline {
         this.complement = options.symmetricAveraging() ? SignFlip.complement(config.quantileLevels()) : null;
     }
 
+    /** {@return the forecaster's settings} */
     public Options options() {
         return options;
     }
 
+    /**
+     * {@return the same pipeline with other settings}
+     *
+     * @param o the settings
+     */
     public TimestralPipeline withOptions(Options o) {
         return new TimestralPipeline(config, forward, o, batchSize, maxTokens);
     }
 
+    /**
+     * {@return the same pipeline with another token budget per forward pass}
+     *
+     * @param tokens the most tokens per forward pass
+     */
     public TimestralPipeline withMaxTokens(long tokens) {
         return new TimestralPipeline(config, forward, options, batchSize, tokens);
     }
 
+    /**
+     * Forecasts every series, as {@link ai.beestream.jitcast.api.ForecastEngine#forecast}.
+     *
+     * @param series the inputs
+     * @param horizon the number of steps to forecast, at least 1
+     * @return one forecast per series, in order
+     * @throws IllegalArgumentException if {@code horizon} is below 1 or a series has inputs the
+     *     model does not take
+     */
     public List<Forecast> forecast(List<TimeSeries> series, int horizon) {
         if (horizon < 1) {
             throw new IllegalArgumentException("horizon must be >= 1, got " + horizon);
