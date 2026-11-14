@@ -22,8 +22,7 @@
 # TIREX_REF the tirex-2 tag or commit (default v0.4.0). Triton builds a C helper, so the interpreter needs its
 # development headers (a uv-managed Python has them).
 # Re-runnable: each step skips work that is already done. Results land in <workdir>/results. NXAI's
-# speed baseline and the benchmark harnesses that take this work directory are in jitCast-benchmarking
-# (https://github.com/beestream-ai/jitCast-benchmarking).
+# speed baseline and the benchmark harnesses that take this work directory are in the jitCast-benchmarking repository.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

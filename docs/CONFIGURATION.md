@@ -23,7 +23,7 @@ The defaults are accurate to FP32 on every platform. Start from them and add fla
 | Other OpenCL GPUs | `-Dtirex.tornado.gemm=half` (`tiled` for FP32) | defaults | defaults |
 
 The FP16 modes keep FP32 accumulation; their forecasts move slightly off the FP32 reference
-(tolerances in [jitCast-benchmarking](https://github.com/beestream-ai/jitCast-benchmarking)).
+(the validation tolerances are kept with the benchmarks, in jitCast-benchmarking).
 
 For every platform and model:
 

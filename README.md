@@ -31,8 +31,8 @@ calibration, test-time augmentation) in Java, the forward pass on the GPU.
   FP16 tensor cores) and each forward pass replays as a CUDA graph; on Apple GPUs, on the simdgroup
   matrix units.
 - **Checked against the references.** Every stage of every model is tested against the reference
-  engine's own activations, on every backend. Validation and benchmarks live in
-  [jitCast-benchmarking](https://github.com/beestream-ai/jitCast-benchmarking).
+  engine's own activations, on every backend. Validation and benchmarks live in a separate
+  repository, jitCast-benchmarking.
 
 ## Architecture
 
@@ -54,8 +54,8 @@ sdk install java 25.0.4-tem                     # any JDK 22+
 sdk install tornadovm 8.1.0-jdk22plus-cuda      # or ...-metal on Apple Silicon, ...-opencl
 tornado --devices                               # device ids, as <backend>:<device>
 
-git clone https://github.com/beestream-ai/jitcast && cd jitcast
-./mvnw -q package -DskipTests
+git clone https://github.com/beestream-ai/jitCast && cd jitCast
+./mvnw -q package -DskipTests                   # or install -DskipTests, to use it from another Maven project
 
 mkdir -p Timestral-5M && for f in config.json model.safetensors; do
   curl -L -o Timestral-5M/$f https://huggingface.co/mistralai/Timestral-5M/resolve/main/$f
@@ -120,7 +120,6 @@ rather than one series at a time. Every option, with per-model recommendations, 
 | [KERNELS.md](docs/KERNELS.md) | Every device kernel and its vendor-library alternative |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Architecture, code layout, adding a model family, scripts |
 | [ROADMAP.md](docs/ROADMAP.md) | Planned work and the TornadoVM limits that affect jitcast |
-| [jitCast-benchmarking](https://github.com/beestream-ai/jitCast-benchmarking) | Validation, benchmark harnesses and results |
 
 ## License
 

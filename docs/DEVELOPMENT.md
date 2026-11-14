@@ -59,7 +59,7 @@ The Timestral port is the template. Validate each step before the next:
 5. **TornadoVM engine**: shared kernels first, then the family's own; a device test against the
    goldens and a large mixed batch against the CPU reference, on Metal, OpenCL and CUDA.
 6. **Docs**: a page in `docs/models/`, and the family's sections in the shared docs. Benchmarks go to
-   [jitCast-benchmarking](https://github.com/beestream-ai/jitCast-benchmarking).
+   the jitCast-benchmarking repository.
 
 ## Tests
 

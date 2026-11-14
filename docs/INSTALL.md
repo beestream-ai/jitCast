@@ -87,16 +87,22 @@ backend with the highest `-Dtornado.<backend>.priority` is numbered `0`.
 - **cuBLAS 13 on Blackwell, TornadoVM 7.3.1 and earlier.** These load `libcublas.so.12` first; a CUDA
   12.0 cuBLAS installed next to CUDA 13 then runs generic kernels on sm_120. Point `LD_LIBRARY_PATH`
   at a directory where `lib{cublas,cublasLt,cudart}.so.12` link to the CUDA 13 libraries
-  (jitCast-benchmarking's
-  [`cublas13_shim.sh`](https://github.com/beestream-ai/jitCast-benchmarking/blob/main/scripts/eval/cublas13_shim.sh)
-  builds one). TornadoVM 8 needs no shim.
+  (`mkdir -p shim && for l in cublas cublasLt cudart; do ln -sf $CUDA_HOME/lib64/lib$l.so.13 shim/lib$l.so.12; done`).
+  TornadoVM 8 needs no shim.
 
 ## Build jitcast
 
 ```bash
-git clone https://github.com/beestream-ai/jitcast && cd jitcast
+git clone https://github.com/beestream-ai/jitCast && cd jitCast
 ./mvnw -q package -DskipTests                                         # TornadoVM 8.1.0 API from Maven Central
 ./mvnw -q package -DskipTests -Dtornadovm.version=8.1.1-jdk22plus-dev # or a develop SDK you built
+```
+
+To use jitcast from another Maven project, install it into the local Maven repository as
+`ai.beestream:jitcast:0.1.0-jdk22plus`:
+
+```bash
+./mvnw -q install -DskipTests
 ```
 
 ## Get the weights

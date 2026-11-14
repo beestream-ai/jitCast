@@ -45,7 +45,7 @@ $JITCAST -Djitcast.tornado.device=1:0 -Dtimestral.tornado.gemm=cublas-fp16 my.Ap
 ## Benchmark tools
 
 Each model has a tool that times end-to-end `forecast()` on a workload file written by the
-reference side in [jitCast-benchmarking](https://github.com/beestream-ai/jitCast-benchmarking),
+reference side in the jitCast-benchmarking repository,
 which also holds the method and results.
 
 ```bash

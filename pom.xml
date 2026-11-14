@@ -12,7 +12,7 @@
     <name>jitcast</name>
     <description>Zero-shot time-series foundation models (TiRex-2, Timestral, Chronos-2) in Java, on GPUs through TornadoVM</description>
 
-    <url>https://github.com/beestream-ai/jitcast</url>
+    <url>https://github.com/beestream-ai/jitCast</url>
     <organization>
         <name>Beestream Ltd</name>
         <url>https://github.com/beestream-ai</url>
@@ -68,7 +68,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
-                <version>3.11.0</version>
+                <version>3.13.0</version>
             </plugin>
             <!-- Default tests need no accelerator; *AccelTest runs under -Paccel-tests, as in jitllm. -->
             <plugin>
