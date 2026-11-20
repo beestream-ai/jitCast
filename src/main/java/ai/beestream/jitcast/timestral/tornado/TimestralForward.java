@@ -105,7 +105,7 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
     private final int blockedWideMinRows = Options.integer("timestral.tornado.wideMinRows", 1024, 1);
 
     /** The fewest GEMM rows that use {@link Kernels#gemmSimdgroupWide} rather than {@link Kernels#gemmSimdgroup}. */
-    private final int wideMinRows = Options.integer("timestral.tornado.simdgroupWideMinRows", 64, 1);
+    private final int simdgroupWideMinRows = Options.integer("timestral.tornado.simdgroupWideMinRows", 64, 1);
 
     /**
      * Split K: a 64 × 64 simdgroup GEMM with fewer tiles than {@code splitKTarget} work-groups also
@@ -410,7 +410,7 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
             int f = flags | (l.b() >= 0 ? Kernels.BIAS : 0);
             WorkerGrid wg;
             if (gemmMode == GemmMode.SIMDGROUP) {
-                boolean wide = m >= wideMinRows;
+                boolean wide = m >= simdgroupWideMinRows;
                 int t = wide ? Kernels.MMA_WIDE : Kernels.MMA_TILE;
                 int tiles = ((m + t - 1) / t) * ((l.out() + t - 1) / t);
                 wg = group(tiles * Kernels.MMA_THREADS, Kernels.MMA_THREADS);

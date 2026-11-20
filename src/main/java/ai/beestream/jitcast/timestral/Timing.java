@@ -20,11 +20,12 @@ import java.util.TreeMap;
 
 /**
  * Wall time per phase of a forecast ({@code -Dtimestral.timing=true}, analysis only): the engines
- * add each phase's time, and {@link #report} prints and clears the totals.
+ * add each phase's time, and {@link #report} prints and clears the totals. Unlike the engine options,
+ * the property is read once per JVM, when this class loads.
  */
 public final class Timing {
 
-    public static final boolean ENABLED = Boolean.getBoolean("timestral.timing");
+    public static final boolean ENABLED = ai.beestream.jitcast.util.Options.bool("timestral.timing", false);
 
     private static final Map<String, long[]> TOTALS = new TreeMap<>();
 

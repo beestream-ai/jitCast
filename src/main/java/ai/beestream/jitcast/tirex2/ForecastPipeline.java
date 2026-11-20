@@ -127,6 +127,15 @@ public final class ForecastPipeline {
     }
 
     /**
+     * {@return the same pipeline with another batch size}
+     *
+     * @param series the most series per forward pass
+     */
+    public ForecastPipeline withBatchSize(int series) {
+        return new ForecastPipeline(config, forward, series, maxTokens, ttaDiff, ttaSignFlip);
+    }
+
+    /**
      * {@return the same pipeline with another token budget per forward pass}
      *
      * @param tokens the most tokens per forward pass

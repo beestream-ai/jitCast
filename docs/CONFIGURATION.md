@@ -22,8 +22,7 @@ The defaults are accurate to FP32 on every platform. Start from them and add fla
 | Apple Silicon, SDK with Metal and OpenCL | as above, plus `-Dtornado.metal.priority=100` | `-Dtornado.metal.priority=100` | `-Dtornado.metal.priority=100` |
 | Other OpenCL GPUs | `-Dtirex.tornado.gemm=half` (`tiled` for FP32) | defaults | defaults |
 
-The FP16 modes keep FP32 accumulation; their forecasts move slightly off the FP32 reference
-(the validation tolerances are kept with the benchmarks, in jitCast-benchmarking).
+The FP16 modes keep FP32 accumulation; their forecasts move slightly off the FP32 reference.
 
 For every platform and model:
 
@@ -90,7 +89,8 @@ fails is dropped; if others were cached, they are evicted and the plan is retrie
 | `tirex.tornado.memReport` | `false` | Print each plan's buffers when it is built |
 
 Programmatic: `ForecastPipeline(config, forward, batchSize, ttaDiff, ttaSignFlip)` sets series per
-forward pass (512) and the TTA switches; `TornadoForward(config, weights, maxCachedPlans)` the plan count.
+forward pass (512) and the TTA switches, `withBatchSize` and `withSignFlip` change them on an engine's
+pipeline, and `TornadoForward(config, weights, maxCachedPlans)` sets the plan count.
 
 ### GEMM modes
 
@@ -126,15 +126,18 @@ CUDA). The fused sLSTM norm kernel needs 512 threads and is skipped on smaller d
 | `timestral.tornado.splitKMax` | `16` | Most K slices |
 | `timestral.tornado.cudaGraph` | `true` with cuBLAS | Replay each plan as a CUDA graph |
 | `timestral.tornado.attention` | `auto`, `kernel`, `cublas` | Time attention. `auto`, with a cuBLAS mode: cuBLAS batched GEMMs for blocks of at least `blasAttentionMinTokens` (128) tokens per row and at most `blasAttentionMaxRows` (8) rows, the kernel otherwise |
+| `timestral.tornado.blasAttentionMinTokens` | `128` | `attention=auto`: the fewest tokens per row for the cuBLAS time attention |
+| `timestral.tornado.blasAttentionMaxRows` | `8` | `attention=auto`: the most rows (series × variates) in a block for the cuBLAS time attention |
 | `timestral.tornado.attentionScoreBytes` | `536870912` | Most memory the cuBLAS attention scores take at once; larger blocks run in chunks |
 | `timestral.tornado.buckets` | `true` | Pad blocks to shared shapes so few plans compile; forecasts unchanged |
 | `timestral.tornado.plans` | `8` | Block shapes kept compiled |
 | `timestral.tornado.planBytes` | `tornado.device.memory` | Device memory the cached plans may hold together |
 | `timestral.maxTokens` | `131072` | Most tokens (rows × patches) per forward pass |
-| `timestral.tornado.profile`, `timestral.timing` | `false` | Print kernel times, or host and device phase times (analysis only) |
+| `timestral.tornado.profile`, `timestral.timing` | `false` | Print kernel times, or host and device phase times (analysis only; `timing` is read once per JVM) |
 
 Programmatic: `TimestralPipeline.Options` (context cap, patches per block, cap to the observed range,
-fed-back median threshold, sign-flip averaging, non-negative clipping), with the reference's defaults.
+fed-back median threshold, sign-flip averaging, non-negative clipping), with the reference's defaults;
+`withBatchSize` sets series per forward pass (512).
 
 ## Chronos-2
 

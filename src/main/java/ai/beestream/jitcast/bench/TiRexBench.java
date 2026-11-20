@@ -38,7 +38,7 @@ import ai.beestream.jitcast.util.Json;
 
 /**
  * The TornadoVM (or CPU) side of the NXAI comparison: the same workload file, scenarios and
- * timing boundaries as jitCast-benchmarking's {@code scripts/bench_nxai.py}, and the same JSON record layout.
+ * timing boundaries as the reference side of the comparison, and the same JSON record layout.
  *
  * <ul>
  *   <li>{@code e2e}: {@code forecast()} — batch assembly, forward, postprocessing;
@@ -164,7 +164,7 @@ public final class TiRexBench {
         weights.close();
     }
 
-    /** The scenarios of bench_nxai.py, from the same workload tensors. */
+    /** The scenarios of the reference side, from the same workload tensors. */
     static List<Scenario> scenarios(SafeTensors w, List<String> which, int maxBatch, int horizon) {
         List<Scenario> out = new ArrayList<>();
         float[][] uni = rows(w.get("univariate"));
@@ -185,7 +185,7 @@ public final class TiRexBench {
             float[][] target = rows(w.get("mv.target"));
             float[][] fut = rows(w.get("mv.future_cov"));
             float[][] past = rows(w.get("mv.past_cov"));
-            // the workload file's own layout (bench_nxai.py's max(COVARIATES)), so a --covariates
+            // the workload file's own layout (the reference side's largest covariate count), so a --covariates
             // subset slices exactly the rows NXAI used
             int kMax = Integer.parseInt(w.metadata().getOrDefault("max_covariates", "63"));
             int futPer = (kMax + 1) / 2, pastPer = kMax / 2;

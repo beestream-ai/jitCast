@@ -49,11 +49,6 @@ import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 public final class TornadoForward implements ForwardPass, AutoCloseable {
 
     static {
-        tornadoDefaults();
-    }
-
-    /** Sets jitcast's TornadoVM defaults ({@link Devices#defaults}). */
-    public static void tornadoDefaults() {
         Devices.defaults();
     }
 
@@ -67,9 +62,9 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
      * cores ({@code cublasGemmExFP16FP32}: FP16 weights and activations, FP32 accumulation and
      * output, so the residual stream stays FP32). {@code CUBLAS_AUTO} picks per GEMM: FP16 once the
      * row count reaches {@code -Dtirex.tornado.fp16MinTokens}, FP32 below it. The default, 0, is
-     * FP16 everywhere: with CUDA 13 cuBLAS the FP16 tensor-core GEMM is faster at every row count
-     * (−30% at 1 series, −44% at 8 on a compute capability 12 GPU). The threshold dates from CUDA 12.0 cuBLAS,
-     * whose FP16→FP32 GEMM fell back to a non-tensor-core kernel at small row counts.
+     * FP16 everywhere: with CUDA 13 cuBLAS the FP16 tensor-core GEMM is faster at every row count.
+     * The threshold dates from CUDA 12.0 cuBLAS, whose FP16→FP32 GEMM fell back to a non-tensor-core
+     * kernel at small row counts.
      * {@code HALF} and {@code CUTILE} are the same FP16 GEMM written in TornadoVM, for every row
      * count: {@code HALF} with KernelContext ({@link Kernels#gemmHalf}, any backend) and
      * {@code CUTILE} with the CUDA Tile API ({@link Kernels#gemmHalfTile}, tensor cores). {@code AUTO}
@@ -112,8 +107,8 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
 
     /**
      * Capture and replay the plan's task graph as a CUDA graph ({@code -Dtirex.tornado.cudaGraph}). On
-     * by default with the cuBLAS (CUDA-only) GEMM modes: −11% at batch 1 on a compute capability 12 GPU, with
-     * identical results; off with the portable tiled GEMMs, which also run on OpenCL and Metal.
+     * by default with the cuBLAS (CUDA-only) GEMM modes, where it cuts the launch overhead with identical
+     * results; off with the portable tiled GEMMs, which also run on OpenCL and Metal.
      */
     private final boolean cudaGraph = Options.bool("tirex.tornado.cudaGraph", gemmMode.cublas() || gemmMode == GemmMode.CUTILE);
 
@@ -121,7 +116,8 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
 
     /**
      * Which cuBLAS call runs an FP16 GEMM: {@code gemmex-mixed} ({@code cublasGemmEx}, FP16 in,
-     * FP32 out — cuBLAS picks a non-tensor-core kernel for it on sm_120), {@code gemmex-h16}
+     * FP32 out; CUDA 12.0 cuBLAS picks a non-tensor-core kernel for it on sm_120, CUDA 13 a tensor-core
+     * one), {@code gemmex-h16}
      * ({@code cublasGemmEx} all FP16) or {@code lt-h16} (cuBLASLt all FP16); the last two write an
      * FP16 C that one epilogue kernel brings back to FP32 ({@code -Dtirex.tornado.fp16Kernel}).
      */
@@ -141,9 +137,9 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
      * {@code -Dtirex.tornado.mlstm=auto|chunk|step}: the chunkwise mLSTM kernel (blocks of query
      * steps share each staged key; {@link TiRexKernels#mlstmChunk}) or the one-step-per-work-group
      * one ({@link TiRexKernels#mlstmCell}). {@code auto} (default) takes the chunkwise kernel unless
-     * its grid would be smaller than {@link #MLSTM_CHUNK_MIN_GROUPS} work-groups: on a compute capability 12 GPU
-     * it is 26–35% faster at 285 patches from 8 series up and 4–5% faster at 74 patches from 64
-     * series, but 5% slower for a single 74-patch series, whose 20 work-groups leave the GPU idle.
+     * its grid would be smaller than {@link #MLSTM_CHUNK_MIN_GROUPS} work-groups: it is faster for long
+     * contexts and large batches, but slower for a single 74-patch series, whose 20 work-groups leave the
+     * GPU idle.
      */
     private final String mlstmMode = Options.choice("tirex.tornado.mlstm", "auto", "auto", "chunk", "step");
 
@@ -224,9 +220,9 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
      * Rows per work-group the register-resident sLSTM kernel can take: with 4 or more, its 512 threads ask
      * for more registers than an SM has (CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES on a compute capability 12 GPU, and
      * CL_OUT_OF_RESOURCES on NVIDIA's OpenCL). So it only replaces the streamed kernel where that
-     * one would take fewer than {@link TiRexKernels#SLSTM_MAX_ROWS} rows per group: on a compute capability 12 GPU
-     * it is 14–23% faster end to end up to about 64 rows, and 3% slower where the streamed kernel
-     * shares each R read between 8 rows (the largest batches).
+     * one would take fewer than {@link TiRexKernels#SLSTM_MAX_ROWS} rows per group: it is faster up to
+     * about 64 rows, and slower where the streamed kernel shares each R read between 8 rows (the largest
+     * batches).
      */
     static final int SLSTM_REG_MAX_ROWS = 2;
 
@@ -315,10 +311,10 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
     /**
      * {@code -Dtirex.tornado.rowBuckets=off|pow2}: with {@code pow2}, round each batch's row count up
      * to a power of two, so batch sizes share a handful of plans instead of building one per size
-     * (a new plan costs 0.2–0.6 s with cuBLAS, 0.5–1.3 s with the portable GEMMs). The extra rows are
-     * copies of row 0, each alone in its group, and their outputs are dropped. Off by default: the
-     * padding rows are real work, 20–60% on every call of a size that is not a power of two (compute
-     * capability 12 GPU, cublas-auto), so it only pays for workloads with many sizes each seen a few times.
+     * (each new plan compiles kernels and uploads weights). The extra rows are copies of row 0, each
+     * alone in its group, and their outputs are dropped. Off by default: the padding rows are real work
+     * on every call of a size that is not a power of two, so it only pays for workloads with many sizes
+     * each seen a few times.
      */
     private final boolean rowBuckets = "pow2".equals(Options.choice("tirex.tornado.rowBuckets", "off", "off", "pow2"));
 
@@ -573,7 +569,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             b.noOut = noOut;
 
             // The whole forward pass is one task graph (input stage, the blocks, output stage). It has
-            // more than 256 tasks and 8 KiB of bytecode, which needs TornadoVM 7.1.0 or newer.
+            // more than 256 tasks and 8 KiB of bytecode.
             TaskGraph g = b.begin("in");
             g.transferToDevice(DataTransferMode.FIRST_EXECUTION, shared);
             g.transferToDevice(DataTransferMode.EVERY_EXECUTION, perCall.toArray());

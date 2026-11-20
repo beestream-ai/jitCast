@@ -33,8 +33,8 @@ import ai.beestream.jitcast.tirex2.tornado.TornadoForward;
 import ai.beestream.jitcast.util.Json;
 
 /**
- * One cold-start measurement of the TornadoVM engine, the counterpart of
- * {@code bench_nxai.py coldstart}: a single series of 2048 steps, horizon 64. It appends one JSON
+ * One cold-start measurement of the TornadoVM engine, the counterpart of the reference engine's
+ * cold-start measurement: a single series of 2048 steps, horizon 64. It appends one JSON
  * line with the checkpoints (all in ms):
  *
  * <ul>
@@ -55,7 +55,7 @@ public final class TiRexColdStart {
         Map<String, String> a = TiRexBench.parse(args);
         long jvmStart = ManagementFactory.getRuntimeMXBean().getStartTime();
 
-        TornadoForward.tornadoDefaults();
+        ai.beestream.jitcast.tornado.Devices.defaults();
         long t0 = System.nanoTime();
         uk.ac.manchester.tornado.api.runtime.TornadoRuntimeProvider.getTornadoRuntime().getDefaultDevice().getDeviceName();
         long t1 = System.nanoTime();

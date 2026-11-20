@@ -12,7 +12,7 @@ covariates, cross-learning across a batch, and any horizon.
 |---|---|
 | Architecture | T5-style encoder over 16-step patches: time attention with RoPE along each series, group attention across a group's series at each patch, ReLU feed-forward layers, RMSNorm; a `[REG]` token and one token per forecast patch; residual-MLP patch embedding and quantile head |
 | Checkpoints | `amazon/chronos-2` (120M, 21 quantiles), `autogluon/chronos-2-small` (28M, 13 quantiles), loaded as published |
-| Validated | both checkpoints on CPU, Metal, OpenCL and CUDA |
+| Validated | both checkpoints on CPU, CUDA, and Metal and OpenCL on Apple Silicon (not yet on NVIDIA's OpenCL) |
 | Engines | `chronos2.tornado.TornadoChronos2Engine` (TornadoVM), `chronos2.cpu.CpuChronos2Engine` (FP32 reference) |
 
 ## Quick start

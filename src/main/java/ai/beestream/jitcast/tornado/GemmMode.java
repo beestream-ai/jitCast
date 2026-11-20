@@ -40,11 +40,6 @@ import uk.ac.manchester.tornado.api.runtime.TornadoRuntimeProvider;
 public enum GemmMode {
     AUTO, TILED, BLOCKED, HALF, SIMDGROUP, CUBLAS, CUBLAS_TF32, CUBLAS_FP16;
 
-    /** Parses {@code tiled}, {@code cublas-fp16} and so on. */
-    public static GemmMode parse(String v) {
-        return ai.beestream.jitcast.util.Options.parseEnum("gemm", v, GemmMode.class);
-    }
-
     /** {@code AUTO} made concrete for a device; a mode the device cannot run fails here, not in the first plan. */
     public GemmMode resolve(TornadoDevice device) {
         TornadoVMBackendType backend = device.getTornadoVMBackend();

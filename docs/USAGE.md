@@ -44,9 +44,9 @@ $JITCAST -Djitcast.tornado.device=1:0 -Dtimestral.tornado.gemm=cublas-fp16 my.Ap
 
 ## Benchmark tools
 
-Each model has a tool that times end-to-end `forecast()` on a workload file written by the
-reference side in the jitCast-benchmarking repository,
-which also holds the method and results.
+Each model has a tool that times end-to-end `forecast()` on a workload file: a safetensors file of
+input series, written by the reference engine's side of a comparison so both engines time the same
+inputs.
 
 ```bash
 $JITCAST ai.beestream.jitcast.bench.TiRexBench --weights tirex2.safetensors \
@@ -62,7 +62,11 @@ $JITCAST ai.beestream.jitcast.bench.Chronos2Bench --checkpoint chronos-2 \
 |---|---|
 | `TiRexBench` | `--engine tornado\|cpu`, `--scenarios`, `--batches`, `--mv-batches`, `--covariates`, `--horizon` (64), `--reps` (30), `--warmup` (5), `--budget` (3 s), `--max-batch` (1024), `--config` |
 | `TimestralBench`, `Chronos2Bench` | `--engine tornado\|cpu`, `--scenarios`, `--reps` (20), `--warmup` (3), `--budget` (5 s) |
-| `TiRexColdStart` | `--weights`, `--workloads`, `--out`; set `BENCH_EXEC_START_NS` to the launch time |
+| `TiRexColdStart` | `--weights`, `--workloads`, `--out`, `--config` and `--cache` (labels written to the record); set `BENCH_EXEC_START_NS` to the launch time |
+| `PlanMemoryProbe` | `--weights`, `--rows` (8,16,…,64), `--rounds` (2), `--plans` (1): device and off-heap memory as TiRex-2 plans are built and evicted |
+
+`TiRexBench` keeps one compiled plan, whatever `tirex.tornado.plans` says: each point times one batch
+shape.
 
 ### Harness servers
 

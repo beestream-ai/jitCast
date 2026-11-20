@@ -21,8 +21,7 @@
 # PYTHON picks the interpreter (default python3.11), TORCH_INDEX the PyTorch wheel index (default CUDA 13.0),
 # TIREX_REF the tirex-2 tag or commit (default v0.4.0). Triton builds a C helper, so the interpreter needs its
 # development headers (a uv-managed Python has them).
-# Re-runnable: each step skips work that is already done. Results land in <workdir>/results. NXAI's
-# speed baseline and the benchmark harnesses that take this work directory are in the jitCast-benchmarking repository.
+# Re-runnable: each step skips work that is already done. Results land in <workdir>/results.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -34,7 +33,6 @@ mkdir -p "$WORK/results"
 cd "$WORK"
 
 log() { echo "[$(date +%H:%M:%S)] $*"; }
-now_ns() { python3 -c 'import time; print(time.time_ns())'; }   # date +%s%N is GNU-only
 
 # 1. Environment ------------------------------------------------------------------------
 if [ ! -d venv ]; then

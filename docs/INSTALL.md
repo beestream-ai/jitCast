@@ -84,11 +84,6 @@ backend with the highest `-Dtornado.<backend>.priority` is numbered `0`.
   `-Dtornado.cuda.nvcc=<venv>/lib/python3.*/site-packages/nvidia/cu13/bin/nvcc`. The first run of
   each plan compiles its GEMMs with `tileiras`, which takes minutes; the CUDA code cache serves later
   runs.
-- **cuBLAS 13 on Blackwell, TornadoVM 7.3.1 and earlier.** These load `libcublas.so.12` first; a CUDA
-  12.0 cuBLAS installed next to CUDA 13 then runs generic kernels on sm_120. Point `LD_LIBRARY_PATH`
-  at a directory where `lib{cublas,cublasLt,cudart}.so.12` link to the CUDA 13 libraries
-  (`mkdir -p shim && for l in cublas cublasLt cudart; do ln -sf $CUDA_HOME/lib64/lib$l.so.13 shim/lib$l.so.12; done`).
-  TornadoVM 8 needs no shim.
 
 ## Build jitcast
 

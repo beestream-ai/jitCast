@@ -145,6 +145,15 @@ public final class TimestralPipeline {
     }
 
     /**
+     * {@return the same pipeline with another batch size}
+     *
+     * @param series the most series per forward pass
+     */
+    public TimestralPipeline withBatchSize(int series) {
+        return new TimestralPipeline(config, forward, options, series, maxTokens);
+    }
+
+    /**
      * {@return the same pipeline with another token budget per forward pass}
      *
      * @param tokens the most tokens per forward pass

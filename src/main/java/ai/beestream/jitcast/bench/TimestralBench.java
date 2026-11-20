@@ -35,8 +35,8 @@ import ai.beestream.jitcast.timestral.tornado.TornadoTimestralEngine;
 import ai.beestream.jitcast.util.Json;
 
 /**
- * End-to-end Timestral forecast latency on the scenarios jitCast-benchmarking's {@code scripts/timestral/bench_reference.py
- * workloads} writes, the same inputs the reference is timed on:
+ * End-to-end Timestral forecast latency on the scenarios of a workload file, the same inputs the
+ * reference engine is timed on:
  *
  * <pre>
  * java ... ai.beestream.jitcast.bench.TimestralBench --checkpoint Timestral-5M --workloads workloads.safetensors \

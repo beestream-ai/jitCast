@@ -34,8 +34,8 @@ import ai.beestream.jitcast.io.Tensor;
 import ai.beestream.jitcast.util.Json;
 
 /**
- * End-to-end Chronos-2 forecast latency on the scenarios jitCast-benchmarking's {@code scripts/chronos2/bench_reference.py
- * workloads} writes, the same inputs the reference is timed on:
+ * End-to-end Chronos-2 forecast latency on the scenarios of a workload file, the same inputs the
+ * reference engine is timed on:
  *
  * <pre>
  * java ... ai.beestream.jitcast.bench.Chronos2Bench --checkpoint chronos-2-small --workloads workloads.safetensors \

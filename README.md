@@ -25,14 +25,13 @@ calibration, test-time augmentation) in Java, the forward pass on the GPU.
 | [**Timestral**](docs/models/TIMESTRAL.md) | [Mistral AI](https://huggingface.co/mistralai/Timestral-5M) | 5M, 28M, 123M, 209M (transformer) | 21 quantiles, any horizon | univariate, multivariate, past and known-future covariates, categorical covariates |
 | [**Chronos-2**](docs/models/CHRONOS2.md) | [Amazon](https://huggingface.co/amazon/chronos-2) | 28M, 120M (T5-style encoder) | 13 or 21 quantiles, any horizon | univariate, multivariate, past and known-future covariates, cross-learning |
 
-- **Portable.** Every kernel is a TornadoVM `KernelContext` kernel: one code base for CUDA, OpenCL
-  and Metal.
+- **Portable.** Every kernel is a TornadoVM `KernelContext` kernel, apart from one optional CUDA
+  Tile GEMM: one code base for CUDA, OpenCL and Metal.
 - **Uses the vendor libraries where they exist.** On NVIDIA, GEMMs can run on cuBLAS (FP32, TF32 or
   FP16 tensor cores) and each forward pass replays as a CUDA graph; on Apple GPUs, on the simdgroup
   matrix units.
 - **Checked against the references.** Every stage of every model is tested against the reference
-  engine's own activations, on every backend. Validation and benchmarks live in a separate
-  repository, jitCast-benchmarking.
+  engine's own activations, on every platform in [Where it runs](#where-it-runs) marked validated.
 
 ## Architecture
 

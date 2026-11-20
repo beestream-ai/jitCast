@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package ai.beestream.jitcast.tirex2.cpu;
+package ai.beestream.jitcast.tirex2.tornado;
 
 import static ai.beestream.jitcast.tornado.KernelHarness.NO_TWIN;
 import static ai.beestream.jitcast.tornado.KernelHarness.check;
@@ -27,7 +27,9 @@ import static ai.beestream.jitcast.tornado.KernelHarness.run;
 import java.util.Random;
 
 import ai.beestream.jitcast.cpu.Ops;
-import ai.beestream.jitcast.tirex2.tornado.TiRexKernels;
+import ai.beestream.jitcast.tirex2.cpu.Cells;
+import ai.beestream.jitcast.tirex2.cpu.InputStage;
+import ai.beestream.jitcast.tirex2.cpu.TiRexOps;
 import ai.beestream.jitcast.tornado.Kernels;
 import org.junit.Test;
 

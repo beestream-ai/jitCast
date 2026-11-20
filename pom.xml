@@ -31,17 +31,23 @@
         <jdk.version.suffix>-jdk22plus</jdk.version.suffix>
         <tornadovm.version>8.1.0${jdk.version.suffix}</tornadovm.version>
         <maven.compiler.release>22</maven.compiler.release>
-        <!-- Golden-data tests skip unless both are set: the converted weights
-             (scripts/convert_ckpt.py) and a golden directory (scripts/dump_golden.py). The device tests
-             of reduced-precision configurations also need NXAI's CUDA goldens (dump_golden.py with device cuda),
-             whose distance from the FP32 goldens sets their limits. -->
+        <!-- Golden-data tests skip unless their model's paths are set (see docs/USAGE.md#tests).
+             TiRex-2: the converted weights (scripts/convert_ckpt.py) and a golden directory
+             (scripts/dump_golden.py); the device tests of reduced-precision configurations also need NXAI's
+             CUDA goldens (dump_golden.py with device cuda), whose distance from the FP32 goldens sets their
+             limits. Timestral and Chronos-2: a checkpoint directory and a golden directory
+             (scripts/timestral/dump_golden.py, scripts/chronos2/dump_golden.py). -->
         <tirex.weights></tirex.weights>
         <tirex.golden></tirex.golden>
         <tirex.golden.gpu></tirex.golden.gpu>
+        <timestral.checkpoint></timestral.checkpoint>
+        <timestral.golden></timestral.golden>
+        <chronos2.checkpoint></chronos2.checkpoint>
+        <chronos2.golden></chronos2.golden>
     </properties>
 
     <dependencies>
-        <!-- Provided: the TornadoVM SDK supplies these at runtime (as in jitllm, issue #176). -->
+        <!-- Provided: the TornadoVM SDK supplies these at run time. -->
         <dependency>
             <groupId>io.github.beehive-lab</groupId>
             <artifactId>tornado-api</artifactId>
@@ -70,7 +76,7 @@
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.13.0</version>
             </plugin>
-            <!-- Default tests need no accelerator; *AccelTest runs under -Paccel-tests, as in jitllm. -->
+            <!-- Default tests need no accelerator; *AccelTest runs under -Paccel-tests. -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>

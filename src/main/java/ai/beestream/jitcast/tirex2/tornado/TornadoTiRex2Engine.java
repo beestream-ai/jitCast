@@ -23,6 +23,7 @@ import ai.beestream.jitcast.api.Forecast;
 import ai.beestream.jitcast.api.ForecastEngine;
 import ai.beestream.jitcast.api.TimeSeries;
 import ai.beestream.jitcast.tirex2.ForecastPipeline;
+import ai.beestream.jitcast.tirex2.TiRex2Config;
 import ai.beestream.jitcast.tirex2.TiRex2Weights;
 
 /**
@@ -74,6 +75,11 @@ public final class TornadoTiRex2Engine implements ForecastEngine {
     /** {@return the device forward pass under the pipeline, for benchmarks and tests} */
     public TornadoForward forwardPass() {
         return forward;
+    }
+
+    /** {@return the checkpoint's configuration} */
+    public TiRex2Config config() {
+        return weights.config();
     }
 
     /**

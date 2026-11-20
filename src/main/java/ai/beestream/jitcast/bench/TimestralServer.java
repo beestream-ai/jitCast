@@ -40,7 +40,7 @@ import ai.beestream.jitcast.timestral.tornado.TornadoTimestralEngine;
 
 /**
  * Serves Timestral's {@code forecast()} to Python over a local socket, so benchmark harnesses
- * (jitCast-benchmarking's {@code scripts/timestral/fev_eval.py}) can score jitcast with their own data loading and metrics.
+ * (such as fev-bench and GIFT-Eval) can score jitcast with their own data loading and metrics.
  *
  * <p>Protocol, little-endian, one request at a time:
  * <pre>

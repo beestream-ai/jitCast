@@ -23,6 +23,7 @@ import ai.beestream.jitcast.api.Forecast;
 import ai.beestream.jitcast.api.ForecastEngine;
 import ai.beestream.jitcast.api.TimeSeries;
 import ai.beestream.jitcast.tirex2.ForecastPipeline;
+import ai.beestream.jitcast.tirex2.TiRex2Config;
 import ai.beestream.jitcast.tirex2.TiRex2Weights;
 
 /** The FP32 CPU reference as a complete forecasting engine. */
@@ -64,6 +65,11 @@ public final class CpuTiRex2Engine implements ForecastEngine {
             }
             throw e;
         }
+    }
+
+    /** {@return the checkpoint's configuration} */
+    public TiRex2Config config() {
+        return weights.config();
     }
 
     /**

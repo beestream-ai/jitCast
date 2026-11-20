@@ -46,7 +46,7 @@ public final class TimestralGolden {
 
     private static Path required(String property) {
         String v = System.getProperty(property);
-        assumeTrue("-D" + property + " not set", v != null && !v.isBlank() && !v.startsWith("${"));
+        assumeTrue("-D" + property + " not set", v != null && !v.isBlank());
         Path p = Path.of(v);
         assumeTrue(p + " does not exist", Files.exists(p));
         return p;

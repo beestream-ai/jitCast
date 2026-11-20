@@ -20,7 +20,8 @@ Each model family reproduces its reference engine's `forecast()` end to end, wit
   oracle the device kernels are tested against.
 
 Every kernel is a TornadoVM `KernelContext` kernel (no `@Parallel` loops) with an explicit worker
-grid and bounds checks, so one code base runs on CUDA, OpenCL and Metal.
+grid and bounds checks, so one code base runs on CUDA, OpenCL and Metal. The one exception is
+`Kernels.gemmHalfTile`, the optional CUDA-only FP16 GEMM written with the Tile API.
 
 ## Java layout (`ai.beestream.jitcast`)
 
@@ -58,14 +59,13 @@ The Timestral port is the template. Validate each step before the next:
    floor), forward-call inputs bit for bit, forecasts within 1e-4.
 5. **TornadoVM engine**: shared kernels first, then the family's own; a device test against the
    goldens and a large mixed batch against the CPU reference, on Metal, OpenCL and CUDA.
-6. **Docs**: a page in `docs/models/`, and the family's sections in the shared docs. Benchmarks go to
-   the jitCast-benchmarking repository.
+6. **Docs**: a page in `docs/models/`, and the family's sections in the shared docs.
 
 ## Tests
 
 `./mvnw test` runs the CPU tests; `-Paccel-tests` adds the device tests (`*AccelTest`). Golden tests
 read their paths from system properties and are skipped without them; see [USAGE.md](USAGE.md#tests).
-CI builds, runs the CPU tests and builds the API reference on every push.
+CI builds, runs the CPU tests and builds the API reference on every pull request and every push to `main`.
 
 ## API reference
 
