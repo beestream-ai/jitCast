@@ -49,13 +49,14 @@ public final class TimesFmKernels {
 
     /**
      * In place on the {@code q|k|v} projections ({@code [tokens, 3·d]}): RoPE on q and k at each patch's
-     * position (its index minus the row's leading padding), rotating each head's first half against its
+     * position (its index plus {@code off[0]}, the patches already decoded, minus the row's leading padding),
+     * rotating each head's first half against its
      * second; then RMSNorm of each head's q and k with their scales; then q times the per-dimension
      * query scale. One work-group of {@link #ROPE_THREADS} per (token, head): thread {@code i < hd/2}
      * rotates pair {@code i} of q, thread {@code hd/2 + i} pair {@code i} of k.
      */
     public static void ropeNorm(KernelContext ctx, FloatArray qkv, FloatArray w, int qNorm, int kNorm, int qScale, int invTs,
-            IntArray masked, int rows, int n, int heads, int hd, int d, float eps) {
+            IntArray masked, IntArray off, int rows, int n, int heads, int hd, int d, float eps) {
         if (ctx.groupIdx < rows * n * heads) {
             int th = ctx.groupIdx;
             int head = th % heads;
@@ -72,7 +73,7 @@ public final class TimesFmKernels {
             float na = 0f;
             float nb = 0f;
             if (active) {
-                float pos = (float) (tok - r * n - masked.get(r));
+                float pos = (float) (tok - r * n + off.get(0) - masked.get(r));
                 float ang = pos * w.get(invTs + i);
                 float c = TornadoMath.cos(ang);
                 float s = TornadoMath.sin(ang);
@@ -210,6 +211,122 @@ public final class TimesFmKernels {
                     float v = t >= m ? acc[qi * ATTN_HEAD_DIM + dd] / den[qi] : 0f;
                     out.set((row0 + t) * d + head * hd + dd, v);
                 }
+            }
+        }
+    }
+
+    /**
+     * Writes the keys and values of {@code n} new patches per row ({@code [rows · n, 3·d]}) into layer
+     * {@code layer} of the caches ({@code [layers, rows, cap, d]}) at patch {@code off[0]}.
+     */
+    public static void cacheWrite(KernelContext ctx, FloatArray qkv, FloatArray kc, FloatArray vc, IntArray off, int layer,
+            int rows, int n, int cap, int d) {
+        int id = ctx.globalIdx;
+        if (id < rows * n * d) {
+            int c = id % d;
+            int tok = id / d;
+            int r = tok / n;
+            int j = tok - r * n;
+            int dst = ((layer * rows + r) * cap + off.get(0) + j) * d + c;
+            kc.set(dst, qkv.get(tok * 3 * d + d + c));
+            vc.set(dst, qkv.get(tok * 3 * d + 2 * d + c));
+        }
+    }
+
+    /**
+     * {@link #causalAttention} for {@code n ≤ }{@link #ATTN_QUERIES} new patches per row, whose keys and
+     * values (and those of every earlier patch) are in layer {@code layer} of the caches: query {@code j}
+     * sits at position {@code off[0] + j} and attends to the cached patches from the row's leading padding
+     * up to itself. One work-group of {@link #ATTN_THREADS} per (row, head).
+     */
+    public static void cachedAttention(KernelContext ctx, FloatArray qkv, FloatArray kc, FloatArray vc, FloatArray out,
+            IntArray masked, IntArray off, int layer, int rows, int n, int cap, int heads, int hd, int d) {
+        if (ctx.groupIdx < rows * heads) {
+            int head = ctx.groupIdx % heads;
+            int r = ctx.groupIdx / heads;
+            int tid = ctx.localIdx;
+            float[] qs = ctx.allocateFloatLocalArray(ATTN_QUERIES * ATTN_HEAD_DIM);
+            float[] ks = ctx.allocateFloatLocalArray(ATTN_KEYS * ATTN_HEAD_DIM);
+            float[] vs = ctx.allocateFloatLocalArray(ATTN_KEYS * ATTN_HEAD_DIM);
+            float[] sc = ctx.allocateFloatLocalArray(ATTN_QUERIES * ATTN_KEYS);
+            float[] acc = ctx.allocateFloatLocalArray(ATTN_QUERIES * ATTN_HEAD_DIM);
+            float[] mx = ctx.allocateFloatLocalArray(ATTN_QUERIES);
+            float[] den = ctx.allocateFloatLocalArray(ATTN_QUERIES);
+            float[] alpha = ctx.allocateFloatLocalArray(ATTN_QUERIES);
+            int m = masked.get(r);
+            int start = off.get(0);
+            int cacheRow = (layer * rows + r) * cap;
+            for (int e = tid; e < ATTN_QUERIES * hd; e += ATTN_THREADS) {
+                int qi = e / hd;
+                int dd = e - qi * hd;
+                qs[qi * ATTN_HEAD_DIM + dd] = qi < n ? qkv.get((r * n + qi) * 3 * d + head * hd + dd) : 0f;
+                acc[qi * ATTN_HEAD_DIM + dd] = 0f;
+            }
+            if (tid < ATTN_QUERIES) {
+                mx[tid] = -3.0e38f;
+                den[tid] = 0f;
+            }
+            ctx.localBarrier();
+            int last = start + n;
+            for (int k0 = m; k0 < last; k0 += ATTN_KEYS) {
+                for (int e = tid; e < ATTN_KEYS * hd; e += ATTN_THREADS) {
+                    int kj = e / hd;
+                    int dd = e - kj * hd;
+                    int key = k0 + kj;
+                    boolean ok = key < last;
+                    ks[kj * ATTN_HEAD_DIM + dd] = ok ? kc.get((cacheRow + key) * d + head * hd + dd) : 0f;
+                    vs[kj * ATTN_HEAD_DIM + dd] = ok ? vc.get((cacheRow + key) * d + head * hd + dd) : 0f;
+                }
+                ctx.localBarrier();
+                for (int e = tid; e < ATTN_QUERIES * ATTN_KEYS; e += ATTN_THREADS) {
+                    int qi = e / ATTN_KEYS;
+                    int kj = e - qi * ATTN_KEYS;
+                    int key = k0 + kj;
+                    float s = -3.0e38f;
+                    if (qi < n && key <= start + qi) {
+                        float dot = 0f;
+                        for (int dd = 0; dd < hd; dd++) {
+                            dot += qs[qi * ATTN_HEAD_DIM + dd] * ks[kj * ATTN_HEAD_DIM + dd];
+                        }
+                        s = dot;
+                    }
+                    sc[e] = s;
+                }
+                ctx.localBarrier();
+                if (tid < ATTN_QUERIES) {
+                    float old = mx[tid];
+                    float nm = old;
+                    for (int kj = 0; kj < ATTN_KEYS; kj++) {
+                        nm = TornadoMath.max(nm, sc[tid * ATTN_KEYS + kj]);
+                    }
+                    float sum = 0f;
+                    for (int kj = 0; kj < ATTN_KEYS; kj++) {
+                        float s = sc[tid * ATTN_KEYS + kj];
+                        float pr = s > -1.0e38f ? TornadoMath.exp(s - nm) : 0f;
+                        sc[tid * ATTN_KEYS + kj] = pr;
+                        sum += pr;
+                    }
+                    float a = old > -1.0e38f ? TornadoMath.exp(old - nm) : 0f;
+                    alpha[tid] = a;
+                    den[tid] = den[tid] * a + sum;
+                    mx[tid] = nm;
+                }
+                ctx.localBarrier();
+                for (int e = tid; e < ATTN_QUERIES * hd; e += ATTN_THREADS) {
+                    int qi = e / hd;
+                    int dd = e - qi * hd;
+                    float o = acc[qi * ATTN_HEAD_DIM + dd] * alpha[qi];
+                    for (int kj = 0; kj < ATTN_KEYS; kj++) {
+                        o += sc[qi * ATTN_KEYS + kj] * vs[kj * ATTN_HEAD_DIM + dd];
+                    }
+                    acc[qi * ATTN_HEAD_DIM + dd] = o;
+                }
+                ctx.localBarrier();
+            }
+            for (int e = tid; e < n * hd; e += ATTN_THREADS) {
+                int qi = e / hd;
+                int dd = e - qi * hd;
+                out.set((r * n + qi) * d + head * hd + dd, acc[qi * ATTN_HEAD_DIM + dd] / den[qi]);
             }
         }
     }

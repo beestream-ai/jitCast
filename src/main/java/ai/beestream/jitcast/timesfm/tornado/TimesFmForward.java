@@ -17,6 +17,7 @@ package ai.beestream.jitcast.timesfm.tornado;
 
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -96,10 +97,12 @@ public final class TimesFmForward implements PatchForward {
      * One compiled shape.
      *
      * @param rows the sequences
-     * @param patches the patches per sequence
+     * @param patches the patches per sequence (the prefill's, when decoding)
      * @param spread whether the continuous quantile head runs
+     * @param steps the decoding steps after the prefill; with any, the plan keeps every layer's keys and
+     *     values on the device and has a second task graph that runs one step
      */
-    public record Shape(int rows, int patches, boolean spread) {}
+    public record Shape(int rows, int patches, boolean spread, int steps) {}
 
     private final TimesFmConfig config;
     private final TimesFmPacked weights;
@@ -151,11 +154,39 @@ public final class TimesFmForward implements PatchForward {
 
     @Override
     public Heads forward(Batch batch) {
-        if (batch.patches() > TimesFmKernels.ATTN_MAX_KEYS) {
-            throw new IllegalArgumentException("at most " + TimesFmKernels.ATTN_MAX_KEYS + " patches, got " + batch.patches());
+        check(batch.patches());
+        Shape shape = new Shape(batch.rows(), batch.patches(), batch.spread(), 0);
+        return plans.run(shape, Plan::new, plan -> plan.prefill(batch));
+    }
+
+    /**
+     * Decodes with a key-value cache: the prefill writes every layer's keys and values to the device, and
+     * each step runs only its new patches, attending to the cached ones. One plan per (rows, prefill
+     * patches, steps) serves every step.
+     */
+    @Override
+    public List<Heads> decode(Batch prefill, int steps, Feeder feeder) {
+        if (steps == 0) {
+            return List.of(forward(prefill));
         }
-        Shape shape = new Shape(batch.rows(), batch.patches(), batch.spread());
-        return plans.run(shape, Plan::new, plan -> plan.run(batch));
+        check(prefill.patches() + steps * config.patchesPerOutput());
+        Shape shape = new Shape(prefill.rows(), prefill.patches(), prefill.spread(), steps);
+        return plans.run(shape, Plan::new, plan -> {
+            List<Heads> out = new ArrayList<>();
+            Heads h = plan.prefill(prefill);
+            out.add(h);
+            for (int s = 0; s < steps; s++) {
+                h = plan.step(feeder.next(h, s), prefill.patches() + s * config.patchesPerOutput());
+                out.add(h);
+            }
+            return out;
+        });
+    }
+
+    private static void check(int patches) {
+        if (patches > TimesFmKernels.ATTN_MAX_KEYS) {
+            throw new IllegalArgumentException("at most " + TimesFmKernels.ATTN_MAX_KEYS + " patches, got " + patches);
+        }
     }
 
     @Override
@@ -169,79 +200,40 @@ public final class TimesFmForward implements PatchForward {
         return wg;
     }
 
-    /** The buffers and execution plan for one shape. */
+    /** The task graphs, caches and execution plan for one shape. */
     private final class Plan implements PlanCache.Plan {
         final Shape shape;
-        final FloatArray tok, x, hn, big, att, y, dec, hb, pt, sp;
-        final IntArray masked;
-        final HalfFloatArray noTwin = new HalfFloatArray(1);
-        FloatArray part;
-        final TornadoExecutionPlan exec;
+        final FloatArray w = weights.data();
+        final FloatArray kc, vc;
+        final int cap;
         final GridScheduler grid = new GridScheduler();
         final KernelContext ctx = new KernelContext();
-        final FloatArray w = weights.data();
-        TaskGraph g;
-        final Map<FloatArray, HalfFloatArray> halves = new IdentityHashMap<>();
-        final Set<FloatArray> fresh = Collections.newSetFromMap(new IdentityHashMap<>());
-        final Set<Object> graphWeights = Collections.newSetFromMap(new IdentityHashMap<>());
+        /** The weight buffers the prefill graph uploads, which the step graph takes from it. */
+        final Set<Object> prefillWeights = Collections.newSetFromMap(new IdentityHashMap<>());
+        final Graph pre;
+        final Graph step;
+        final TornadoExecutionPlan exec;
 
         Plan(Shape shape) {
             this.shape = shape;
-            TimesFmConfig c = config;
-            int rows = shape.rows(), n = shape.patches();
-            int d = c.hiddenSize(), ff = c.intermediateSize(), p = c.patchLength(), heads = c.numHeads(), hd = c.headDim();
-            int tokens = rows * n;
-            tok = new FloatArray(tokens * 2 * p);
-            x = new FloatArray(tokens * d);
-            hn = new FloatArray(tokens * d);
-            big = new FloatArray(tokens * Math.max(3 * d, ff));
-            att = new FloatArray(tokens * d);
-            y = new FloatArray(tokens * d);
-            dec = new FloatArray(rows * d);
-            hb = new FloatArray(rows * d);
-            pt = new FloatArray(rows * c.horizonLength() * c.outputs());
-            sp = new FloatArray(shape.spread() ? rows * c.quantileHorizonLength() * c.outputs() : 1);
-            masked = new IntArray(rows);
-
-            g = new TaskGraph(G);
-            g.transferToDevice(DataTransferMode.FIRST_EXECUTION, w, x, hn, big, att, y, dec, hb, pt, sp, noTwin);
-            g.transferToDevice(DataTransferMode.EVERY_EXECUTION, tok, masked);
-
-            residual("tok", tok, big, x, tokens, weights.tokenizer());
-            for (int li = 0; li < weights.layers().size(); li++) {
-                TimesFmPacked.Layer l = weights.layers().get(li);
-                String s = "l" + li + "_";
-                rms(s + "pa", x, hn, l.preAttn(), tokens);
-                gemm(s + "qkv", hn, l.qkv(), big, tokens, 0);
-                grid.addWorkerGrid(G + "." + s + "rope", group(tokens * heads * TimesFmKernels.ROPE_THREADS, TimesFmKernels.ROPE_THREADS));
-                g.task(s + "rope", TimesFmKernels::ropeNorm, ctx, big, w, l.qNorm(), l.kNorm(), l.qScale(), weights.invTimescale(), masked,
-                        rows, n, heads, hd, d, c.rmsNormEps());
-                written(big);
-                int tiles = (n + TimesFmKernels.ATTN_QUERIES - 1) / TimesFmKernels.ATTN_QUERIES;
-                grid.addWorkerGrid(G + "." + s + "attn", group(rows * heads * tiles * TimesFmKernels.ATTN_THREADS, TimesFmKernels.ATTN_THREADS));
-                g.task(s + "attn", TimesFmKernels::causalAttention, ctx, big, att, masked, rows, n, heads, hd, d);
-                written(att);
-                gemm(s + "o", att, l.out(), y, tokens, 0);
-                rms(s + "po", y, hn, l.postAttn(), tokens);
-                add(s + "ra", x, hn, tokens * d);
-                rms(s + "pf", x, hn, l.preFf(), tokens);
-                gemm(s + "ff0", hn, l.ff0(), big, tokens, Kernels.SILU);
-                gemm(s + "ff1", big, l.ff1(), y, tokens, 0);
-                rms(s + "pof", y, hn, l.postFf(), tokens);
-                add(s + "rf", x, hn, tokens * d);
+            int m = config.patchesPerOutput();
+            cap = shape.patches() + shape.steps() * m;
+            long cacheSize = shape.steps() > 0 ? (long) config.numLayers() * shape.rows() * cap * config.hiddenSize() : 1;
+            if (cacheSize > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("key-value cache of " + cacheSize + " floats is too large; use smaller batches");
             }
-            items("gather", rows * d);
-            g.task("gather", TimesFmKernels::gatherLast, ctx, x, dec, rows, n, d);
-            written(dec);
-            residual("pt", dec, hb, pt, rows, weights.pointHead());
-            if (shape.spread()) {
-                residual("sp", dec, hb, sp, rows, weights.quantileHead());
-                g.transferToHost(DataTransferMode.EVERY_EXECUTION, pt, sp);
+            kc = new FloatArray((int) cacheSize);
+            vc = new FloatArray((int) cacheSize);
+            pre = new Graph(G, shape.patches(), true, shape.spread(), shape.steps() > 0);
+            if (shape.steps() > 0) {
+                pre.g.persistOnDevice(prefillWeights.toArray());
+                pre.g.persistOnDevice(kc, vc);
+                step = new Graph(G + "d", m, false, false, true);
+                exec = new TornadoExecutionPlan(pre.g.snapshot(), step.g.snapshot());
             } else {
-                g.transferToHost(DataTransferMode.EVERY_EXECUTION, pt);
+                step = null;
+                exec = new TornadoExecutionPlan(pre.g.snapshot());
             }
-
-            exec = new TornadoExecutionPlan(g.snapshot());
             exec.withGridScheduler(grid);
             exec.withDevice(device);
             if (cudaGraph) {
@@ -252,185 +244,311 @@ public final class TimesFmForward implements PatchForward {
             }
         }
 
-        /** {@code output(SiLU(hidden(a))) + residual(a)}, with the hidden activation in {@code scratch}. */
-        void residual(String name, FloatArray a, FloatArray scratch, FloatArray out, int m, TimesFmPacked.Residual r) {
-            gemm(name + "_h", a, r.hidden(), scratch, m, Kernels.SILU);
-            gemm(name + "_o", scratch, r.output(), out, m, 0);
-            gemm(name + "_r", a, r.residual(), out, m, Kernels.ACCUMULATE);
-        }
-
-        void add(String name, FloatArray acc, FloatArray v, int count) {
-            items(name, count);
-            g.task(name, Kernels::addInPlace, ctx, acc, v, count);
-            written(acc);
-        }
-
-        /** {@code C = act(A·Wᵀ + b) (+ C)}, with the flags of {@link Kernels#gemm}, in the plan's GEMM mode. */
-        void gemm(String name, FloatArray a, TimesFmPacked.Lin l, FloatArray c, int m, int flags) {
-            if (gemmMode.cublas()) {
-                cublas(name, a, l, c, m, flags);
-                written(c);
-                return;
-            }
-            int f = flags | (l.b() >= 0 ? Kernels.BIAS : 0);
-            WorkerGrid wg;
-            if (gemmMode == GemmMode.SIMDGROUP) {
-                boolean wide = m >= simdgroupWideMinRows;
-                int t = wide ? Kernels.MMA_WIDE : Kernels.MMA_TILE;
-                int tiles = ((m + t - 1) / t) * ((l.out() + t - 1) / t);
-                wg = group(tiles * Kernels.MMA_THREADS, Kernels.MMA_THREADS);
-                int slices = wide ? splitK(tiles, l.in()) : 1;
-                if (slices > 1) {
-                    int kSlice = ((l.in() + slices - 1) / slices + Kernels.MMA_K - 1) / Kernels.MMA_K * Kernels.MMA_K;
-                    slices = (l.in() + kSlice - 1) / kSlice;
-                    FloatArray pa = partials();
-                    grid.addWorkerGrid(G + "." + name, group(slices * tiles * Kernels.MMA_THREADS, Kernels.MMA_THREADS));
-                    g.task(name, Kernels::gemmSimdgroupWide, ctx, a, 0, w, l.w(), 0, pa, m, l.out(), l.in(), 0, kSlice);
-                    items(name + "_sum", m * l.out());
-                    g.task(name + "_sum", Kernels::splitKSum, ctx, pa, slices, w, Math.max(l.b(), 0), c, m, l.out(), f);
-                    written(c);
-                    return;
-                }
-                if (wide) {
-                    g.task(name, Kernels::gemmSimdgroupWide, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, m, l.out(), l.in(), f, l.in());
-                } else {
-                    g.task(name, Kernels::gemmSimdgroup, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, m, l.out(), l.in(), f);
-                }
-            } else if (gemmMode == GemmMode.HALF) {
-                HalfFloatArray ah = half(name, a, m * l.in());
-                HalfFloatArray wh = halfWeight(l);
-                int t = Kernels.HGEMM_TILE, threads = Kernels.HGEMM_THREADS;
-                wg = new WorkerGrid2D((l.out() + t - 1) / t * threads, (m + t - 1) / t * threads);
-                wg.setLocalWork(threads, threads, 1);
-                g.task(name, Kernels::gemmHalf, ctx, ah, wh, c, w, Math.max(l.b(), 0), m, l.out(), l.in(), f, noTwin, 0);
-            } else if (gemmMode == GemmMode.BLOCKED && m >= blockedWideMinRows) {
-                int tr = Kernels.WIDE_ROWS, tc = Kernels.WIDE_COLS, threads = Kernels.HGEMM_THREADS;
-                wg = new WorkerGrid2D((l.out() + tc - 1) / tc * threads, (m + tr - 1) / tr * threads);
-                wg.setLocalWork(threads, threads, 1);
-                g.task(name, Kernels::gemmBlockedWide, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, 0, m, l.out(), l.in(), f);
-            } else if (gemmMode == GemmMode.BLOCKED && m >= blockedMinRows) {
-                int t = Kernels.HGEMM_TILE, threads = Kernels.HGEMM_THREADS;
-                wg = new WorkerGrid2D((l.out() + t - 1) / t * threads, (m + t - 1) / t * threads);
-                wg.setLocalWork(threads, threads, 1);
-                g.task(name, Kernels::gemmBlocked, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, 0, m, l.out(), l.in(), f);
+        Heads prefill(Batch b) {
+            pre.upload(b, 0);
+            if (step != null) {
+                exec.withGraph(0).execute();
             } else {
-                int tile = Kernels.TILE;
-                wg = new WorkerGrid2D((l.out() + tile - 1) / tile * tile, (m + tile - 1) / tile * tile);
-                wg.setLocalWork(tile, tile, 1);
-                g.task(name, Kernels::gemm, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, 0, m, l.out(), l.in(), f);
+                exec.execute();
             }
-            grid.addWorkerGrid(G + "." + name, wg);
-            written(c);
+            return pre.heads();
+        }
+
+        Heads step(Batch b, int start) {
+            step.upload(b, start);
+            exec.withGraph(1).execute();
+            return step.heads();
         }
 
         /**
-         * The GEMM in cuBLAS: row-major {@code C[m, n] = A[m, k]·W[n, k]ᵀ} as the column-major
-         * {@code gemm(T, N, n, m, k, W, k, A, k, C, n)}. A bias is written into C first (then β = 1), except
-         * before a SiLU, where one epilogue adds the bias and applies the SiLU after the GEMM.
+         * One task graph: the prefill over {@code n} patches per row (writing the cache when decoding), or a
+         * step over {@code n} new patches attending to the cache.
          */
-        private void cublas(String name, FloatArray a, TimesFmPacked.Lin l, FloatArray c, int m, int flags) {
-            int n = l.out(), k = l.in();
-            boolean bias = l.b() >= 0;
-            boolean acc = (flags & Kernels.ACCUMULATE) != 0;
-            boolean silu = (flags & Kernels.SILU) != 0;
-            if (silu && acc) {
-                throw new IllegalStateException("GEMM " + name + ": SiLU after accumulation is not supported");
-            }
-            if (bias && !silu) {
-                items(name + "_bias", m * n);
-                g.task(name + "_bias", Kernels::biasFill, ctx, c, w, l.b(), m, n, acc ? 1 : 0);
-            }
-            float beta = (bias && !silu) || acc ? 1f : 0f;
-            if (gemmMode == GemmMode.CUBLAS_FP16) {
-                HalfFloatArray ah = half(name, a, m * k);
-                HalfFloatArray wh = halfWeight(l);
-                g.libraryTask(name, CuBlas::cublasGemmExFP16FP32, 1, 0, n, m, k, 1f, wh, k, ah, k, beta, c, n);
-            } else {
-                FloatArray wm = weights.matrix(l);
-                if (graphWeights.add(wm)) {
-                    g.transferToDevice(DataTransferMode.FIRST_EXECUTION, wm);
+        private final class Graph {
+            final String name;
+            final int n;
+            final boolean first;
+            final boolean spread;
+            final TaskGraph g;
+            final FloatArray tok, x, hn, big, att, y, dec, hb, pt, sp;
+            final IntArray masked, off;
+            final HalfFloatArray noTwin = new HalfFloatArray(1);
+            FloatArray part;
+            final Map<FloatArray, HalfFloatArray> halves = new IdentityHashMap<>();
+            final Set<FloatArray> fresh = Collections.newSetFromMap(new IdentityHashMap<>());
+            final Set<Object> declared = Collections.newSetFromMap(new IdentityHashMap<>());
+
+            Graph(String name, int n, boolean first, boolean spread, boolean cache) {
+                this.name = name;
+                this.n = n;
+                this.first = first;
+                this.spread = spread;
+                TimesFmConfig c = config;
+                int rows = shape.rows();
+                int d = c.hiddenSize(), ff = c.intermediateSize(), p = c.patchLength(), heads = c.numHeads(), hd = c.headDim();
+                int tokens = rows * n;
+                tok = new FloatArray(tokens * 2 * p);
+                x = new FloatArray(tokens * d);
+                hn = new FloatArray(tokens * d);
+                big = new FloatArray(tokens * Math.max(3 * d, ff));
+                att = new FloatArray(tokens * d);
+                y = new FloatArray(tokens * d);
+                dec = new FloatArray(rows * d);
+                hb = new FloatArray(rows * d);
+                pt = new FloatArray(rows * c.horizonLength() * c.outputs());
+                sp = new FloatArray(spread ? rows * c.quantileHorizonLength() * c.outputs() : 1);
+                masked = new IntArray(rows);
+                off = new IntArray(1);
+
+                g = new TaskGraph(name);
+                weight(w);
+                g.transferToDevice(DataTransferMode.FIRST_EXECUTION, x, hn, big, att, y, dec, hb, pt, sp, noTwin);
+                g.transferToDevice(DataTransferMode.EVERY_EXECUTION, tok, masked, off);
+                if (!first) {
+                    g.consumeFromDevice(G, kc, vc);
+                } else if (cache) {
+                    g.transferToDevice(DataTransferMode.FIRST_EXECUTION, kc, vc);
                 }
-                if (gemmMode == GemmMode.CUBLAS_TF32) {
-                    g.libraryTask(name, CuBlas::cublasSgemmTF32, 1, 0, n, m, k, 1f, wm, k, a, k, beta, c, n);
+
+                residual("tok", tok, big, x, tokens, weights.tokenizer());
+                for (int li = 0; li < weights.layers().size(); li++) {
+                    TimesFmPacked.Layer l = weights.layers().get(li);
+                    String s = "l" + li + "_";
+                    rms(s + "pa", x, hn, l.preAttn(), tokens);
+                    gemm(s + "qkv", hn, l.qkv(), big, tokens, 0);
+                    grid.addWorkerGrid(name + "." + s + "rope", group(tokens * heads * TimesFmKernels.ROPE_THREADS, TimesFmKernels.ROPE_THREADS));
+                    g.task(s + "rope", TimesFmKernels::ropeNorm, ctx, big, w, l.qNorm(), l.kNorm(), l.qScale(), weights.invTimescale(),
+                            masked, off, rows, n, heads, hd, d, c.rmsNormEps());
+                    written(big);
+                    if (cache) {
+                        items(s + "kv", tokens * d);
+                        g.task(s + "kv", TimesFmKernels::cacheWrite, ctx, big, kc, vc, off, li, rows, n, cap, d);
+                    }
+                    if (first) {
+                        int tiles = (n + TimesFmKernels.ATTN_QUERIES - 1) / TimesFmKernels.ATTN_QUERIES;
+                        grid.addWorkerGrid(name + "." + s + "attn", group(rows * heads * tiles * TimesFmKernels.ATTN_THREADS,
+                                TimesFmKernels.ATTN_THREADS));
+                        g.task(s + "attn", TimesFmKernels::causalAttention, ctx, big, att, masked, rows, n, heads, hd, d);
+                    } else {
+                        grid.addWorkerGrid(name + "." + s + "attn", group(rows * heads * TimesFmKernels.ATTN_THREADS, TimesFmKernels.ATTN_THREADS));
+                        g.task(s + "attn", TimesFmKernels::cachedAttention, ctx, big, kc, vc, att, masked, off, li, rows, n, cap, heads, hd, d);
+                    }
+                    written(att);
+                    gemm(s + "o", att, l.out(), y, tokens, 0);
+                    rms(s + "po", y, hn, l.postAttn(), tokens);
+                    add(s + "ra", x, hn, tokens * d);
+                    rms(s + "pf", x, hn, l.preFf(), tokens);
+                    gemm(s + "ff0", hn, l.ff0(), big, tokens, Kernels.SILU);
+                    gemm(s + "ff1", big, l.ff1(), y, tokens, 0);
+                    rms(s + "pof", y, hn, l.postFf(), tokens);
+                    add(s + "rf", x, hn, tokens * d);
+                }
+                items("gather", rows * d);
+                g.task("gather", TimesFmKernels::gatherLast, ctx, x, dec, rows, n, d);
+                written(dec);
+                residual("pt", dec, hb, pt, rows, weights.pointHead());
+                if (spread) {
+                    residual("sp", dec, hb, sp, rows, weights.quantileHead());
+                    g.transferToHost(DataTransferMode.EVERY_EXECUTION, pt, sp);
                 } else {
-                    g.libraryTask(name, CuBlas::cublasSgemm, 1, 0, n, m, k, 1f, wm, k, a, k, beta, c, n);
+                    g.transferToHost(DataTransferMode.EVERY_EXECUTION, pt);
                 }
             }
-            if (silu) {
-                items(name + "_silu", m * n);
-                g.task(name + "_silu", Kernels::biasSilu, ctx, c, w, bias ? l.b() : -1, m, n, noTwin, 0);
-            }
-        }
 
-        private HalfFloatArray half(String name, FloatArray a, int count) {
-            HalfFloatArray h = halves.get(a);
-            if (h == null) {
-                h = new HalfFloatArray(a.getSize());
-                halves.put(a, h);
-                g.transferToDevice(DataTransferMode.FIRST_EXECUTION, h);
-            }
-            if (fresh.add(a)) {
-                items(name + "_h", count);
-                g.task(name + "_h", Kernels::toHalf, ctx, a, h, count);
-            }
-            return h;
-        }
-
-        private HalfFloatArray halfWeight(TimesFmPacked.Lin l) {
-            HalfFloatArray wh = weights.halfMatrix(l);
-            if (graphWeights.add(wh)) {
-                g.transferToDevice(DataTransferMode.FIRST_EXECUTION, wh);
-            }
-            return wh;
-        }
-
-        private FloatArray partials() {
-            if (part == null) {
-                part = new FloatArray(2 * splitKTarget * Kernels.MMA_WIDE * Kernels.MMA_WIDE);
-                g.transferToDevice(DataTransferMode.FIRST_EXECUTION, part);
-            }
-            return part;
-        }
-
-        private void written(FloatArray buf) {
-            fresh.remove(buf);
-        }
-
-        void rms(String name, FloatArray in, FloatArray out, int wOff, int rows) {
-            grid.addWorkerGrid(G + "." + name, group(rows * Kernels.NORM_THREADS, Kernels.NORM_THREADS));
-            g.task(name, Kernels::rmsNorm, ctx, in, out, w, wOff, config.hiddenSize(), config.rmsNormEps(), noTwin, 0, rows);
-            written(out);
-        }
-
-        void items(String task, int count) {
-            grid.addWorkerGrid(G + "." + task, group((count + ITEM_GROUP - 1) / ITEM_GROUP * ITEM_GROUP, ITEM_GROUP));
-        }
-
-        /** Uploads one pass's tokens and padding counts, runs the graph, returns the heads. */
-        Heads run(Batch b) {
-            int rows = shape.rows(), n = shape.patches(), p = config.patchLength();
-            float[] t = new float[rows * n * 2 * p];
-            for (int i = 0; i < rows * n; i++) {
-                System.arraycopy(b.values(), i * p, t, i * 2 * p, p);
-                System.arraycopy(b.masks(), i * p, t, i * 2 * p + p, p);
-            }
-            MemorySegment.copy(t, 0, tok.getSegment(), ValueLayout.JAVA_FLOAT, 0, t.length);
-            for (int r = 0; r < rows; r++) {
-                int m = 0;
-                while (m < n && b.masks()[((r * n + m) + 1) * p - 1] > 0.5f) {
-                    m++;
+            /** A weight buffer: uploaded once by the prefill graph, taken from it by the step graph. */
+            private void weight(Object buf) {
+                if (!declared.add(buf)) {
+                    return;
                 }
-                masked.set(r, m);
+                if (first) {
+                    g.transferToDevice(DataTransferMode.FIRST_EXECUTION, buf);
+                    prefillWeights.add(buf);
+                } else if (prefillWeights.contains(buf)) {
+                    g.consumeFromDevice(G, buf);
+                } else {
+                    g.transferToDevice(DataTransferMode.FIRST_EXECUTION, buf);
+                }
             }
-            exec.execute();
-            float[] point = new float[pt.getSize()];
-            MemorySegment.copy(pt.getSegment(), ValueLayout.JAVA_FLOAT, 0, point, 0, point.length);
-            float[] spread = null;
-            if (shape.spread()) {
-                spread = new float[sp.getSize()];
-                MemorySegment.copy(sp.getSegment(), ValueLayout.JAVA_FLOAT, 0, spread, 0, spread.length);
+
+            void residual(String task, FloatArray a, FloatArray scratch, FloatArray out, int m, TimesFmPacked.Residual r) {
+                gemm(task + "_h", a, r.hidden(), scratch, m, Kernels.SILU);
+                gemm(task + "_o", scratch, r.output(), out, m, 0);
+                gemm(task + "_r", a, r.residual(), out, m, Kernels.ACCUMULATE);
             }
-            return new Heads(point, spread);
+
+            void add(String task, FloatArray acc, FloatArray v, int count) {
+                items(task, count);
+                g.task(task, Kernels::addInPlace, ctx, acc, v, count);
+                written(acc);
+            }
+
+            /** {@code C = act(A·Wᵀ + b) (+ C)}, with the flags of {@link Kernels#gemm}, in the plan's GEMM mode. */
+            void gemm(String task, FloatArray a, TimesFmPacked.Lin l, FloatArray c, int m, int flags) {
+                if (gemmMode.cublas()) {
+                    cublas(task, a, l, c, m, flags);
+                    written(c);
+                    return;
+                }
+                int f = flags | (l.b() >= 0 ? Kernels.BIAS : 0);
+                WorkerGrid wg;
+                if (gemmMode == GemmMode.SIMDGROUP) {
+                    boolean wide = m >= simdgroupWideMinRows;
+                    int t = wide ? Kernels.MMA_WIDE : Kernels.MMA_TILE;
+                    int tiles = ((m + t - 1) / t) * ((l.out() + t - 1) / t);
+                    wg = group(tiles * Kernels.MMA_THREADS, Kernels.MMA_THREADS);
+                    int slices = wide ? splitK(tiles, l.in()) : 1;
+                    if (slices > 1) {
+                        int kSlice = ((l.in() + slices - 1) / slices + Kernels.MMA_K - 1) / Kernels.MMA_K * Kernels.MMA_K;
+                        slices = (l.in() + kSlice - 1) / kSlice;
+                        FloatArray pa = partials();
+                        grid.addWorkerGrid(name + "." + task, group(slices * tiles * Kernels.MMA_THREADS, Kernels.MMA_THREADS));
+                        g.task(task, Kernels::gemmSimdgroupWide, ctx, a, 0, w, l.w(), 0, pa, m, l.out(), l.in(), 0, kSlice);
+                        items(task + "_sum", m * l.out());
+                        g.task(task + "_sum", Kernels::splitKSum, ctx, pa, slices, w, Math.max(l.b(), 0), c, m, l.out(), f);
+                        written(c);
+                        return;
+                    }
+                    if (wide) {
+                        g.task(task, Kernels::gemmSimdgroupWide, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, m, l.out(), l.in(), f, l.in());
+                    } else {
+                        g.task(task, Kernels::gemmSimdgroup, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, m, l.out(), l.in(), f);
+                    }
+                } else if (gemmMode == GemmMode.HALF) {
+                    HalfFloatArray ah = half(task, a, m * l.in());
+                    HalfFloatArray wh = weights.halfMatrix(l);
+                    weight(wh);
+                    int t = Kernels.HGEMM_TILE, threads = Kernels.HGEMM_THREADS;
+                    wg = new WorkerGrid2D((l.out() + t - 1) / t * threads, (m + t - 1) / t * threads);
+                    wg.setLocalWork(threads, threads, 1);
+                    g.task(task, Kernels::gemmHalf, ctx, ah, wh, c, w, Math.max(l.b(), 0), m, l.out(), l.in(), f, noTwin, 0);
+                } else if (gemmMode == GemmMode.BLOCKED && m >= blockedWideMinRows) {
+                    int tr = Kernels.WIDE_ROWS, tc = Kernels.WIDE_COLS, threads = Kernels.HGEMM_THREADS;
+                    wg = new WorkerGrid2D((l.out() + tc - 1) / tc * threads, (m + tr - 1) / tr * threads);
+                    wg.setLocalWork(threads, threads, 1);
+                    g.task(task, Kernels::gemmBlockedWide, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, 0, m, l.out(), l.in(), f);
+                } else if (gemmMode == GemmMode.BLOCKED && m >= blockedMinRows) {
+                    int t = Kernels.HGEMM_TILE, threads = Kernels.HGEMM_THREADS;
+                    wg = new WorkerGrid2D((l.out() + t - 1) / t * threads, (m + t - 1) / t * threads);
+                    wg.setLocalWork(threads, threads, 1);
+                    g.task(task, Kernels::gemmBlocked, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, 0, m, l.out(), l.in(), f);
+                } else {
+                    int tile = Kernels.TILE;
+                    wg = new WorkerGrid2D((l.out() + tile - 1) / tile * tile, (m + tile - 1) / tile * tile);
+                    wg.setLocalWork(tile, tile, 1);
+                    g.task(task, Kernels::gemm, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, 0, m, l.out(), l.in(), f);
+                }
+                grid.addWorkerGrid(name + "." + task, wg);
+                written(c);
+            }
+
+            /**
+             * The GEMM in cuBLAS: row-major {@code C[m, n] = A[m, k]·W[n, k]ᵀ} as the column-major
+             * {@code gemm(T, N, n, m, k, W, k, A, k, C, n)}. A bias is written into C first (then β = 1),
+             * except before a SiLU, where one epilogue adds the bias and applies the SiLU after the GEMM.
+             */
+            private void cublas(String task, FloatArray a, TimesFmPacked.Lin l, FloatArray c, int m, int flags) {
+                int nOut = l.out(), k = l.in();
+                boolean bias = l.b() >= 0;
+                boolean acc = (flags & Kernels.ACCUMULATE) != 0;
+                boolean silu = (flags & Kernels.SILU) != 0;
+                if (silu && acc) {
+                    throw new IllegalStateException("GEMM " + task + ": SiLU after accumulation is not supported");
+                }
+                if (bias && !silu) {
+                    items(task + "_bias", m * nOut);
+                    g.task(task + "_bias", Kernels::biasFill, ctx, c, w, l.b(), m, nOut, acc ? 1 : 0);
+                }
+                float beta = (bias && !silu) || acc ? 1f : 0f;
+                if (gemmMode == GemmMode.CUBLAS_FP16) {
+                    HalfFloatArray ah = half(task, a, m * k);
+                    HalfFloatArray wh = weights.halfMatrix(l);
+                    weight(wh);
+                    g.libraryTask(task, CuBlas::cublasGemmExFP16FP32, 1, 0, nOut, m, k, 1f, wh, k, ah, k, beta, c, nOut);
+                } else {
+                    FloatArray wm = weights.matrix(l);
+                    weight(wm);
+                    if (gemmMode == GemmMode.CUBLAS_TF32) {
+                        g.libraryTask(task, CuBlas::cublasSgemmTF32, 1, 0, nOut, m, k, 1f, wm, k, a, k, beta, c, nOut);
+                    } else {
+                        g.libraryTask(task, CuBlas::cublasSgemm, 1, 0, nOut, m, k, 1f, wm, k, a, k, beta, c, nOut);
+                    }
+                }
+                if (silu) {
+                    items(task + "_silu", m * nOut);
+                    g.task(task + "_silu", Kernels::biasSilu, ctx, c, w, bias ? l.b() : -1, m, nOut, noTwin, 0);
+                }
+            }
+
+            private HalfFloatArray half(String task, FloatArray a, int count) {
+                HalfFloatArray h = halves.get(a);
+                if (h == null) {
+                    h = new HalfFloatArray(a.getSize());
+                    halves.put(a, h);
+                    g.transferToDevice(DataTransferMode.FIRST_EXECUTION, h);
+                }
+                if (fresh.add(a)) {
+                    items(task + "_h", count);
+                    g.task(task + "_h", Kernels::toHalf, ctx, a, h, count);
+                }
+                return h;
+            }
+
+            private FloatArray partials() {
+                if (part == null) {
+                    part = new FloatArray(2 * splitKTarget * Kernels.MMA_WIDE * Kernels.MMA_WIDE);
+                    g.transferToDevice(DataTransferMode.FIRST_EXECUTION, part);
+                }
+                return part;
+            }
+
+            private void written(FloatArray buf) {
+                fresh.remove(buf);
+            }
+
+            void rms(String task, FloatArray in, FloatArray out, int wOff, int rows) {
+                grid.addWorkerGrid(name + "." + task, group(rows * Kernels.NORM_THREADS, Kernels.NORM_THREADS));
+                g.task(task, Kernels::rmsNorm, ctx, in, out, w, wOff, config.hiddenSize(), config.rmsNormEps(), noTwin, 0, rows);
+                written(out);
+            }
+
+            void items(String task, int count) {
+                grid.addWorkerGrid(name + "." + task, group((count + ITEM_GROUP - 1) / ITEM_GROUP * ITEM_GROUP, ITEM_GROUP));
+            }
+
+            /** Uploads one run's tokens, padding counts and cache offset. */
+            void upload(Batch b, int start) {
+                int rows = shape.rows(), p = config.patchLength();
+                float[] t = new float[rows * n * 2 * p];
+                for (int i = 0; i < rows * n; i++) {
+                    System.arraycopy(b.values(), i * p, t, i * 2 * p, p);
+                    System.arraycopy(b.masks(), i * p, t, i * 2 * p + p, p);
+                }
+                MemorySegment.copy(t, 0, tok.getSegment(), ValueLayout.JAVA_FLOAT, 0, t.length);
+                if (first) {
+                    for (int r = 0; r < rows; r++) {
+                        int mk = 0;
+                        while (mk < n && b.masks()[((r * n + mk) + 1) * p - 1] > 0.5f) {
+                            mk++;
+                        }
+                        masked.set(r, mk);
+                        if (step != null) {
+                            step.masked.set(r, mk);
+                        }
+                    }
+                }
+                off.set(0, start);
+            }
+
+            Heads heads() {
+                float[] point = new float[pt.getSize()];
+                MemorySegment.copy(pt.getSegment(), ValueLayout.JAVA_FLOAT, 0, point, 0, point.length);
+                float[] s = null;
+                if (spread) {
+                    s = new float[sp.getSize()];
+                    MemorySegment.copy(sp.getSegment(), ValueLayout.JAVA_FLOAT, 0, s, 0, s.length);
+                }
+                return new Heads(point, s);
+            }
         }
 
         @Override

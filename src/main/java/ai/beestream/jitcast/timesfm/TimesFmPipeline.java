@@ -433,56 +433,63 @@ public final class TimesFmPipeline {
             lastMu[r] = (float) stats[r].mu;
             lastSigma[r] = (float) stats[r].sigma;
         }
-        PatchForward.Heads h = forward.forward(new PatchForward.Batch(rows, patches, compact(values, rows, total, patches, p),
-                compact(mask, rows, total, patches, p), true));
+        // the statistics each run's last patch is renormalized with: the prefill's, then each step's
+        float[][] runMu = new float[steps + 1][], runSigma = new float[steps + 1][];
+        runMu[0] = lastMu.clone();
+        runSigma[0] = lastSigma.clone();
+        PatchForward.Feeder feeder = (prevHeads, step) -> {
+            float[] fedValues = new float[rows * m * p], fedMasks = new float[rows * m * p];
+            for (int r = 0; r < rows; r++) {
+                float s = safe(runSigma[step][r]);
+                for (int j = 0; j < m; j++) {
+                    int src = j * p;
+                    float[] fed = new float[p];
+                    for (int i = 0; i < p; i++) {
+                        fed[i] = prevHeads.point()[(r * o + src + i) * q + TimesFmConfig.MEDIAN_OUTPUT] * s + runMu[step][r];
+                    }
+                    stats[r].add(fed, 0, null, p);
+                    float mu = (float) stats[r].mu, sd = safe((float) stats[r].sigma);
+                    for (int i = 0; i < p; i++) {
+                        fedValues[(r * m + j) * p + i] = (fed[i] - mu) / sd;
+                    }
+                }
+            }
+            runMu[step + 1] = new float[rows];
+            runSigma[step + 1] = new float[rows];
+            for (int r = 0; r < rows; r++) {
+                runMu[step + 1][r] = (float) stats[r].mu;
+                runSigma[step + 1][r] = (float) stats[r].sigma;
+            }
+            return new PatchForward.Batch(rows, m, fedValues, fedMasks, false);
+        };
+        List<PatchForward.Heads> runs = forward.decode(new PatchForward.Batch(rows, patches, compact(values, rows, total, patches, p),
+                compact(mask, rows, total, patches, p), true), steps, feeder);
+        PatchForward.Heads h = runs.get(0);
         float[][][] last = new float[rows][o][q], spread = new float[rows][qs][q];
         for (int r = 0; r < rows; r++) {
-            float s = safe(lastSigma[r]);
+            float s = safe(runSigma[0][r]);
             for (int t = 0; t < o; t++) {
                 for (int k = 0; k < q; k++) {
-                    last[r][t][k] = h.point()[(r * o + t) * q + k] * s + lastMu[r];
+                    last[r][t][k] = h.point()[(r * o + t) * q + k] * s + runMu[0][r];
                 }
             }
             for (int t = 0; t < qs; t++) {
                 for (int k = 0; k < q; k++) {
-                    spread[r][t][k] = h.spread()[(r * qs + t) * q + k] * s + lastMu[r];
+                    spread[r][t][k] = h.spread()[(r * qs + t) * q + k] * s + runMu[0][r];
                 }
             }
         }
-        float[][][][] ar = new float[rows][steps][][];
-        float[][][] prev = last;
+        float[][][][] ar = new float[rows][steps][o][q];
         for (int step = 0; step < steps; step++) {
-            int seq = patches + (step + 1) * m;
+            PatchForward.Heads hs = runs.get(step + 1);
             for (int r = 0; r < rows; r++) {
-                float[] fed = new float[o];
-                for (int t = 0; t < o; t++) {
-                    fed[t] = prev[r][t][TimesFmConfig.MEDIAN_OUTPUT];
-                }
-                for (int j = 0; j < m; j++) {
-                    stats[r].add(fed, j * p, null, p);
-                    float mu = (float) stats[r].mu, s = safe((float) stats[r].sigma);
-                    int dst = (r * total + patches + step * m + j) * p;
-                    for (int i = 0; i < p; i++) {
-                        values[dst + i] = (fed[j * p + i] - mu) / s;
-                        mask[dst + i] = 0f;
-                    }
-                }
-                lastMu[r] = (float) stats[r].mu;
-                lastSigma[r] = (float) stats[r].sigma;
-            }
-            PatchForward.Heads hs = forward.forward(new PatchForward.Batch(rows, seq, compact(values, rows, total, seq, p),
-                    compact(mask, rows, total, seq, p), false));
-            float[][][] cur = new float[rows][o][q];
-            for (int r = 0; r < rows; r++) {
-                float s = safe(lastSigma[r]);
+                float s = safe(runSigma[step + 1][r]);
                 for (int t = 0; t < o; t++) {
                     for (int k = 0; k < q; k++) {
-                        cur[r][t][k] = hs.point()[(r * o + t) * q + k] * s + lastMu[r];
+                        ar[r][step][t][k] = hs.point()[(r * o + t) * q + k] * s + runMu[step + 1][r];
                     }
                 }
-                ar[r][step] = cur[r];
             }
-            prev = cur;
         }
         return new Decoded(last, spread, ar);
     }
