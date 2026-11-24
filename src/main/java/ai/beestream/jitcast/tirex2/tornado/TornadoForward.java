@@ -31,6 +31,7 @@ import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import ai.beestream.jitcast.tornado.Devices;
 import ai.beestream.jitcast.tornado.PlanCache;
+import ai.beestream.jitcast.tornado.SharedWeights;
 import ai.beestream.jitcast.util.Options;
 import uk.ac.manchester.tornado.api.TornadoExecutionPlan;
 import uk.ac.manchester.tornado.api.WorkerGrid;
@@ -261,7 +262,21 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         }
         this.config = config;
         this.weights = weights;
-        this.plans = new PlanCache<>(Math.max(1, maxCachedPlans), Options.bytes("tirex.tornado.planBytes", Devices.memory(), 1));
+        long weightBytes = SharedWeights.estimate(weights.data().getNumBytesOfSegment(),
+                gemmMode == GemmMode.CUBLAS || gemmMode == GemmMode.CUBLAS_TF32 || gemmMode == GemmMode.CUBLAS_AUTO,
+                gemmMode == GemmMode.CUBLAS_FP16 || gemmMode == GemmMode.CUBLAS_AUTO || gemmMode == GemmMode.HALF || gemmMode == GemmMode.CUTILE);
+        this.plans = new PlanCache<>(Math.max(1, maxCachedPlans),
+                Options.bytes("tirex.tornado.planBytes", Math.max(1, Devices.memory() - weightBytes), 1));
+    }
+
+    /** The one device copy of the weights every plan consumes, made on first use. */
+    private SharedWeights shared;
+
+    private synchronized SharedWeights shared() {
+        if (shared == null) {
+            shared = new SharedWeights(G, device());
+        }
+        return shared;
     }
 
     /**
@@ -450,7 +465,15 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
 
     @Override
     public void close() {
-        plans.close();
+        try {
+            plans.close();
+        } finally {
+            synchronized (this) {
+                if (shared != null) {
+                    shared.close();
+                }
+            }
+        }
     }
 
     /** The buffers and execution plan for one shape. */
@@ -469,6 +492,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         final IntArray known, kept, groupStart, groupEnd, keptTarget;
         final TornadoExecutionPlan exec;
         final GridScheduler grid;
+        List<Object> weightBuffers = List.of();
 
         Plan(Shape shape) {
             this.shape = shape;
@@ -529,7 +553,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             GridScheduler grid = new GridScheduler();
             List<Object> sharedList = new ArrayList<>();
             java.util.Set<Object> listed = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
-            for (Object o : new Object[] {w, x, present, tok, stats, h, n, cell, proj, big, y, out, noOut}) {
+            for (Object o : new Object[] {x, present, tok, stats, h, n, cell, proj, big, y, out, noOut}) {
                 if (listed.add(o)) {
                     sharedList.add(o);
                 }
@@ -637,6 +661,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             b.end(true);
 
             this.grid = grid;
+            this.weightBuffers = b.weightBuffers;
             exec = new TornadoExecutionPlan(b.graph);
             exec.withDevice(device());
             if (cudaGraph) {
@@ -736,7 +761,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
                 if (halfRecurrent) {
                     uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray rh = weights.recurrentHalf();
                     if (b.graphWeights.add(rh)) {
-                        b.g.transferToDevice(DataTransferMode.FIRST_EXECUTION, rh);
+                        b.weightBuffers.add(rh);
                     }
                     if (inRegisters) {
                         b.g.task(s + "slstm", TiRexKernels::slstmRecurrenceRegR, b.ctx, big, b.w, rh,
@@ -830,7 +855,8 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
 
         @Override
         public long deviceBytes() {
-            return exec.getCurrentDeviceMemoryUsage();
+            // TornadoVM counts the consumed weights in every plan; they are on the device once
+            return Math.max(0, exec.getCurrentDeviceMemoryUsage() - SharedWeights.size(weightBuffers));
         }
 
         @Override
@@ -879,9 +905,13 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             this.grid = grid;
             this.ctx = ctx;
             this.w = w;
+            graphWeights.add(w);
+            weightBuffers.add(w);
         }
 
         final java.util.Set<Object> graphWeights = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        /** The weight buffers the graph reads, consumed from the shared copy once it is built. */
+        final List<Object> weightBuffers = new ArrayList<>();
 
         /** Starts a stage (the input stage, a block, the output stage) of the plan's one task graph. */
         TaskGraph begin(String stage) {
@@ -894,6 +924,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         /** Ends a stage; after the last one the graph is complete. */
         void end(boolean last) {
             if (last) {
+                shared().consume(g, weightBuffers);
                 graph = g.snapshot();
             }
         }
@@ -1009,7 +1040,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
             }
             FloatArray wm = half ? null : weights.matrix(l);
             if (wm != null && graphWeights.add(wm)) {
-                g.transferToDevice(DataTransferMode.FIRST_EXECUTION, wm);
+                weightBuffers.add(wm);
             }
             // SiLU without accumulation: the GEMM writes C (β = 0) and one epilogue adds the bias,
             // applies SiLU and writes the FP16 twin
@@ -1054,7 +1085,7 @@ public final class TornadoForward implements ForwardPass, AutoCloseable {
         private uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray halfWeight(PackedWeights.Lin l) {
             uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray wh = weights.halfMatrix(l);
             if (graphWeights.add(wh)) {
-                g.transferToDevice(DataTransferMode.FIRST_EXECUTION, wh);
+                weightBuffers.add(wh);
             }
             return wh;
         }

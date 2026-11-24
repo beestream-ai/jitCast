@@ -39,6 +39,7 @@ import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import ai.beestream.jitcast.tornado.Devices;
 import ai.beestream.jitcast.tornado.PlanCache;
+import ai.beestream.jitcast.tornado.SharedWeights;
 import ai.beestream.jitcast.util.Options;
 import uk.ac.manchester.tornado.api.TornadoExecutionPlan;
 import uk.ac.manchester.tornado.api.WorkerGrid;
@@ -115,6 +116,8 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
      */
     private final PlanCache<Shape, Plan> plans;
     private final TornadoDevice device = Devices.device();
+    /** The one device copy of the weights every plan consumes. */
+    private final SharedWeights shared = new SharedWeights(G, device);
     private final GemmMode gemmMode;
     private final boolean cudaGraph;
 
@@ -129,8 +132,11 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
         this.config = config;
         this.weights = weights;
         this.invFreq = CpuChronos2.inverseFrequencies(config);
-        this.plans = new PlanCache<>(Math.max(1, maxCachedPlans), Options.bytes("chronos2.tornado.planBytes", Devices.memory(), 1));
         this.gemmMode = Options.enumeration("chronos2.tornado.gemm", GemmMode.AUTO, GemmMode.class).resolve(device);
+        long weightBytes = SharedWeights.estimate(weights.data().getNumBytesOfSegment(),
+                gemmMode == GemmMode.CUBLAS || gemmMode == GemmMode.CUBLAS_TF32, gemmMode == GemmMode.CUBLAS_FP16 || gemmMode == GemmMode.HALF);
+        this.plans = new PlanCache<>(Math.max(1, maxCachedPlans),
+                Options.bytes("chronos2.tornado.planBytes", Math.max(1, Devices.memory() - weightBytes), 1));
         this.cudaGraph = Options.bool("chronos2.tornado.cudaGraph", gemmMode.cublas());
     }
 
@@ -195,7 +201,11 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
 
     @Override
     public void close() {
-        plans.close();
+        try {
+            plans.close();
+        } finally {
+            shared.close();
+        }
     }
 
     private static WorkerGrid group(int global, int local) {
@@ -221,6 +231,8 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
         final Set<FloatArray> fresh = Collections.newSetFromMap(new IdentityHashMap<>());
         /** The per-matrix weight copies already added to the graph. */
         final Set<Object> graphWeights = Collections.newSetFromMap(new IdentityHashMap<>());
+        /** The weight buffers the graph reads, consumed from {@link #shared}. */
+        final List<Object> weightBuffers = new ArrayList<>();
 
         Plan(Shape shape) {
             this.shape = shape;
@@ -245,7 +257,8 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
             groupEnd = new IntArray(rows);
 
             g = new TaskGraph(G);
-            g.transferToDevice(DataTransferMode.FIRST_EXECUTION, w, emb, x, hn, big, att, y, dec, raw, noTwin);
+            weightBuffers.add(w);
+            g.transferToDevice(DataTransferMode.FIRST_EXECUTION, emb, x, hn, big, att, y, dec, raw, noTwin);
             g.transferToDevice(DataTransferMode.EVERY_EXECUTION, tok, table, live, groupStart, groupEnd);
 
             residual("emb", tok, big, emb, embTokens, weights.inputEmbedding());
@@ -291,6 +304,7 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
             residual("out", dec, big, raw, futTokens, weights.outputEmbedding());
             g.transferToHost(DataTransferMode.EVERY_EXECUTION, raw);
 
+            shared.consume(g, weightBuffers);
             exec = new TornadoExecutionPlan(g.snapshot());
             exec.withGridScheduler(grid);
             exec.withDevice(device);
@@ -394,7 +408,7 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
             } else {
                 FloatArray wm = weights.matrix(l);
                 if (graphWeights.add(wm)) {
-                    g.transferToDevice(DataTransferMode.FIRST_EXECUTION, wm);
+                    weightBuffers.add(wm);
                 }
                 if (gemmMode == GemmMode.CUBLAS_TF32) {
                     g.libraryTask(name, CuBlas::cublasSgemmTF32, 1, 0, n, m, k, 1f, wm, k, a, k, beta, c, n);
@@ -426,7 +440,7 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
         private HalfFloatArray halfWeight(Chronos2Packed.Lin l) {
             HalfFloatArray wh = weights.halfMatrix(l);
             if (graphWeights.add(wh)) {
-                g.transferToDevice(DataTransferMode.FIRST_EXECUTION, wh);
+                weightBuffers.add(wh);
             }
             return wh;
         }
@@ -495,7 +509,8 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
 
         @Override
         public long deviceBytes() {
-            return exec.getCurrentDeviceMemoryUsage();
+            // TornadoVM counts the consumed weights in every plan; they are on the device once
+            return Math.max(0, exec.getCurrentDeviceMemoryUsage() - SharedWeights.size(weightBuffers));
         }
 
         @Override

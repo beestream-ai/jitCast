@@ -50,11 +50,12 @@ For every platform and model:
 
 ### Compiled plans
 
-Each model compiles one plan per input shape and keeps the most recently used. TornadoVM gives every
-plan its own device buffers, weights included, so a plan's footprint is its weights plus its
-activations. The cache keeps at most `<model>.tornado.plans` plans (8) within `<model>.tornado.planBytes`
-of device memory (default `tornado.device.memory`), measured after each plan's first run, and evicts
-the least recently used first. A plan larger than the budget still runs, alone. A plan whose first run
+Each model compiles one plan per input shape and keeps the most recently used. The weights are on the
+device once per engine: producer plans upload them, and every shape's plan reads them from there
+(TornadoVM 8.2.0's buffers shared across execution plans), so a plan's footprint is its activations.
+The cache keeps at most `<model>.tornado.plans` plans (8) within `<model>.tornado.planBytes` of device
+memory (default: `tornado.device.memory` minus the weights), measured after each plan's first run, and
+evicts the least recently used first. A plan larger than the budget still runs, alone. A plan whose first run
 fails is dropped; if others were cached, they are evicted and the plan is retried once.
 
 ## Vendor libraries and CUDA features
@@ -83,7 +84,7 @@ fails is dropped; if others were cached, they are evicted and the plan is retrie
 | `tirex.tornado.cudaGraph` | `true` with `cublas*` / `cutile` | Replay each plan as a CUDA graph |
 | `tirex.tornado.ffnHalf` | `true` | FP16 modes: keep FFN intermediates in FP16 only (about 15% less plan memory) |
 | `tirex.tornado.plans` | `8` | Shapes kept compiled (rows, known covariates, rows in multi-row groups) |
-| `tirex.tornado.planBytes` | `tornado.device.memory` | Device memory the cached plans may hold together |
+| `tirex.tornado.planBytes` | `tornado.device.memory` minus the weights | Device memory the cached plans' activations may hold together |
 | `tirex.maxTokens` | `131072` | Most tokens (rows × patches) per forward pass; bounds plan memory. `TiRexBench` ignores it unless set |
 | `tirex.tornado.profile` | `false` | Print per-task kernel times after every run (analysis only) |
 | `tirex.tornado.memReport` | `false` | Print each plan's buffers when it is built |
@@ -131,7 +132,7 @@ CUDA). The fused sLSTM norm kernel needs 512 threads and is skipped on smaller d
 | `timestral.tornado.attentionScoreBytes` | `536870912` | Most memory the cuBLAS attention scores take at once; larger blocks run in chunks |
 | `timestral.tornado.buckets` | `true` | Pad blocks to shared shapes so few plans compile; forecasts unchanged |
 | `timestral.tornado.plans` | `8` | Block shapes kept compiled |
-| `timestral.tornado.planBytes` | `tornado.device.memory` | Device memory the cached plans may hold together |
+| `timestral.tornado.planBytes` | `tornado.device.memory` minus the weights | Device memory the cached plans' activations may hold together |
 | `timestral.maxTokens` | `131072` | Most tokens (rows × patches) per forward pass |
 | `timestral.tornado.profile`, `timestral.timing` | `false` | Print kernel times, or host and device phase times (analysis only; `timing` is read once per JVM) |
 
@@ -147,7 +148,7 @@ fed-back median threshold, sign-flip averaging, non-negative clipping), with the
 | `chronos2.tornado.blockedMinRows`, `wideMinRows`, `simdgroupWideMinRows`, `splitKTarget`, `splitKMax` | `128`, `1024`, `64`, `320`, `16` | As for Timestral |
 | `chronos2.tornado.cudaGraph` | `true` with cuBLAS | Replay each plan as a CUDA graph |
 | `chronos2.tornado.plans` | `8` | Shapes kept compiled (rows, context patches, output patches) |
-| `chronos2.tornado.planBytes` | `tornado.device.memory` | Device memory the cached plans may hold together |
+| `chronos2.tornado.planBytes` | `tornado.device.memory` minus the weights | Device memory the cached plans' activations may hold together |
 | `chronos2.maxTokens` | `131072` | Most tokens per forward pass, split between groups. A group is never split, so with cross-learning a batch can exceed it |
 | `chronos2.tornado.profile` | `false` | Print per-task kernel times (analysis only) |
 
@@ -162,7 +163,7 @@ quantile levels) with the reference's defaults; `withBatchSize` sets rows per ba
 | `timesfm.tornado.blockedMinRows`, `wideMinRows`, `simdgroupWideMinRows`, `splitKTarget`, `splitKMax` | `128`, `1024`, `64`, `320`, `16` | As for Timestral |
 | `timesfm.tornado.cudaGraph` | `true` with cuBLAS | Replay each plan as a CUDA graph |
 | `timesfm.tornado.plans` | `8` | Shapes kept compiled (rows, prefill patches, decoding steps); each holds the key-value cache of its decoding steps |
-| `timesfm.tornado.planBytes` | `tornado.device.memory` | Device memory the cached plans may hold together |
+| `timesfm.tornado.planBytes` | `tornado.device.memory` minus the weights | Device memory the cached plans' activations may hold together |
 | `timesfm.maxTokens` | `131072` | Most tokens (series × patches, including the fed-back patches) per forward pass |
 | `timesfm.tornado.profile` | `false` | Print per-task kernel times (analysis only) |
 

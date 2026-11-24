@@ -17,6 +17,7 @@ package ai.beestream.jitcast.timestral.tornado;
 
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
@@ -40,6 +41,7 @@ import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.TaskGraph;
 import ai.beestream.jitcast.tornado.Devices;
 import ai.beestream.jitcast.tornado.PlanCache;
+import ai.beestream.jitcast.tornado.SharedWeights;
 import ai.beestream.jitcast.util.Options;
 import uk.ac.manchester.tornado.api.TornadoExecutionPlan;
 import uk.ac.manchester.tornado.api.WorkerGrid;
@@ -138,6 +140,8 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
      */
     private final PlanCache<Shape, Plan> plans;
     private final TornadoDevice device = Devices.device();
+    /** The one device copy of the weights every plan consumes. */
+    private final SharedWeights shared = new SharedWeights(G, device);
     private final GemmMode gemmMode;
     /**
      * Time attention as cuBLAS batched GEMMs plus a masked softmax instead of
@@ -168,8 +172,11 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
         this.weights = weights;
         this.quantiles = new Quantiles(config);
         this.invFreq = CpuTimestral.inverseFrequencies(config);
-        this.plans = new PlanCache<>(Math.max(1, maxCachedPlans), Options.bytes("timestral.tornado.planBytes", Devices.memory(), 1));
         this.gemmMode = Options.enumeration("timestral.tornado.gemm", GemmMode.AUTO, GemmMode.class).resolve(device);
+        long weightBytes = SharedWeights.estimate(weights.data().getNumBytesOfSegment(),
+                gemmMode == GemmMode.CUBLAS || gemmMode == GemmMode.CUBLAS_TF32, gemmMode == GemmMode.CUBLAS_FP16 || gemmMode == GemmMode.HALF);
+        this.plans = new PlanCache<>(Math.max(1, maxCachedPlans),
+                Options.bytes("timestral.tornado.planBytes", Math.max(1, Devices.memory() - weightBytes), 1));
         this.cudaGraph = Options.bool("timestral.tornado.cudaGraph", gemmMode.cublas());
     }
 
@@ -268,7 +275,11 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
 
     @Override
     public void close() {
-        plans.close();
+        try {
+            plans.close();
+        } finally {
+            shared.close();
+        }
     }
 
     private static WorkerGrid group(int global, int local) {
@@ -294,6 +305,8 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
         final Set<FloatArray> fresh = Collections.newSetFromMap(new IdentityHashMap<>());
         /** The per-matrix weight copies already added to the graph. */
         final Set<Object> graphWeights = Collections.newSetFromMap(new IdentityHashMap<>());
+        /** The weight buffers the graph reads, consumed from {@link #shared}. */
+        final List<Object> weightBuffers = new ArrayList<>();
 
         Plan(Shape shape) {
             this.shape = shape;
@@ -321,7 +334,8 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
             role = new IntArray(rows);
 
             g = new TaskGraph(G);
-            g.transferToDevice(DataTransferMode.FIRST_EXECUTION, w, emb, x, hn, big, att, gate, act, y, dec, raw, noTwin);
+            weightBuffers.add(w);
+            g.transferToDevice(DataTransferMode.FIRST_EXECUTION, emb, x, hn, big, att, gate, act, y, dec, raw, noTwin);
             g.transferToDevice(DataTransferMode.EVERY_EXECUTION, tok, table, pos, keyValid, known, groupStart, groupEnd, role);
 
             residual("emb", tok, big, emb, encTokens, weights.embedding());
@@ -381,6 +395,7 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
             residual("head", dec, big, raw, decTokens, weights.head());
             g.transferToHost(DataTransferMode.EVERY_EXECUTION, raw);
 
+            shared.consume(g, weightBuffers);
             exec = new TornadoExecutionPlan(g.snapshot());
             exec.withGridScheduler(grid);
             exec.withDevice(device);
@@ -484,7 +499,7 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
             } else {
                 FloatArray wm = weights.matrix(l);
                 if (graphWeights.add(wm)) {
-                    g.transferToDevice(DataTransferMode.FIRST_EXECUTION, wm);
+                    weightBuffers.add(wm);
                 }
                 if (gemmMode == GemmMode.CUBLAS_TF32) {
                     g.libraryTask(name, CuBlas::cublasSgemmTF32, 1, 0, n, m, k, 1f, wm, k, a, k, beta, c, n);
@@ -557,7 +572,7 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
         private HalfFloatArray halfWeight(TimestralPacked.Lin l) {
             HalfFloatArray wh = weights.halfMatrix(l);
             if (graphWeights.add(wh)) {
-                g.transferToDevice(DataTransferMode.FIRST_EXECUTION, wh);
+                weightBuffers.add(wh);
             }
             return wh;
         }
@@ -643,7 +658,8 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
 
         @Override
         public long deviceBytes() {
-            return exec.getCurrentDeviceMemoryUsage();
+            // TornadoVM counts the consumed weights in every plan; they are on the device once
+            return Math.max(0, exec.getCurrentDeviceMemoryUsage() - SharedWeights.size(weightBuffers));
         }
 
         @Override

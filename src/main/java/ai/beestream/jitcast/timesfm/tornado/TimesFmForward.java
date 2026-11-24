@@ -30,6 +30,7 @@ import ai.beestream.jitcast.tornado.Devices;
 import ai.beestream.jitcast.tornado.GemmMode;
 import ai.beestream.jitcast.tornado.Kernels;
 import ai.beestream.jitcast.tornado.PlanCache;
+import ai.beestream.jitcast.tornado.SharedWeights;
 import ai.beestream.jitcast.util.Options;
 
 import uk.ac.manchester.tornado.api.GridScheduler;
@@ -108,6 +109,8 @@ public final class TimesFmForward implements PatchForward {
     private final TimesFmPacked weights;
     private final PlanCache<Shape, Plan> plans;
     private final TornadoDevice device = Devices.device();
+    /** The one device copy of the weights every plan consumes. */
+    private final SharedWeights shared = new SharedWeights(G, device);
     private final GemmMode gemmMode;
     private final boolean cudaGraph;
 
@@ -137,8 +140,11 @@ public final class TimesFmForward implements PatchForward {
         }
         this.config = config;
         this.weights = weights;
-        this.plans = new PlanCache<>(Math.max(1, maxCachedPlans), Options.bytes("timesfm.tornado.planBytes", Devices.memory(), 1));
         this.gemmMode = Options.enumeration("timesfm.tornado.gemm", GemmMode.AUTO, GemmMode.class).resolve(device);
+        long weightBytes = SharedWeights.estimate(weights.data().getNumBytesOfSegment(),
+                gemmMode == GemmMode.CUBLAS || gemmMode == GemmMode.CUBLAS_TF32, gemmMode == GemmMode.CUBLAS_FP16 || gemmMode == GemmMode.HALF);
+        this.plans = new PlanCache<>(Math.max(1, maxCachedPlans),
+                Options.bytes("timesfm.tornado.planBytes", Math.max(1, Devices.memory() - weightBytes), 1));
         this.cudaGraph = Options.bool("timesfm.tornado.cudaGraph", gemmMode.cublas());
     }
 
@@ -191,7 +197,11 @@ public final class TimesFmForward implements PatchForward {
 
     @Override
     public void close() {
-        plans.close();
+        try {
+            plans.close();
+        } finally {
+            shared.close();
+        }
     }
 
     private static WorkerGrid group(int global, int local) {
@@ -208,8 +218,8 @@ public final class TimesFmForward implements PatchForward {
         final int cap;
         final GridScheduler grid = new GridScheduler();
         final KernelContext ctx = new KernelContext();
-        /** The weight buffers the prefill graph uploads, which the step graph takes from it. */
-        final Set<Object> prefillWeights = Collections.newSetFromMap(new IdentityHashMap<>());
+        /** The weight buffers the plan's graphs read, consumed from {@link #shared}. */
+        final Set<Object> planWeights = Collections.newSetFromMap(new IdentityHashMap<>());
         final Graph pre;
         final Graph step;
         final TornadoExecutionPlan exec;
@@ -226,7 +236,6 @@ public final class TimesFmForward implements PatchForward {
             vc = new FloatArray((int) cacheSize);
             pre = new Graph(G, shape.patches(), true, shape.spread(), shape.steps() > 0);
             if (shape.steps() > 0) {
-                pre.g.persistOnDevice(prefillWeights.toArray());
                 pre.g.persistOnDevice(kc, vc);
                 step = new Graph(G + "d", m, false, false, true);
                 exec = new TornadoExecutionPlan(pre.g.snapshot(), step.g.snapshot());
@@ -353,20 +362,13 @@ public final class TimesFmForward implements PatchForward {
                 } else {
                     g.transferToHost(DataTransferMode.EVERY_EXECUTION, pt);
                 }
+                shared.consume(g, new ArrayList<>(declared));
             }
 
-            /** A weight buffer: uploaded once by the prefill graph, taken from it by the step graph. */
+            /** A weight buffer the graph reads, consumed from the shared copy once the graph is built. */
             private void weight(Object buf) {
-                if (!declared.add(buf)) {
-                    return;
-                }
-                if (first) {
-                    g.transferToDevice(DataTransferMode.FIRST_EXECUTION, buf);
-                    prefillWeights.add(buf);
-                } else if (prefillWeights.contains(buf)) {
-                    g.consumeFromDevice(G, buf);
-                } else {
-                    g.transferToDevice(DataTransferMode.FIRST_EXECUTION, buf);
+                if (declared.add(buf)) {
+                    planWeights.add(buf);
                 }
             }
 
@@ -553,7 +555,8 @@ public final class TimesFmForward implements PatchForward {
 
         @Override
         public long deviceBytes() {
-            return exec.getCurrentDeviceMemoryUsage();
+            // TornadoVM counts the consumed weights in every plan; they are on the device once
+            return Math.max(0, exec.getCurrentDeviceMemoryUsage() - SharedWeights.size(planWeights));
         }
 
         @Override

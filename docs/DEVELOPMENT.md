@@ -31,7 +31,7 @@ grid and bounds checks, so one code base runs on CUDA, OpenCL and Metal. The one
 | `io` | `SafeTensors` (memory-mapped reader), `Tensor` |
 | `host` | `SeriesWindows` (splits a call by series count and token budget), `SignFlip` |
 | `cpu` | `Ops`: shared FP32 operators (linear, RMSNorm, SiLU, ReLU, sigmoid) |
-| `tornado` | `Devices` (device, memory budget, TornadoVM defaults), `PlanCache`, `Kernels` (shared GEMMs, norms, epilogues; see [KERNELS.md](KERNELS.md)), `GemmMode` |
+| `tornado` | `Devices` (device, memory budget, TornadoVM defaults), `PlanCache`, `SharedWeights` (one device copy of an engine's weights for all its plans), `Kernels` (shared GEMMs, norms, epilogues; see [KERNELS.md](KERNELS.md)), `GemmMode` |
 | `util` | `Json`, `Options` (strict system-property readers) |
 | `bench` | `TiRexBench`, `TiRexColdStart`, `TiRexServer`, `PlanMemoryProbe`, `TimestralBench`, `TimestralServer`, `Chronos2Bench`, `Wire` (the servers' protocol) |
 | `tirex2` | `TiRex2Config`, `TiRex2Weights`, `ForecastPipeline`, `PostProcessor` (trend, differencing, band calibration), `ModelBatch`, `ForwardPass` |

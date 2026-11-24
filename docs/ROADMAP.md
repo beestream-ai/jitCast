@@ -21,9 +21,6 @@ Planned work on jitcast, and the TornadoVM limits that affect it today.
 - **One plan for every batch size.** Each new batch shape builds a plan (compilation, allocation,
   weight upload, CUDA graph capture). Allocating once for the largest batch and passing the row count
   at run time would remove the rebuilds.
-- **Weights shared across plans.** Every cached plan holds its own copy of the weights, which limits
-  how many large plans fit on a GPU. TornadoVM 8.2.0 lets a task graph consume device buffers another
-  execution plan persisted; one weights plan per model would remove the copies.
 - **One copy of the weights with cuBLAS.** cuBLAS tasks take whole arrays, so each GEMM weight is
   held twice: packed, and as its own array.
 - **Timestral's host steps on the device** where it has float64 (CUDA, OpenCL with fp64): the
@@ -38,7 +35,6 @@ Planned work on jitcast, and the TornadoVM limits that affect it today.
 
 | Limit | Effect on jitcast | Workaround |
 |---|---|---|
-| No device buffers shared across execution plans (added in 8.2.0, not yet used by jitcast) | each cached plan uploads its own weights | the plan cache counts weights against its budget |
 | cuBLAS tasks take whole arrays, without offsets | each GEMM weight needs its own array | separate weight arrays |
 | TC (TornadoVM 8) does not unroll loops, so per-thread arrays indexed in loops stay in memory | slow attention and sLSTM kernels | kernels keep accumulators in named scalars |
 | Metal spin-waits on each dispatch | slow Metal runs | jitcast turns it off |
