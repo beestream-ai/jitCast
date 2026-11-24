@@ -41,9 +41,9 @@ public final class T0Pipeline {
     /** The most series one forward pass takes, by default. */
     public static final int DEFAULT_BATCH_SIZE = 64;
 
-    /** {@return the most tokens (rows × patches) one forward pass takes: {@code -Dt0.maxTokens}, default 65,536} */
+    /** {@return the most tokens (rows × patches) one forward pass takes: {@code -Dt0.maxTokens}, default 16,384} */
     public static long defaultMaxTokens() {
-        return ai.beestream.jitcast.util.Options.number("t0.maxTokens", 65_536L, 1);
+        return ai.beestream.jitcast.util.Options.number("t0.maxTokens", 16_384L, 1);
     }
 
     /**
