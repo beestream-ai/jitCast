@@ -6,7 +6,7 @@
 
 - **JDK 22 or newer** (tested with JDK 25). jitcast builds with `--release 22` against TornadoVM's
   `jdk22plus` SDKs.
-- **TornadoVM 8.1.0**, the version jitcast builds against, for your backend.
+- **TornadoVM 8.2.0**, the version jitcast builds against, for your backend.
 - **Python 3.11+ with PyTorch**, only to convert TiRex-2 checkpoints and record test goldens. Create
   the venv with that interpreter (`python3.11 -m venv`).
 
@@ -18,16 +18,17 @@ side by side:
 ```bash
 curl -s "https://get.sdkman.io" | bash          # once, then open a new shell
 sdk install java 25.0.4-tem                     # any JDK 22+; the TornadoVM SDK does not include one
-sdk install tornadovm 8.1.0-jdk22plus-cuda      # the SDK for your platform, from the table below
+sdk install tornadovm 8.2.0-jdk22plus-cuda      # the SDK for your platform, from the table below
 tornado --devices                               # backends and devices, as <backend>:<device>
 ```
 
 | Platform | SDKMAN! identifier |
 |---|---|
-| macOS, Apple Silicon | `8.1.0-jdk22plus-metal` (recommended) or `8.1.0-jdk22plus-opencl` |
-| Linux x86-64, NVIDIA GPU | `8.1.0-jdk22plus-cuda` |
-| Linux x86-64, other OpenCL GPU | `8.1.0-jdk22plus-opencl` |
-| Linux x86-64, every backend in one SDK | `8.1.0-jdk22plus-full` |
+| macOS, Apple Silicon | `8.2.0-jdk22plus-metal` (recommended) or `8.2.0-jdk22plus-opencl` |
+| Linux x86-64, NVIDIA GPU | `8.2.0-jdk22plus-cuda` |
+| Linux x86-64, other OpenCL GPU | `8.2.0-jdk22plus-opencl` |
+| Linux x86-64, every backend in one SDK | `8.2.0-jdk22plus-full` |
+| Linux x86-64, AMD GPU | `8.2.0-jdk22plus-hip` (TornadoVM's HIP backend, new in 8.2.0; not yet tested with jitcast) |
 | Linux AArch64 (such as NVIDIA Grace), Windows | not on SDKMAN!: see below |
 
 Use the `jdk22plus` SDKs; the `jdk21` ones do not run jitcast. SDKMAN! sets `TORNADOVM_HOME` and
@@ -39,14 +40,14 @@ jitcast runs with; `tornado --generate-argfile` rewrites it after a JDK change.
 ### Without SDKMAN!
 
 Every SDK, including CUDA for Linux AArch64 and Windows, is attached to the
-[TornadoVM 8.1.0 release](https://github.com/beehive-lab/TornadoVM/releases/tag/v8.1.0) and on
+[TornadoVM 8.2.0 release](https://github.com/beehive-lab/TornadoVM/releases/tag/v8.2.0) and on
 [tornadovm.org/downloads](https://www.tornadovm.org/downloads). Unpack it and point `TORNADOVM_HOME`
 at it:
 
 ```bash
-curl -fLO https://github.com/beehive-lab/TornadoVM/releases/download/v8.1.0/tornadovm-8.1.0-jdk22plus-cuda-linux-aarch64.tar.gz
-tar xzf tornadovm-8.1.0-jdk22plus-cuda-linux-aarch64.tar.gz
-export TORNADOVM_HOME=$PWD/tornadovm-8.1.0-cuda PATH=$PWD/tornadovm-8.1.0-cuda/bin:$PATH
+curl -fLO https://github.com/beehive-lab/TornadoVM/releases/download/v8.2.0/tornadovm-8.2.0-jdk22plus-cuda-linux-aarch64.tar.gz
+tar xzf tornadovm-8.2.0-jdk22plus-cuda-linux-aarch64.tar.gz
+export TORNADOVM_HOME=$PWD/tornadovm-8.2.0-cuda PATH=$PWD/tornadovm-8.2.0-cuda/bin:$PATH
 tornado --devices
 ```
 
@@ -64,7 +65,7 @@ $TORNADOVM_HOME/bin/tornado --devices
 ```
 
 Build jitcast against it with `-Dtornadovm.version=<its version>` (for example
-`8.1.1-jdk22plus-dev`); the SDK build installs its artifacts in `~/.m2`.
+`8.2.1-jdk22plus-dev`); the SDK build installs its artifacts in `~/.m2`.
 
 ### Device numbering
 
@@ -89,8 +90,8 @@ backend with the highest `-Dtornado.<backend>.priority` is numbered `0`.
 
 ```bash
 git clone https://github.com/beestream-ai/jitCast && cd jitCast
-./mvnw -q package -DskipTests                                         # TornadoVM 8.1.0 API from Maven Central
-./mvnw -q package -DskipTests -Dtornadovm.version=8.1.1-jdk22plus-dev # or a develop SDK you built
+./mvnw -q package -DskipTests                                         # TornadoVM 8.2.0 API from Maven Central
+./mvnw -q package -DskipTests -Dtornadovm.version=8.2.1-jdk22plus-dev # or a develop SDK you built
 ```
 
 To use jitcast from another Maven project, install it into the local Maven repository as

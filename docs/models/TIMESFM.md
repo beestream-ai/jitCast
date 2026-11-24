@@ -61,10 +61,12 @@ TimesFmPipeline p = engine.pipeline().withOptions(
 - **Host and device.** The batch assembly, the input normalization, each patch's running mean and
   deviation, and the post-processing (flip averaging, the continuous quantile head, quantile crossing,
   clamping) run on the host. The tokenizer, the transformer and the heads of each row's last patch run
-  on the device, one plan per shape (rows, patches).
-- **Decoding without a cache.** The reference decodes with a key-value cache, feeding its median back
-  128 steps at a time. jitcast runs every step over the whole sequence instead; attention is causal, so
-  the outputs are the same.
+  on the device.
+- **Decoding with a key-value cache**, as the reference: the prefill writes every layer's keys and
+  values to the device, and each step, which feeds the median of the last 128 steps back as four
+  patches, runs only those patches against the cache. One plan per (rows, prefill patches, steps) holds
+  both task graphs, so a forecast compiles once whatever its horizon; the CPU reference recomputes the
+  whole sequence instead, with the same outputs.
 - **Kernels.** RoPE with the q and k norms, the causal attention and the last-patch gather are
   TimesFM's own ([KERNELS.md](../KERNELS.md#timesfm-25)); the GEMMs, RMSNorm and the SiLU epilogues are
   shared.

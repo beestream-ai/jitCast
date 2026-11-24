@@ -161,7 +161,7 @@ quantile levels) with the reference's defaults; `withBatchSize` sets rows per ba
 | `timesfm.tornado.gemm` | as `timestral.tornado.gemm` | Same modes and `auto` rule |
 | `timesfm.tornado.blockedMinRows`, `wideMinRows`, `simdgroupWideMinRows`, `splitKTarget`, `splitKMax` | `128`, `1024`, `64`, `320`, `16` | As for Timestral |
 | `timesfm.tornado.cudaGraph` | `true` with cuBLAS | Replay each plan as a CUDA graph |
-| `timesfm.tornado.plans` | `8` | Shapes kept compiled (rows, patches, whether the quantile head runs); each decoding step adds patches, so a forecast of `n` output patches uses `n` shapes |
+| `timesfm.tornado.plans` | `8` | Shapes kept compiled (rows, prefill patches, decoding steps); each holds the key-value cache of its decoding steps |
 | `timesfm.tornado.planBytes` | `tornado.device.memory` | Device memory the cached plans may hold together |
 | `timesfm.maxTokens` | `131072` | Most tokens (series × patches, including the fed-back patches) per forward pass |
 | `timesfm.tornado.profile` | `false` | Print per-task kernel times (analysis only) |
