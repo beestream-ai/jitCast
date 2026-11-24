@@ -129,6 +129,9 @@ public final class TimesFmForward implements PatchForward {
         if (config.contextLength() / config.patchLength() > TimesFmKernels.ATTN_MAX_KEYS) {
             throw new IllegalArgumentException("sequences longer than " + TimesFmKernels.ATTN_MAX_KEYS + " patches are not supported");
         }
+        if (config.headDim() > TimesFmKernels.ATTN_HEAD_DIM || config.headDim() > TimesFmKernels.ROPE_THREADS) {
+            throw new IllegalArgumentException("attention heads wider than " + TimesFmKernels.ATTN_HEAD_DIM + " are not supported");
+        }
         this.config = config;
         this.weights = weights;
         this.plans = new PlanCache<>(Math.max(1, maxCachedPlans), Options.bytes("timesfm.tornado.planBytes", Devices.memory(), 1));
@@ -210,11 +213,12 @@ public final class TimesFmForward implements PatchForward {
                 String s = "l" + li + "_";
                 rms(s + "pa", x, hn, l.preAttn(), tokens);
                 gemm(s + "qkv", hn, l.qkv(), big, tokens, 0);
-                items(s + "rope", tokens * heads * 2);
+                grid.addWorkerGrid(G + "." + s + "rope", group(tokens * heads * TimesFmKernels.ROPE_THREADS, TimesFmKernels.ROPE_THREADS));
                 g.task(s + "rope", TimesFmKernels::ropeNorm, ctx, big, w, l.qNorm(), l.kNorm(), l.qScale(), weights.invTimescale(), masked,
                         rows, n, heads, hd, d, c.rmsNormEps());
                 written(big);
-                grid.addWorkerGrid(G + "." + s + "attn", group(tokens * heads * TimesFmKernels.ATTN_THREADS, TimesFmKernels.ATTN_THREADS));
+                int tiles = (n + TimesFmKernels.ATTN_QUERIES - 1) / TimesFmKernels.ATTN_QUERIES;
+                grid.addWorkerGrid(G + "." + s + "attn", group(rows * heads * tiles * TimesFmKernels.ATTN_THREADS, TimesFmKernels.ATTN_THREADS));
                 g.task(s + "attn", TimesFmKernels::causalAttention, ctx, big, att, masked, rows, n, heads, hd, d);
                 written(att);
                 gemm(s + "o", att, l.out(), y, tokens, 0);
