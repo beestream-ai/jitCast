@@ -35,8 +35,9 @@
              TiRex-2: the converted weights (scripts/convert_ckpt.py) and a golden directory
              (scripts/dump_golden.py); the device tests of reduced-precision configurations also need NXAI's
              CUDA goldens (dump_golden.py with device cuda), whose distance from the FP32 goldens sets their
-             limits. Timestral, Chronos-2 and TimesFM: a checkpoint directory and a golden directory
-             (scripts/timestral/dump_golden.py, scripts/chronos2/dump_golden.py, scripts/timesfm/dump_golden.py). -->
+             limits. Timestral, Chronos-2, TimesFM and t0: a checkpoint directory and a golden directory
+             (scripts/timestral/dump_golden.py, scripts/chronos2/dump_golden.py, scripts/timesfm/dump_golden.py,
+             scripts/t0/dump_golden.py). -->
         <tirex.weights></tirex.weights>
         <tirex.golden></tirex.golden>
         <tirex.golden.gpu></tirex.golden.gpu>
@@ -46,6 +47,8 @@
         <chronos2.golden></chronos2.golden>
         <timesfm.checkpoint></timesfm.checkpoint>
         <timesfm.golden></timesfm.golden>
+        <t0.checkpoint></t0.checkpoint>
+        <t0.golden></t0.golden>
     </properties>
 
     <dependencies>
@@ -97,6 +100,8 @@
                         <chronos2.golden>${chronos2.golden}</chronos2.golden>
                         <timesfm.checkpoint>${timesfm.checkpoint}</timesfm.checkpoint>
                         <timesfm.golden>${timesfm.golden}</timesfm.golden>
+                        <t0.checkpoint>${t0.checkpoint}</t0.checkpoint>
+                        <t0.golden>${t0.golden}</t0.golden>
                     </systemPropertyVariables>
                 </configuration>
             </plugin>
