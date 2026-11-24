@@ -122,6 +122,8 @@
                         <include>ai/beestream/jitcast/tirex2/TiRex2Config.java</include>
                         <include>ai/beestream/jitcast/timestral/TimestralConfig.java</include>
                         <include>ai/beestream/jitcast/chronos2/Chronos2Config.java</include>
+                        <include>ai/beestream/jitcast/timesfm/TimesFmPipeline.java</include>
+                        <include>ai/beestream/jitcast/timesfm/TimesFmConfig.java</include>
                         <include>ai/beestream/jitcast/tornado/Devices.java</include>
                     </sourceFileIncludes>
                 </configuration>

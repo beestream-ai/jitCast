@@ -63,7 +63,7 @@ public record TimesFmConfig(
     /** The index of the median among the model's outputs (index 0 is the mean head, then the quantiles). */
     public static final int MEDIAN_OUTPUT = 5;
 
-    /** {@return the time steps of context the model attends from one output patch: the input patches per output patch} */
+    /** {@return the input patches per output patch: what one decoding step feeds back} */
     public int patchesPerOutput() {
         return horizonLength / patchLength;
     }

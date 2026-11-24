@@ -4,10 +4,11 @@ Copyright (c) 2026 Beestream Ltd
 This product is licensed under the Apache License, Version 2.0 (see LICENSE).
 
 It runs NX-AI's TiRex-2 (https://github.com/NX-AI/tirex-2), Mistral AI's Timestral
-(https://huggingface.co/mistralai/Timestral-5M) and Amazon's Chronos-2
-(https://huggingface.co/amazon/chronos-2). The model weights are not part of this repository; they
-are downloaded from Hugging Face under their authors' terms: NX-AI's own licence for TiRex-2, a
-Modified MIT licence for Timestral, and the Apache License 2.0 for Chronos-2.
+(https://huggingface.co/mistralai/Timestral-5M), Amazon's Chronos-2
+(https://huggingface.co/amazon/chronos-2) and Google's TimesFM 2.5
+(https://huggingface.co/google/timesfm-2.5-200m-pytorch). The model weights are not part of this
+repository; they are downloaded from Hugging Face under their authors' terms: NX-AI's own licence for
+TiRex-2, a Modified MIT licence for Timestral, and the Apache License 2.0 for Chronos-2 and TimesFM.
 
 ------------------------------------------------------------------------------------------------
 src/main/java/ai/beestream/jitcast/util/Json.java is derived from jitllm

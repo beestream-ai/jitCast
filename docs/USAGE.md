@@ -29,10 +29,12 @@ try (ForecastEngine engine = TornadoTimestralEngine.load(Path.of("Timestral-5M")
 | [TiRex-2](models/TIREX2.md) | `tirex2.tornado.TornadoTiRex2Engine` | `tirex2.cpu.CpuTiRex2Engine` | one converted `.safetensors` file |
 | [Timestral](models/TIMESTRAL.md) | `timestral.tornado.TornadoTimestralEngine` | `timestral.cpu.CpuTimestralEngine` | a checkpoint directory |
 | [Chronos-2](models/CHRONOS2.md) | `chronos2.tornado.TornadoChronos2Engine` | `chronos2.cpu.CpuChronos2Engine` | a checkpoint directory |
+| [TimesFM 2.5](models/TIMESFM.md) | `timesfm.tornado.TornadoTimesFmEngine` | `timesfm.cpu.CpuTimesFmEngine` | a checkpoint directory |
 
 - **Quantiles.** TiRex-2: 9 (0.1 … 0.9). Timestral: 21 (0.01 … 0.99). Chronos-2: its checkpoint's
-  (21 for `chronos-2`, 13 for `chronos-2-small`).
-- **Horizons.** TiRex-2 up to its checkpoint's future length. Timestral and Chronos-2 any horizon.
+  (21 for `chronos-2`, 13 for `chronos-2-small`). TimesFM 2.5: 9 (0.1 … 0.9).
+- **Horizons.** TiRex-2 up to its checkpoint's future length. Timestral, Chronos-2 and TimesFM any horizon
+  (TimesFM up to 1,024 steps with its continuous quantile head).
 - **Batches.** A call is split into forward passes by series count and a token budget. A series'
   forecast does not depend on the rest of its batch, except with Chronos-2's cross-learning.
 - **Engines** are thread-safe and `AutoCloseable`; close them to free device memory.
@@ -93,12 +95,14 @@ and the device engines against the goldens. Tests without configured goldens are
 # CPU
 ./mvnw test -Dtirex.weights=tirex2.safetensors -Dtirex.golden=golden-cpu \
     -Dtimestral.checkpoint=Timestral-5M -Dtimestral.golden=golden-5m \
-    -Dchronos2.checkpoint=chronos-2 -Dchronos2.golden=golden-c2
+    -Dchronos2.checkpoint=chronos-2 -Dchronos2.golden=golden-c2 \
+    -Dtimesfm.checkpoint=timesfm-2.5-200m -Dtimesfm.golden=golden-tfm
 # device
 ./mvnw test -Paccel-tests -Djitcast.tornado.device=0:0 \
     -Dtirex.weights=tirex2.safetensors -Dtirex.golden=golden-cpu -Dtirex.golden.gpu=golden-cuda \
     -Dtimestral.checkpoint=Timestral-5M -Dtimestral.golden=golden-5m \
-    -Dchronos2.checkpoint=chronos-2 -Dchronos2.golden=golden-c2
+    -Dchronos2.checkpoint=chronos-2 -Dchronos2.golden=golden-c2 \
+    -Dtimesfm.checkpoint=timesfm-2.5-200m -Dtimesfm.golden=golden-tfm
 ```
 
 | Model | Golden properties | Recorded by |
@@ -106,6 +110,7 @@ and the device engines against the goldens. Tests without configured goldens are
 | TiRex-2 | `tirex.weights`, `tirex.golden`, `tirex.golden.gpu` (reduced-precision checks) | `scripts/dump_golden.py` with NXAI's `tirex-2` v0.4.0, or `scripts/setup_reference.sh` |
 | Timestral | `timestral.checkpoint`, `timestral.golden` | `scripts/timestral/dump_golden.py --src <timestral>/src --ckpt <dir> --out <dir>` |
 | Chronos-2 | `chronos2.checkpoint`, `chronos2.golden` | `scripts/chronos2/dump_golden.py --src <chronos-forecasting>/src --ckpt <dir> --out <dir>` |
+| TimesFM 2.5 | `timesfm.checkpoint`, `timesfm.golden` | `scripts/timesfm/dump_golden.py --src <timesfm>/src --ckpt <dir> --out <dir>`, from a clone of `google-research/timesfm` |
 
 The accelerated profile caps device memory at 8 GB; Timestral-209M with cuBLAS needs
 `-Dtornado.device.memory=20GB`.

@@ -7,8 +7,10 @@ Planned work on jitcast, and the TornadoVM limits that affect it today.
 ## Models
 
 - **Chronos-2:** categorical covariates (target-encoded in the reference, as for Timestral).
-- **New families:** TimesFM, Toto, Moirai 2, TTM and Sundial are candidates, each checked against the
-  GIFT-Eval leaderboard and its weight licence before porting.
+- **New families:** t0, Toto 2.0, TTM and FlowState are candidates, each checked against the benchmark
+  leaderboards and its weight licence before porting.
+- **TimesFM 2.5:** a key-value cache for the decoding steps (each step now reruns the whole sequence),
+  and covariates through the reference's linear model.
 - **Timestral's long-context attention:** its time attention kernel walks keys one at a time. The
   blocked, register-tiled structure of Chronos-2's kernel would apply.
 

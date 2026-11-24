@@ -14,7 +14,7 @@ Each model family reproduces its reference engine's `forecast()` end to end, wit
 - **Forward pass on a TornadoVM device**: one plan per batch shape, compiled once and kept in a
   `tornado.PlanCache` (least recently used evicted within a device-memory budget), activations on the
   device. GEMMs, RMSNorm, SwiGLU and their epilogues are shared kernels (`tornado.Kernels`), selected
-  by `tornado.GemmMode` for Timestral and Chronos-2 and by `TornadoForward.GemmMode` for TiRex-2.
+  by `tornado.GemmMode` for Timestral, Chronos-2 and TimesFM and by `TornadoForward.GemmMode` for TiRex-2.
   The rest are the family's own kernels.
 - **CPU reference**: a plain-Java FP32 forward pass from the shared operators (`cpu.Ops`), the
   oracle the device kernels are tested against.
@@ -43,6 +43,9 @@ grid and bounds checks, so one code base runs on CUDA, OpenCL and Metal. The one
 | `chronos2` | `Chronos2Config`, `Chronos2Weights`, `ModelInput` / `ModelForward`, `ModelLayout`, `ModelPrep`, `QuantileMath`, `Chronos2Pipeline` |
 | `chronos2.cpu` | `CpuChronos2`, `CpuChronos2Engine` |
 | `chronos2.tornado` | `Chronos2Kernels`, `Chronos2Packed`, `Chronos2Forward` (rows regrouped for group attention), `TornadoChronos2Engine` |
+| `timesfm` | `TimesFmConfig`, `TimesFmWeights`, `PatchForward`, `TimesFmPipeline` (batch assembly, normalization, decoding, post-processing) |
+| `timesfm.cpu` | `CpuTimesFm`, `CpuTimesFmEngine` |
+| `timesfm.tornado` | `TimesFmKernels`, `TimesFmPacked`, `TimesFmForward`, `TornadoTimesFmEngine` |
 
 ## Adding a model family
 
@@ -84,3 +87,4 @@ broken doc comment. Every push to `main` publishes it at
 | `setup_reference.sh <dir>` | The whole TiRex-2 reference setup on a CUDA machine: venv, conversion, CPU and CUDA goldens |
 | `timestral/dump_golden.py` | Timestral goldens: every `predict_block` call's arguments, stages and output, forecasts, float64 distances |
 | `chronos2/dump_golden.py` | Chronos-2 goldens: every forward call's arguments, stages and output, forecasts, float64 distances |
+| `timesfm/dump_golden.py` | TimesFM 2.5 goldens: every decode call's arguments and outputs, the prefill's stages, forecasts, float64 distances |

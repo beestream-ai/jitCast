@@ -80,3 +80,13 @@ Chronos-2's own kernels are in [`Chronos2Kernels.java`](../src/main/java/ai/bees
 | [`timeAttention`](../src/main/java/ai/beestream/jitcast/chronos2/tornado/Chronos2Kernels.java) | Flash-style bidirectional attention along time per row and head: 32 queries per work-group, blocks of 32 keys staged in local memory, register tiles of 2 × 4 scores and 4 × 4 outputs per thread; over the valid keys, unscaled |
 | [`groupAttention`](../src/main/java/ai/beestream/jitcast/chronos2/tornado/Chronos2Kernels.java) | Flash-style attention across the rows of each group per token slot, over the rows whose token is a valid key |
 | [`gatherFuture`](../src/main/java/ai/beestream/jitcast/chronos2/tornado/Chronos2Kernels.java) | The future tokens, for the output patch embedding |
+
+## TimesFM 2.5
+
+TimesFM's own kernels are in [`TimesFmKernels.java`](../src/main/java/ai/beestream/jitcast/timesfm/tornado/TimesFmKernels.java); its GEMMs (with the SiLU epilogue), RMSNorm and residual adds are the shared ones above.
+
+| Kernel | What it computes |
+|---|---|
+| [`ropeNorm`](../src/main/java/ai/beestream/jitcast/timesfm/tornado/TimesFmKernels.java) | In place on q and k: RoPE at each patch's position counted from the row's first observed patch, then each head's RMSNorm with its scale, then the per-dimension query scale |
+| [`causalAttention`](../src/main/java/ai/beestream/jitcast/timesfm/tornado/TimesFmKernels.java) | Causal attention per row, head and query over the observed patches, scores in local memory (up to 512 patches), queries pre-scaled; padding queries get zeros |
+| [`gatherLast`](../src/main/java/ai/beestream/jitcast/timesfm/tornado/TimesFmKernels.java) | Each row's last patch, for the point and quantile heads |

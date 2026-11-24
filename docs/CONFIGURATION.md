@@ -4,7 +4,7 @@
 
 Options are JVM properties (`-D…`), read when an engine is created. A value that does not parse, or a
 GEMM mode the device cannot run, fails engine creation with the property's name; nothing falls back
-silently. Shared options come first, then each model's own (`tirex.*`, `timestral.*`, `chronos2.*`).
+silently. Shared options come first, then each model's own (`tirex.*`, `timestral.*`, `chronos2.*`, `timesfm.*`).
 
 An engine can be shared between threads. A TornadoVM engine runs calls one at a time, because every
 call of a shape reuses that shape's device buffers.
@@ -13,14 +13,14 @@ call of a shape reuses that shape's device buffers.
 
 The defaults are accurate to FP32 on every platform. Start from them and add flags from this table.
 
-| Platform | TiRex-2 | Timestral | Chronos-2 |
-|---|---|---|---|
-| **NVIDIA, CUDA** (default: cuBLAS FP32 with CUDA graphs) | fastest: `-Dtirex.tornado.gemm=cublas-auto` | fastest: `-Dtimestral.tornado.gemm=cublas-fp16` | fastest: `-Dchronos2.tornado.gemm=cublas-fp16` |
-| NVIDIA, closest to FP32 | `-Dtirex.tornado.slstmR=fp32` | defaults | defaults |
-| NVIDIA, no vendor libraries | `-Dtirex.tornado.gemm=cutile` (toolkit 13.3+) or `half` | `-Dtimestral.tornado.gemm=half` | `-Dchronos2.tornado.gemm=half` |
-| **Apple Silicon, Metal** | `-Dtirex.tornado.gemm=half` | defaults (simdgroup GEMMs) | defaults (simdgroup GEMMs) |
-| Apple Silicon, SDK with Metal and OpenCL | as above, plus `-Dtornado.metal.priority=100` | `-Dtornado.metal.priority=100` | `-Dtornado.metal.priority=100` |
-| Other OpenCL GPUs | `-Dtirex.tornado.gemm=half` (`tiled` for FP32) | defaults | defaults |
+| Platform | TiRex-2 | Timestral | Chronos-2 | TimesFM 2.5 |
+|---|---|---|---|---|
+| **NVIDIA, CUDA** (default: cuBLAS FP32 with CUDA graphs) | fastest: `-Dtirex.tornado.gemm=cublas-auto` | fastest: `-Dtimestral.tornado.gemm=cublas-fp16` | fastest: `-Dchronos2.tornado.gemm=cublas-fp16` | fastest: `-Dtimesfm.tornado.gemm=cublas-fp16` |
+| NVIDIA, closest to FP32 | `-Dtirex.tornado.slstmR=fp32` | defaults | defaults | defaults |
+| NVIDIA, no vendor libraries | `-Dtirex.tornado.gemm=cutile` (toolkit 13.3+) or `half` | `-Dtimestral.tornado.gemm=half` | `-Dchronos2.tornado.gemm=half` | `-Dtimesfm.tornado.gemm=half` |
+| **Apple Silicon, Metal** | `-Dtirex.tornado.gemm=half` | defaults (simdgroup GEMMs) | defaults (simdgroup GEMMs) | defaults (simdgroup GEMMs) |
+| Apple Silicon, SDK with Metal and OpenCL | as above, plus `-Dtornado.metal.priority=100` | `-Dtornado.metal.priority=100` | `-Dtornado.metal.priority=100` | `-Dtornado.metal.priority=100` |
+| Other OpenCL GPUs | `-Dtirex.tornado.gemm=half` (`tiled` for FP32) | defaults | defaults | defaults |
 
 The FP16 modes keep FP32 accumulation; their forecasts move slightly off the FP32 reference.
 
@@ -153,3 +153,19 @@ fed-back median threshold, sign-flip averaging, non-negative clipping), with the
 
 Programmatic: `Chronos2Pipeline.Options` (context cap, cross-learning, patches per pass, unrolled
 quantile levels) with the reference's defaults; `withBatchSize` sets rows per batch (256).
+
+## TimesFM 2.5
+
+| Property | Values (default first) | Effect |
+|---|---|---|
+| `timesfm.tornado.gemm` | as `timestral.tornado.gemm` | Same modes and `auto` rule |
+| `timesfm.tornado.blockedMinRows`, `wideMinRows`, `simdgroupWideMinRows`, `splitKTarget`, `splitKMax` | `128`, `1024`, `64`, `320`, `16` | As for Timestral |
+| `timesfm.tornado.cudaGraph` | `true` with cuBLAS | Replay each plan as a CUDA graph |
+| `timesfm.tornado.plans` | `8` | Shapes kept compiled (rows, patches, whether the quantile head runs); each decoding step adds patches, so a forecast of `n` output patches uses `n` shapes |
+| `timesfm.tornado.planBytes` | `tornado.device.memory` | Device memory the cached plans may hold together |
+| `timesfm.maxTokens` | `131072` | Most tokens (series × patches, including the fed-back patches) per forward pass |
+| `timesfm.tornado.profile` | `false` | Print per-task kernel times (analysis only) |
+
+Programmatic: `TimesFmPipeline.Options` (the reference's `ForecastConfig`: context cap, input
+normalization, continuous quantile head, flip averaging, non-negative clamping, quantile-crossing fix),
+defaulting to the configuration Google recommends; `withBatchSize` sets series per forward pass (64).
