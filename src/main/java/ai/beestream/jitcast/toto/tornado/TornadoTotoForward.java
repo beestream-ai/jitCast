@@ -283,13 +283,7 @@ public final class TornadoTotoForward implements TotoForward {
             // straight into the device-bound buffers, a patch's values then its missing flags, rows in parallel
             MemorySegment seg = tok.getSegment(), vs = valid.getSegment();
             int n = in.patches();
-            IntStream.range(0, in.rows()).parallel().forEach(r -> {
-                for (int i = r * n; i < (r + 1) * n; i++) {
-                    MemorySegment.copy(in.values(), i * p, seg, ValueLayout.JAVA_FLOAT, (long) i * 2 * p * Float.BYTES, p);
-                    MemorySegment.copy(in.missing(), i * p, seg, ValueLayout.JAVA_FLOAT, ((long) i * 2 * p + p) * Float.BYTES, p);
-                    vs.setAtIndex(ValueLayout.JAVA_INT, i, in.valid()[i] ? 1 : 0);
-                }
-            });
+            IntStream.range(0, in.rows()).parallel().forEach(r -> packRow(in, r * n, n, p, seg, vs));
             for (int s = 0; s < in.series(); s++) {
                 int a = in.seriesStart()[s], b = in.seriesStart()[s + 1];
                 for (int r = a; r < b; r++) {
@@ -301,6 +295,40 @@ public final class TornadoTotoForward implements TotoForward {
             float[] res = new float[out.getSize()];
             MemorySegment.copy(out.getSegment(), ValueLayout.JAVA_FLOAT, 0, res, 0, res.length);
             return res;
+        }
+
+        /** The interleaved patches of one row and their valid flags, per worker thread. */
+        private static final class RowBuffer {
+            float[] tok = new float[0];
+            int[] valid = new int[0];
+        }
+
+        private static final ThreadLocal<RowBuffer> ROW = ThreadLocal.withInitial(RowBuffer::new);
+
+        /**
+         * Copies one row's {@code n} patches, starting at token {@code first}, into the device-bound buffers:
+         * each patch's values then its missing flags, and the patch's valid flag. The row is interleaved in a
+         * per-thread array with {@code System.arraycopy} and written with one bulk copy per buffer, which keeps
+         * the JIT-compiled code stable across batch shapes (per-patch {@code MemorySegment.copy} calls were
+         * deoptimized again and again, leaving the copy in slow code in some processes).
+         */
+        private static void packRow(Input in, int first, int n, int p, MemorySegment seg, MemorySegment vs) {
+            RowBuffer b = ROW.get();
+            if (b.tok.length < 2 * n * p) {
+                b.tok = new float[2 * n * p];
+                b.valid = new int[n];
+            }
+            float[] values = in.values(), missing = in.missing(), tok = b.tok;
+            boolean[] valid = in.valid();
+            int[] flags = b.valid;
+            for (int k = 0; k < n; k++) {
+                int src = (first + k) * p;
+                System.arraycopy(values, src, tok, 2 * k * p, p);
+                System.arraycopy(missing, src, tok, 2 * k * p + p, p);
+                flags[k] = valid[first + k] ? 1 : 0;
+            }
+            MemorySegment.copy(tok, 0, seg, ValueLayout.JAVA_FLOAT, (long) first * 2 * p * Float.BYTES, 2 * n * p);
+            MemorySegment.copy(flags, 0, vs, ValueLayout.JAVA_INT, (long) first * Integer.BYTES, n);
         }
 
         private void weight(Object buf) {
