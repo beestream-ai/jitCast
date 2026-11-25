@@ -33,7 +33,7 @@ grid and bounds checks, so one code base runs on CUDA, OpenCL and Metal. The one
 | `cpu` | `Ops`: shared FP32 operators (linear, RMSNorm, SiLU, ReLU, sigmoid) |
 | `tornado` | `Devices` (device, memory budget, TornadoVM defaults), `PlanCache`, `SharedWeights` (one device copy of an engine's weights for all its plans), `Kernels` (shared GEMMs, norms, epilogues; see [KERNELS.md](KERNELS.md)), `GemmMode` |
 | `util` | `Json`, `Options` (strict system-property readers) |
-| `bench` | `TiRexBench`, `TiRexColdStart`, `TiRexServer`, `PlanMemoryProbe`, `TimestralBench`, `TimestralServer`, `Chronos2Bench`, `Wire` (the servers' protocol) |
+| `bench` | `TiRexBench`, `TiRexColdStart`, `TiRexServer`, `PlanMemoryProbe`, `TimestralBench`, `TimestralServer`, `Chronos2Bench`, `TimesFmBench`, `T0Bench`, `Wire` (the servers' protocol) |
 | `tirex2` | `TiRex2Config`, `TiRex2Weights`, `ForecastPipeline`, `PostProcessor` (trend, differencing, band calibration), `ModelBatch`, `ForwardPass` |
 | `tirex2.cpu` | FP32 reference: `TiRexOps`, `InputStage`, `Cells` (mLSTM, sLSTM), `CpuReference`, `CpuWeights`, `CpuTiRex2Engine` |
 | `tirex2.tornado` | `TiRexKernels`, `PackedWeights` (fused projections, FP16 copies), `TornadoForward` (plans, GEMM modes, CUDA graphs), `TornadoTiRex2Engine` |

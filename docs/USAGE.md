@@ -61,12 +61,14 @@ $JITCAST ai.beestream.jitcast.bench.TimestralBench --checkpoint Timestral-5M \
     --workloads ts-workloads.safetensors --engine tornado --out timestral.json
 $JITCAST ai.beestream.jitcast.bench.Chronos2Bench --checkpoint chronos-2 \
     --workloads c2-workloads.safetensors --engine tornado --out chronos2.json
+$JITCAST ai.beestream.jitcast.bench.T0Bench --checkpoint t0-gamma \
+    --workloads ts-workloads.safetensors --engine tornado --out t0.json
 ```
 
 | Tool | Options |
 |---|---|
 | `TiRexBench` | `--engine tornado\|cpu`, `--scenarios`, `--batches`, `--mv-batches`, `--covariates`, `--horizon` (64), `--reps` (30), `--warmup` (5), `--budget` (3 s), `--max-batch` (1024), `--config` |
-| `TimestralBench`, `Chronos2Bench` | `--engine tornado\|cpu`, `--scenarios`, `--reps` (20), `--warmup` (3), `--budget` (5 s) |
+| `TimestralBench`, `Chronos2Bench`, `TimesFmBench`, `T0Bench` | `--engine tornado\|cpu`, `--scenarios`, `--reps` (20), `--warmup` (3), `--budget` (5 s) |
 | `TiRexColdStart` | `--weights`, `--workloads`, `--out`, `--config` and `--cache` (labels written to the record); set `BENCH_EXEC_START_NS` to the launch time |
 | `PlanMemoryProbe` | `--weights`, `--rows` (8,16,…,64), `--rounds` (2), `--plans` (1): device and off-heap memory as TiRex-2 plans are built and evicted |
 
