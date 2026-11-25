@@ -44,7 +44,7 @@ import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
  * {@link Layer#mlpKeep()}).</li>
  * </ul>
  * The gated feed-forward's input rows are reordered to {@code [SiLU input | gate]}, the order of the shared
- * SwiGLU kernel. A vector of ones serves the weightless RMSNorms.
+ * SwiGLU kernel, and its output is shifted down by {@link #GLU_SHIFT}. A vector of ones serves the weightless RMSNorms.
  */
 public final class TotoPacked {
 
@@ -81,6 +81,13 @@ public final class TotoPacked {
      * @param mlpKeep the residual stream's factor around the feed-forward
      */
     public record Layer(Lin inProj, Lin outProj, float attnKeep, Lin fc1, Lin fc2, float mlpKeep) {}
+
+    /**
+     * The gated feed-forward's output is scaled by this power of two (through the gate rows) and the second
+     * layer's weights by its inverse: exact in FP32, and it keeps that output, which reaches several hundred
+     * thousand, within FP16's range.
+     */
+    static final double GLU_SHIFT = 1.0 / 256;
 
     private final FloatArray data;
     private final Mlp patchProj;
@@ -125,8 +132,12 @@ public final class TotoPacked {
             float[] swapped = new float[fc1.length];
             System.arraycopy(fc1, ff * d, swapped, 0, ff * d);
             System.arraycopy(fc1, 0, swapped, ff * d, ff * d);
-            Lin f1 = p.lin(swapped, null, d, 2 * ff, uniform(2 * ff, 1.0 / Math.sqrt(d)), null);
-            Lin f2 = p.lin(l.fc2(), uniform(d, l.mlpTau() * km / Math.sqrt(ff)), null);
+            double[] f1Scale = uniform(2 * ff, 1.0 / Math.sqrt(d));
+            for (int r = ff; r < 2 * ff; r++) {
+                f1Scale[r] *= GLU_SHIFT;
+            }
+            Lin f1 = p.lin(swapped, null, d, 2 * ff, f1Scale, null);
+            Lin f2 = p.lin(l.fc2(), uniform(d, l.mlpTau() * km / Math.sqrt(ff) / GLU_SHIFT), null);
             layers.add(new Layer(in, out, (float) ka, f1, f2, (float) km));
         }
         Mlp head = p.mlp(w.head(), true);
