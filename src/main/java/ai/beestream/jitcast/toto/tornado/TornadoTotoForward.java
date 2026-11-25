@@ -109,7 +109,7 @@ public final class TornadoTotoForward implements TotoForward {
         this.config = config;
         this.weights = weights;
         this.gemmMode = Options.enumeration("toto.tornado.gemm", GemmMode.AUTO, GemmMode.class).resolve(device);
-        long weightBytes = SharedWeights.estimate(weights.data().getNumBytesOfSegment(),
+        long weightBytes = SharedWeights.estimate(weights.bytes(),
                 gemmMode == GemmMode.CUBLAS || gemmMode == GemmMode.CUBLAS_TF32, gemmMode == GemmMode.CUBLAS_FP16 || gemmMode == GemmMode.HALF);
         this.plans = new PlanCache<>(Math.max(1, maxCachedPlans),
                 Options.bytes("toto.tornado.planBytes", Math.max(1, Devices.memory() - weightBytes), 1));
@@ -168,7 +168,6 @@ public final class TornadoTotoForward implements TotoForward {
 
     private final class Plan implements PlanCache.Plan {
         final Shape shape;
-        final FloatArray w = weights.data();
         final GridScheduler grid = new GridScheduler();
         final KernelContext ctx = new KernelContext();
         final Set<Object> planWeights = Collections.newSetFromMap(new IdentityHashMap<>());
@@ -201,7 +200,9 @@ public final class TornadoTotoForward implements TotoForward {
             valid = new IntArray(tokens);
             first = new IntArray(rows);
             count = new IntArray(rows);
-            weight(w);
+            for (FloatArray buf : weights.data()) {
+                weight(buf);
+            }
             g.transferToDevice(DataTransferMode.FIRST_EXECUTION, x, hn, big, att, y, gl, dec, hb, out, rot, noTwin);
             g.transferToDevice(DataTransferMode.EVERY_EXECUTION, tok, valid, first, count);
             residual("pp", tok, big, x, tokens, weights.patchProj());
@@ -294,7 +295,7 @@ public final class TornadoTotoForward implements TotoForward {
 
         void rms(String task, FloatArray in, FloatArray o, int rows) {
             grid.addWorkerGrid(G + "." + task, group(rows * Kernels.NORM_THREADS, Kernels.NORM_THREADS));
-            g.task(task, Kernels::rmsNorm, ctx, in, o, w, weights.ones(), config.dModel(), config.normEps(), noTwin, 0, rows);
+            g.task(task, Kernels::rmsNorm, ctx, in, o, weights.data(weights.onesBuf()), weights.ones(), config.dModel(), config.normEps(), noTwin, 0, rows);
             written(o);
         }
 
@@ -309,6 +310,7 @@ public final class TornadoTotoForward implements TotoForward {
                 return;
             }
             int f = flags | (l.b() >= 0 ? Kernels.BIAS : 0);
+            FloatArray w = weights.data(l.buf());
             WorkerGrid wg;
             if (gemmMode == GemmMode.SIMDGROUP) {
                 boolean wide = m >= simdgroupWideMinRows;
@@ -351,6 +353,7 @@ public final class TornadoTotoForward implements TotoForward {
         private void cublas(String task, FloatArray a, TotoPacked.Lin l, FloatArray c, int m, int flags) {
             int nOut = l.out(), k = l.in();
             boolean bias = l.b() >= 0;
+            FloatArray w = weights.data(l.buf());
             boolean acc = (flags & Kernels.ACCUMULATE) != 0;
             boolean silu = (flags & Kernels.SILU) != 0;
             if (silu && acc) {

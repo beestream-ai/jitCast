@@ -15,6 +15,8 @@
  */
 package ai.beestream.jitcast.toto.tornado;
 
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.IdentityHashMap;
@@ -44,13 +46,16 @@ import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
  * {@link Layer#mlpKeep()}).</li>
  * </ul>
  * The gated feed-forward's input rows are reordered to {@code [SiLU input | gate]}, the order of the shared
- * SwiGLU kernel, and its output is shifted down by {@link #GLU_SHIFT}. A vector of ones serves the weightless RMSNorms.
+ * SwiGLU kernel, and its output is shifted down by {@link #GLU_SHIFT}. The weights span as many buffers as
+ * TornadoVM's int-indexed arrays need ({@link #BUFFER_FLOATS} floats each); a layer's weight and bias share
+ * one. A vector of ones serves the weightless RMSNorms.
  */
 public final class TotoPacked {
 
     /**
-     * A linear layer at offsets in {@link #data()}.
+     * A linear layer at offsets in one of the buffers ({@link #data(int)}).
      *
+     * @param buf the buffer holding its weight and bias
      * @param w the weight, {@code [out, in]}
      * @param b the bias, or −1
      * @param in the input width
@@ -59,7 +64,7 @@ public final class TotoPacked {
      *        the weights divided by it, so that small weights (the output head's readouts) stay out of the FP16
      *        subnormals, and the FP16 GEMM multiplies it back
      */
-    public record Lin(int w, int b, int in, int out, float gain) {}
+    public record Lin(int buf, int w, int b, int in, int out, float gain) {}
 
     /**
      * A residual MLP: {@code linear2(silu(linear1(x))) + skip(x)}, scales folded in.
@@ -89,16 +94,21 @@ public final class TotoPacked {
      */
     static final double GLU_SHIFT = 1.0 / 256;
 
-    private final FloatArray data;
+    /** The most floats in one buffer. */
+    static final int BUFFER_FLOATS = 1 << 30;
+
+    private final List<FloatArray> data;
     private final Mlp patchProj;
     private final List<Layer> layers;
     private final Mlp head;
+    private final int onesBuf;
     private final int ones;
     private final Map<Lin, FloatArray> matrices = new IdentityHashMap<>();
     private final Map<Lin, HalfFloatArray> halfMatrices = new IdentityHashMap<>();
 
-    private TotoPacked(FloatArray data, Mlp patchProj, List<Layer> layers, Mlp head, int ones) {
+    private TotoPacked(List<FloatArray> data, Mlp patchProj, List<Layer> layers, Mlp head, int onesBuf, int ones) {
         this.data = data;
+        this.onesBuf = onesBuf;
         this.patchProj = patchProj;
         this.layers = layers;
         this.head = head;
@@ -143,8 +153,8 @@ public final class TotoPacked {
         Mlp head = p.mlp(w.head(), true);
         float[] one = new float[d];
         Arrays.fill(one, 1f);
-        int ones = p.add(one);
-        return new TotoPacked(p.build(), patch, List.copyOf(layers), head, ones);
+        int[] ones = p.add(one);
+        return new TotoPacked(p.build(), patch, List.copyOf(layers), head, ones[0], ones[1]);
     }
 
     private static double[] uniform(int n, double v) {
@@ -153,9 +163,32 @@ public final class TotoPacked {
         return a;
     }
 
-    /** {@return the packed buffer} */
-    public FloatArray data() {
+    /** {@return the packed buffers} */
+    public List<FloatArray> data() {
         return data;
+    }
+
+    /**
+     * {@return one packed buffer}
+     *
+     * @param buf its index
+     */
+    public FloatArray data(int buf) {
+        return data.get(buf);
+    }
+
+    /** {@return the bytes of every packed buffer} */
+    public long bytes() {
+        long n = 0;
+        for (FloatArray f : data) {
+            n += f.getNumBytesOfSegment();
+        }
+        return n;
+    }
+
+    /** {@return the buffer of {@link #ones()}} */
+    public int onesBuf() {
+        return onesBuf;
     }
 
     /** {@return the patch embedding} */
@@ -186,9 +219,8 @@ public final class TotoPacked {
     public synchronized FloatArray matrix(Lin l) {
         return matrices.computeIfAbsent(l, x -> {
             FloatArray m = new FloatArray(x.out() * x.in());
-            for (int i = 0; i < m.getSize(); i++) {
-                m.set(i, data.get(x.w() + i));
-            }
+            MemorySegment.copy(data.get(x.buf()).getSegment(), (long) x.w() * Float.BYTES, m.getSegment(), 0,
+                    (long) m.getSize() * Float.BYTES);
             return m;
         });
     }
@@ -202,21 +234,39 @@ public final class TotoPacked {
         return halfMatrices.computeIfAbsent(l, x -> {
             HalfFloatArray m = new HalfFloatArray(x.out() * x.in());
             for (int i = 0; i < m.getSize(); i++) {
-                m.set(i, new HalfFloat(Math.clamp(data.get(x.w() + i) / x.gain(), -Kernels.HALF_MAX, Kernels.HALF_MAX)));
+                m.set(i, new HalfFloat(Math.clamp(data.get(x.buf()).get(x.w() + i) / x.gain(), -Kernels.HALF_MAX, Kernels.HALF_MAX)));
             }
             return m;
         });
     }
 
     private static final class Packer {
-        private final List<float[]> parts = new ArrayList<>();
-        private int size;
+        private final List<List<float[]>> chunks = new ArrayList<>(List.of(new ArrayList<>()));
+        private final List<Integer> sizes = new ArrayList<>(List.of(0));
 
-        int add(float[] v) {
-            int off = size;
-            parts.add(v);
-            size += v.length;
-            return off;
+        /** Adds parts to one buffer, a new one when they do not fit; returns the buffer, then each part's offset. */
+        int[] add(float[]... parts) {
+            long total = 0;
+            for (float[] v : parts) {
+                total += v.length;
+            }
+            if (total > BUFFER_FLOATS) {
+                throw new IllegalArgumentException("a layer of " + total + " floats does not fit one buffer");
+            }
+            int c = chunks.size() - 1;
+            if (sizes.get(c) + total > BUFFER_FLOATS) {
+                chunks.add(new ArrayList<>());
+                sizes.add(0);
+                c++;
+            }
+            int[] out = new int[parts.length + 1];
+            out[0] = c;
+            for (int i = 0; i < parts.length; i++) {
+                out[i + 1] = sizes.get(c);
+                chunks.get(c).add(parts[i]);
+                sizes.set(c, sizes.get(c) + parts[i].length);
+            }
+            return out;
         }
 
         /** A linear layer with each output row's weights scaled by {@code wScale[row]} and bias by {@code bScale[row]}. */
@@ -233,16 +283,16 @@ public final class TotoPacked {
             }
             double rms = Math.sqrt(ss / ws.length);
             float gain = rms >= 1.0 / 16 || rms == 0 ? 1f : (float) Math.pow(2, Math.round(Math.log(rms) / Math.log(2)));
-            int w = add(ws);
-            int b = -1;
-            if (bias != null) {
-                float[] bs = new float[out];
-                for (int r = 0; r < out; r++) {
-                    bs[r] = (float) (bias[r] * bScale[r]);
-                }
-                b = add(bs);
+            if (bias == null) {
+                int[] o = add(ws);
+                return new Lin(o[0], o[1], -1, in, out, gain);
             }
-            return new Lin(w, b, in, out, gain);
+            float[] bs = new float[out];
+            for (int r = 0; r < out; r++) {
+                bs[r] = (float) (bias[r] * bScale[r]);
+            }
+            int[] o = add(ws, bs);
+            return new Lin(o[0], o[1], o[2], in, out, gain);
         }
 
         Lin lin(TotoWeights.Linear l, double[] wScale, double[] bScale) {
@@ -259,16 +309,18 @@ public final class TotoPacked {
             return new Mlp(a, b, skip);
         }
 
-        FloatArray build() {
-            FloatArray f = new FloatArray(size);
-            int off = 0;
-            for (float[] v : parts) {
-                for (int i = 0; i < v.length; i++) {
-                    f.set(off + i, v[i]);
+        List<FloatArray> build() {
+            List<FloatArray> out = new ArrayList<>();
+            for (int c = 0; c < chunks.size(); c++) {
+                FloatArray f = new FloatArray(sizes.get(c));
+                int off = 0;
+                for (float[] v : chunks.get(c)) {
+                    MemorySegment.copy(v, 0, f.getSegment(), ValueLayout.JAVA_FLOAT, (long) off * Float.BYTES, v.length);
+                    off += v.length;
                 }
-                off += v.length;
+                out.add(f);
             }
-            return f;
+            return List.copyOf(out);
         }
     }
 }
