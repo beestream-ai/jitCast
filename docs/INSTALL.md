@@ -110,5 +110,6 @@ To use jitcast from another Maven project, install it into the local Maven repos
 | [Chronos-2](models/CHRONOS2.md#quick-start) | `amazon/chronos-2`, `autogluon/chronos-2-small` | none: `config.json` + `model.safetensors` as published |
 | [TimesFM 2.5](models/TIMESFM.md#quick-start) | `google/timesfm-2.5-200m-pytorch` | none: `model.safetensors` + `config.json` as published |
 | [t0](models/T0.md#quick-start) | `theforecastingcompany/t0-{alpha,beta,gamma}` | none: `model.safetensors` + `config.json` as published |
+| [Toto 2.0](models/TOTO.md#quick-start) | `Datadog/Toto-2.0-{4m,22m,313m,1B,2.5B}` | none: `config.json` + `model.safetensors` as published |
 
 Next: [running jitcast](USAGE.md).

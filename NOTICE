@@ -6,10 +6,11 @@ This product is licensed under the Apache License, Version 2.0 (see LICENSE).
 It runs NX-AI's TiRex-2 (https://github.com/NX-AI/tirex-2), Mistral AI's Timestral
 (https://huggingface.co/mistralai/Timestral-5M), Amazon's Chronos-2
 (https://huggingface.co/amazon/chronos-2), Google's TimesFM 2.5
-(https://huggingface.co/google/timesfm-2.5-200m-pytorch) and The Forecasting Company's t0
-(https://huggingface.co/theforecastingcompany/t0-gamma). The model weights are not part of this
+(https://huggingface.co/google/timesfm-2.5-200m-pytorch), The Forecasting Company's t0
+(https://huggingface.co/theforecastingcompany/t0-gamma) and Datadog's Toto 2.0
+(https://huggingface.co/collections/Datadog/toto-20). The model weights are not part of this
 repository; they are downloaded from Hugging Face under their authors' terms: NX-AI's own licence for
-TiRex-2, a Modified MIT licence for Timestral, and the Apache License 2.0 for Chronos-2, TimesFM and t0.
+TiRex-2, a Modified MIT licence for Timestral, and the Apache License 2.0 for Chronos-2, TimesFM, t0 and Toto 2.0.
 
 ------------------------------------------------------------------------------------------------
 src/main/java/ai/beestream/jitcast/util/Json.java is derived from jitllm

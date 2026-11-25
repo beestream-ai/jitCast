@@ -31,13 +31,14 @@ try (ForecastEngine engine = TornadoTimestralEngine.load(Path.of("Timestral-5M")
 | [Chronos-2](models/CHRONOS2.md) | `chronos2.tornado.TornadoChronos2Engine` | `chronos2.cpu.CpuChronos2Engine` | a checkpoint directory |
 | [TimesFM 2.5](models/TIMESFM.md) | `timesfm.tornado.TornadoTimesFmEngine` | `timesfm.cpu.CpuTimesFmEngine` | a checkpoint directory |
 | [t0](models/T0.md) | `t0.tornado.TornadoT0Engine` | `t0.cpu.CpuT0Engine` | a checkpoint directory |
+| [Toto 2.0](models/TOTO.md) | `toto.tornado.TornadoTotoEngine` | `toto.cpu.CpuTotoEngine` | a checkpoint directory |
 
 - **Quantiles.** TiRex-2: 9 (0.1 … 0.9). Timestral: 21 (0.01 … 0.99). Chronos-2: its checkpoint's
   (21 for `chronos-2`, 13 for `chronos-2-small`). TimesFM 2.5: 9 (0.1 … 0.9). t0: 21 (0.01, 0.05,
-  …, 0.95, 0.99), or any levels in (0, 1) through `T0Pipeline.Options`.
-- **Horizons.** TiRex-2 up to its checkpoint's future length. Timestral, Chronos-2, TimesFM and t0
-  any horizon (TimesFM up to 1,024 steps with its continuous quantile head; t0 up to 1,024 per forward
-  pass, then an autoregressive rollout).
+  …, 0.95, 0.99), or any levels in (0, 1) through `T0Pipeline.Options`. Toto 2.0: 9 (0.1 … 0.9).
+- **Horizons.** TiRex-2 up to its checkpoint's future length. Timestral, Chronos-2, TimesFM, t0 and
+  Toto 2.0 any horizon (TimesFM up to 1,024 steps with its continuous quantile head; t0 up to 1,024 per
+  forward pass, then an autoregressive rollout; Toto 2.0 in one forward pass).
 - **Batches.** A call is split into forward passes by series count and a token budget. A series'
   forecast does not depend on the rest of its batch, except with Chronos-2's cross-learning.
 - **Engines** are thread-safe and `AutoCloseable`; close them to free device memory.

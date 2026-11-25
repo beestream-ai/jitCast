@@ -14,7 +14,7 @@ Each model family reproduces its reference engine's `forecast()` end to end, wit
 - **Forward pass on a TornadoVM device**: one plan per batch shape, compiled once and kept in a
   `tornado.PlanCache` (least recently used evicted within a device-memory budget), activations on the
   device. GEMMs, RMSNorm, SwiGLU and their epilogues are shared kernels (`tornado.Kernels`), selected
-  by `tornado.GemmMode` for Timestral, Chronos-2, TimesFM and t0 and by `TornadoForward.GemmMode` for TiRex-2.
+  by `tornado.GemmMode` for Timestral, Chronos-2, TimesFM, t0 and Toto 2.0 and by `TornadoForward.GemmMode` for TiRex-2.
   The rest are the family's own kernels.
 - **CPU reference**: a plain-Java FP32 forward pass from the shared operators (`cpu.Ops`), the
   oracle the device kernels are tested against.
@@ -49,6 +49,9 @@ grid and bounds checks, so one code base runs on CUDA, OpenCL and Metal. The one
 | `t0` | `T0Config`, `T0Weights`, `T0Batch` (the native input), `T0Scaler`, `T0Quantiles`, `T0Forward`, `T0Pipeline` (batch assembly, rollout, post-processing) |
 | `t0.cpu` | `CpuT0`, `CpuT0Engine` |
 | `t0.tornado` | `T0Kernels`, `T0Packed`, `TornadoT0Forward`, `TornadoT0Engine` |
+| `toto` | `TotoConfig`, `TotoWeights`, `TotoForward`, `TotoPipeline` (imputation, trimming, the causal scaler, post-processing) |
+| `toto.cpu` | `CpuToto`, `CpuTotoEngine` |
+| `toto.tornado` | `TotoKernels`, `TotoPacked` (unit-scaling constants folded in), `TornadoTotoForward`, `TornadoTotoEngine` |
 
 ## Adding a model family
 
@@ -92,3 +95,4 @@ broken doc comment. Every push to `main` publishes it at
 | `chronos2/dump_golden.py` | Chronos-2 goldens: every forward call's arguments, stages and output, forecasts, float64 distances |
 | `timesfm/dump_golden.py` | TimesFM 2.5 goldens: every decode call's arguments and outputs, the prefill's stages, forecasts, float64 distances |
 | `t0/dump_golden.py` | t0 goldens: every forward window, the scaler's output, every stage and output, forecasts, float64 distances |
+| `toto/dump_golden.py` | Toto 2.0 goldens: the forward's inputs, the scaler's output, every stage, the head, forecasts, float64 distances |

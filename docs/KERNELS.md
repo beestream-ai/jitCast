@@ -105,3 +105,15 @@ t0's own kernels are in [`T0Kernels.java`](../src/main/java/ai/beestream/jitcast
 | [`biasSwiGlu`](../src/main/java/ai/beestream/jitcast/t0/tornado/T0Kernels.java) | SwiGLU of the gate and value projections with their bias added |
 | [`gatherPatches`](../src/main/java/ai/beestream/jitcast/t0/tornado/T0Kernels.java) | The patches whose predictions are wanted, for the decoder |
 | [`quantileHead`](../src/main/java/ai/beestream/jitcast/t0/tornado/T0Kernels.java) | The first level, then the running sum of the softplus of the others: monotone quantiles |
+
+## Toto 2.0
+
+Toto's own kernels are in [`TotoKernels.java`](../src/main/java/ai/beestream/jitcast/toto/tornado/TotoKernels.java); its GEMMs (with the SiLU and accumulate epilogues), RMSNorm (with a weight of ones) and SwiGLU are the shared ones above. The unit-scaling constants are folded into the packed weights, so every GEMM is a plain linear layer.
+
+| Kernel | What it computes |
+|---|---|
+| [`rope`](../src/main/java/ai/beestream/jitcast/toto/tornado/TotoKernels.java) | In place on q and k: the rotary embedding on interleaved pairs of the first half of each head, with xPos scaling (q times the scale, k divided by it), from a per-plan table |
+| [`timeAttention`](../src/main/java/ai/beestream/jitcast/toto/tornado/TotoKernels.java) | Flash-style causal attention along each row's patches per row and head: 16 queries per work-group, blocks of 16 keys staged in local memory, online softmax; a query sees the earlier patches of its own validity |
+| [`variateAttention`](../src/main/java/ai/beestream/jitcast/toto/tornado/TotoKernels.java) | Attention across the rows of each series at each patch, one work-group per row, patch and head, a thread per head dimension, online softmax over the rows of the same validity |
+| [`gather`](../src/main/java/ai/beestream/jitcast/toto/tornado/TotoKernels.java) | The patches whose outputs predict the forecast patches, for the head |
+| [`mix`](../src/main/java/ai/beestream/jitcast/toto/tornado/TotoKernels.java) | The residual stream around a branch: `x · keep + branch`, the branch's weight folded into its last GEMM |
