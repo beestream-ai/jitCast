@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="722" viewBox="0 0 1400 722" role="img" aria-label="jitcast architecture">
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="756" viewBox="0 0 1400 756" role="img" aria-label="jitcast architecture">
 <title>jitcast architecture</title>
 <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#9AAABB"/></marker></defs>
-<rect x="0" y="0" width="1400" height="722" rx="16" fill="#FFFFFF"/>
+<rect x="0" y="0" width="1400" height="756" rx="16" fill="#FFFFFF"/>
 <text x="24" y="32" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#4A5B6C" text-anchor="start">CALLERS</text>
 <rect x="24.0" y="40" width="440.0" height="58" rx="10" fill="#FFFFFF" stroke="#D6E1EC" stroke-width="1.2"/>
 <text x="244.0" y="66.5" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#0B1F33" text-anchor="middle">Java application</text>
@@ -15,13 +15,13 @@
 <rect x="936.0" y="40" width="440.0" height="58" rx="10" fill="#FFFFFF" stroke="#D6E1EC" stroke-width="1.2"/>
 <text x="1156.0" y="59.0" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#0B1F33" text-anchor="middle">Benchmarks</text>
 <text x="1156.0" y="76.0" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="middle">TiRexBench, TimestralBench, Chronos2Bench,</text>
-<text x="1156.0" y="91.0" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="middle">TimesFmBench, T0Bench, cold start</text>
+<text x="1156.0" y="91.0" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="middle">TimesFmBench, T0Bench, TotoBench, cold start</text>
 <line x1="1156.0" y1="100" x2="1156.0" y2="120" stroke="#9AAABB" stroke-width="1.6" marker-end="url(#ah)"/>
 <rect x="24" y="122" width="1352" height="44" rx="10" fill="#EAF2FB" stroke="#D6E1EC" stroke-width="1.2"/>
 <text x="700.0" y="142" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" font-weight="700" fill="#0B1F33" text-anchor="middle">api · ForecastEngine.forecast(List&lt;TimeSeries&gt;, horizon) → List&lt;Forecast&gt;</text>
 <text x="700.0" y="158" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#0B1F33" text-anchor="middle">targets, past and known-future covariates (NaN = missing)  →  quantiles per series and step</text>
 <text x="24" y="198" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#4A5B6C" text-anchor="start">MODEL FAMILIES</text>
-<rect x="24" y="208" width="1352" height="294" rx="12" fill="#F7FAFD" stroke="#D6E1EC" stroke-width="1.2"/>
+<rect x="24" y="208" width="1352" height="328" rx="12" fill="#F7FAFD" stroke="#D6E1EC" stroke-width="1.2"/>
 <rect x="40" y="224" width="230" height="62" rx="10" fill="#FFFFFF" stroke="#D6E1EC" stroke-width="1.2"/>
 <text x="155.0" y="245.0" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#0B1F33" text-anchor="middle">Config + Weights</text>
 <text x="155.0" y="262.0" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="middle">safetensors, every tensor</text>
@@ -82,35 +82,42 @@
 <text x="298" y="473" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="start">causal asinh scaler, rollout,</text>
 <text x="298" y="487" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="start">quantile interpolation, adjustments</text>
 <text x="686" y="480" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="12" font-weight="500" fill="#0B1F33" text-anchor="start">xPos RoPE · time &amp; group attention</text>
-<text x="24" y="532" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#4A5B6C" text-anchor="start">SHARED</text>
-<rect x="24" y="542" width="200" height="58" rx="10" fill="#FFFFFF" stroke="#D6E1EC" stroke-width="1.2"/>
-<text x="124.0" y="568.5" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="600" fill="#0B1F33" text-anchor="middle">io</text>
-<text x="124.0" y="585.5" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="middle">SafeTensors (mmap)</text>
-<rect x="236" y="542" width="230" height="58" rx="10" fill="#FFFFFF" stroke="#D6E1EC" stroke-width="1.2"/>
-<text x="351.0" y="568.5" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="600" fill="#0B1F33" text-anchor="middle">host</text>
-<text x="351.0" y="585.5" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="middle">SeriesWindows · SignFlip</text>
-<rect x="478" y="542" width="200" height="58" rx="10" fill="#FFFFFF" stroke="#D6E1EC" stroke-width="1.2"/>
-<text x="578.0" y="568.5" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="600" fill="#0B1F33" text-anchor="middle">cpu</text>
-<text x="578.0" y="585.5" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="middle">Ops: FP32 operators</text>
-<rect x="690" y="542" width="686" height="58" rx="10" fill="#FFFFFF" stroke="#D6E1EC" stroke-width="1.2"/>
-<text x="1033.0" y="561.0" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="600" fill="#0B1F33" text-anchor="middle">tornado</text>
-<text x="1033.0" y="578.0" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="middle">Kernels: GEMMs (tiled, blocked, simdgroup, FP16, CUDA Tile)</text>
-<text x="1033.0" y="593.0" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="middle">RMSNorm · SwiGLU · GemmMode · PlanCache · SharedWeights</text>
-<text x="24" y="630" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#4A5B6C" text-anchor="start">RUNS ON</text>
-<rect x="24" y="640" width="200" height="62" rx="10" fill="#FFFFFF" stroke="#D6E1EC" stroke-width="1.2"/>
-<text x="124.0" y="668.5" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#0B1F33" text-anchor="middle">JVM</text>
-<text x="124.0" y="685.5" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="middle">CPU engines, Java 22+</text>
-<rect x="236" y="640" width="1140" height="62" rx="10" fill="#F7FAFD" stroke="#D6E1EC" stroke-width="1.2"/>
-<text x="250" y="660" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#0B1F33" text-anchor="start">TornadoVM 8</text>
-<text x="250" y="676" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#4A5B6C" text-anchor="start">KernelContext kernels,</text>
-<text x="250" y="690" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#4A5B6C" text-anchor="start">explicit worker grids</text>
-<rect x="416.0" y="648" width="309.3333333333333" height="46" rx="10" fill="#FFFFFF" stroke="#D6E1EC" stroke-width="1.2"/>
-<text x="570.6666666666666" y="668.5" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#0B1F33" text-anchor="middle">CUDA</text>
-<text x="570.6666666666666" y="685.5" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="middle">+ cuBLAS · CUDA Tile · graphs</text>
-<rect x="735.3333333333333" y="648" width="309.3333333333333" height="46" rx="10" fill="#FFFFFF" stroke="#D6E1EC" stroke-width="1.2"/>
-<text x="889.9999999999999" y="668.5" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#0B1F33" text-anchor="middle">OpenCL</text>
-<text x="889.9999999999999" y="685.5" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="middle">any OpenCL GPU</text>
-<rect x="1054.6666666666665" y="648" width="309.3333333333333" height="46" rx="10" fill="#FFFFFF" stroke="#D6E1EC" stroke-width="1.2"/>
-<text x="1209.3333333333333" y="668.5" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#0B1F33" text-anchor="middle">Metal</text>
-<text x="1209.3333333333333" y="685.5" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="middle">simdgroup matrices</text>
+<line x1="40" y1="492" x2="1360" y2="492" stroke="#D6E1EC" stroke-width="1"/>
+<rect x="40" y="498" width="4" height="22" rx="2" fill="#F472B6"/>
+<text x="52" y="507" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="700" fill="#0B1F33" text-anchor="start">Toto 2.0</text>
+<text x="52" y="521" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="400" fill="#4A5B6C" text-anchor="start">Datadog · decoder-only · 4M–2.5B</text>
+<text x="298" y="507" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="start">causal scaler, short-patch fallback,</text>
+<text x="298" y="521" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="start">asinh in, quantile cap and sort</text>
+<text x="686" y="514" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="12" font-weight="500" fill="#0B1F33" text-anchor="start">xPos RoPE · time &amp; variate attention</text>
+<text x="24" y="566" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#4A5B6C" text-anchor="start">SHARED</text>
+<rect x="24" y="576" width="200" height="58" rx="10" fill="#FFFFFF" stroke="#D6E1EC" stroke-width="1.2"/>
+<text x="124.0" y="602.5" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="600" fill="#0B1F33" text-anchor="middle">io</text>
+<text x="124.0" y="619.5" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="middle">SafeTensors (mmap)</text>
+<rect x="236" y="576" width="230" height="58" rx="10" fill="#FFFFFF" stroke="#D6E1EC" stroke-width="1.2"/>
+<text x="351.0" y="602.5" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="600" fill="#0B1F33" text-anchor="middle">host</text>
+<text x="351.0" y="619.5" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="middle">SeriesWindows · SignFlip</text>
+<rect x="478" y="576" width="200" height="58" rx="10" fill="#FFFFFF" stroke="#D6E1EC" stroke-width="1.2"/>
+<text x="578.0" y="602.5" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="600" fill="#0B1F33" text-anchor="middle">cpu</text>
+<text x="578.0" y="619.5" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="middle">Ops: FP32 operators</text>
+<rect x="690" y="576" width="686" height="58" rx="10" fill="#FFFFFF" stroke="#D6E1EC" stroke-width="1.2"/>
+<text x="1033.0" y="595.0" font-family="'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace" font-size="13" font-weight="600" fill="#0B1F33" text-anchor="middle">tornado</text>
+<text x="1033.0" y="612.0" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="middle">Kernels: GEMMs (tiled, blocked, simdgroup, FP16, CUDA Tile)</text>
+<text x="1033.0" y="627.0" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="middle">RMSNorm · SwiGLU · GemmMode · PlanCache · SharedWeights</text>
+<text x="24" y="664" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#4A5B6C" text-anchor="start">RUNS ON</text>
+<rect x="24" y="674" width="200" height="62" rx="10" fill="#FFFFFF" stroke="#D6E1EC" stroke-width="1.2"/>
+<text x="124.0" y="702.5" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#0B1F33" text-anchor="middle">JVM</text>
+<text x="124.0" y="719.5" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="middle">CPU engines, Java 22+</text>
+<rect x="236" y="674" width="1140" height="62" rx="10" fill="#F7FAFD" stroke="#D6E1EC" stroke-width="1.2"/>
+<text x="250" y="694" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#0B1F33" text-anchor="start">TornadoVM 8</text>
+<text x="250" y="710" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#4A5B6C" text-anchor="start">KernelContext kernels,</text>
+<text x="250" y="724" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#4A5B6C" text-anchor="start">explicit worker grids</text>
+<rect x="416.0" y="682" width="309.3333333333333" height="46" rx="10" fill="#FFFFFF" stroke="#D6E1EC" stroke-width="1.2"/>
+<text x="570.6666666666666" y="702.5" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#0B1F33" text-anchor="middle">CUDA</text>
+<text x="570.6666666666666" y="719.5" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="middle">+ cuBLAS · CUDA Tile · graphs</text>
+<rect x="735.3333333333333" y="682" width="309.3333333333333" height="46" rx="10" fill="#FFFFFF" stroke="#D6E1EC" stroke-width="1.2"/>
+<text x="889.9999999999999" y="702.5" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#0B1F33" text-anchor="middle">OpenCL</text>
+<text x="889.9999999999999" y="719.5" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="middle">any OpenCL GPU</text>
+<rect x="1054.6666666666665" y="682" width="309.3333333333333" height="46" rx="10" fill="#FFFFFF" stroke="#D6E1EC" stroke-width="1.2"/>
+<text x="1209.3333333333333" y="702.5" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#0B1F33" text-anchor="middle">Metal</text>
+<text x="1209.3333333333333" y="719.5" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#4A5B6C" text-anchor="middle">simdgroup matrices</text>
 </svg>

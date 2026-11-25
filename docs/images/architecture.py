@@ -21,12 +21,12 @@ import sys
 from xml.sax.saxutils import escape
 
 OUT = sys.argv[1] if len(sys.argv) > 1 else "."
-W, H = 1400, 722
+W, H = 1400, 756
 FONT = "Inter, 'Segoe UI', Helvetica, Arial, sans-serif"
 MONO = "'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace"
 T = dict(bg="#FFFFFF", ink="#0B1F33", sub="#4A5B6C", panel="#F7FAFD", box="#FFFFFF", line="#D6E1EC",
          strong="#EAF2FB", strong_ink="#0B1F33", arrow="#9AAABB")
-ORANGE, AMBER, TEAL, VIOLET, BLUE = "#FF7A1A", "#FFB36B", "#4FD1C5", "#8B7CF6", "#4C9AFF"
+ORANGE, AMBER, TEAL, VIOLET, BLUE, PINK = "#FF7A1A", "#FFB36B", "#4FD1C5", "#8B7CF6", "#4C9AFF", "#F472B6"
 
 FAMILIES = [
     ("TiRex-2", "NXAI · xLSTM · 82.5M", ORANGE,
@@ -39,6 +39,8 @@ FAMILIES = [
      ["running-stat normalization, fed-back", "decoding, flip averaging"], "RoPE + qk-norm · causal attention"),
     ("t0", "The Forecasting Company · 102M, 256M", BLUE,
      ["causal asinh scaler, rollout,", "quantile interpolation, adjustments"], "xPos RoPE · time & group attention"),
+    ("Toto 2.0", "Datadog · decoder-only · 4M–2.5B", PINK,
+     ["causal scaler, short-patch fallback,", "asinh in, quantile cap and sort"], "xPos RoPE · time & variate attention"),
 ]
 
 
@@ -81,7 +83,7 @@ def svg():
     cw = (iw - 2 * 16) / 3
     callers = [("Java application", ["any JVM program, one Java API"]),
                ("Python harnesses", ["fev-bench, GIFT-Eval via TiRexServer /", "TimestralServer (local socket)"]),
-               ("Benchmarks", ["TiRexBench, TimestralBench, Chronos2Bench,", "TimesFmBench, T0Bench, cold start"])]
+               ("Benchmarks", ["TiRexBench, TimestralBench, Chronos2Bench,", "TimesFmBench, T0Bench, TotoBench, cold start"])]
     for i, (ti, ls) in enumerate(callers):
         box(m + i * (cw + 16), y + 20, cw, 58, ti, ls)
         arrow(m + i * (cw + 16) + cw / 2, y + 80, m + i * (cw + 16) + cw / 2, y + 100)
