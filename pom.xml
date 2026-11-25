@@ -129,6 +129,8 @@
                         <include>ai/beestream/jitcast/chronos2/Chronos2Config.java</include>
                         <include>ai/beestream/jitcast/timesfm/TimesFmPipeline.java</include>
                         <include>ai/beestream/jitcast/timesfm/TimesFmConfig.java</include>
+                        <include>ai/beestream/jitcast/t0/T0Pipeline.java</include>
+                        <include>ai/beestream/jitcast/t0/T0Config.java</include>
                         <include>ai/beestream/jitcast/tornado/Devices.java</include>
                     </sourceFileIncludes>
                 </configuration>

@@ -4,7 +4,7 @@
 
 Options are JVM properties (`-D…`), read when an engine is created. A value that does not parse, or a
 GEMM mode the device cannot run, fails engine creation with the property's name; nothing falls back
-silently. Shared options come first, then each model's own (`tirex.*`, `timestral.*`, `chronos2.*`, `timesfm.*`).
+silently. Shared options come first, then each model's own (`tirex.*`, `timestral.*`, `chronos2.*`, `timesfm.*`, `t0.*`).
 
 An engine can be shared between threads. A TornadoVM engine runs calls one at a time, because every
 call of a shape reuses that shape's device buffers.
@@ -13,14 +13,14 @@ call of a shape reuses that shape's device buffers.
 
 The defaults are accurate to FP32 on every platform. Start from them and add flags from this table.
 
-| Platform | TiRex-2 | Timestral | Chronos-2 | TimesFM 2.5 |
-|---|---|---|---|---|
-| **NVIDIA, CUDA** (default: cuBLAS FP32 with CUDA graphs) | fastest: `-Dtirex.tornado.gemm=cublas-auto` | fastest: `-Dtimestral.tornado.gemm=cublas-fp16` | fastest: `-Dchronos2.tornado.gemm=cublas-fp16` | fastest: `-Dtimesfm.tornado.gemm=cublas-fp16` |
-| NVIDIA, closest to FP32 | `-Dtirex.tornado.slstmR=fp32` | defaults | defaults | defaults |
-| NVIDIA, no vendor libraries | `-Dtirex.tornado.gemm=cutile` (toolkit 13.3+) or `half` | `-Dtimestral.tornado.gemm=half` | `-Dchronos2.tornado.gemm=half` | `-Dtimesfm.tornado.gemm=half` |
-| **Apple Silicon, Metal** | `-Dtirex.tornado.gemm=half` | defaults (simdgroup GEMMs) | defaults (simdgroup GEMMs) | defaults (simdgroup GEMMs) |
-| Apple Silicon, SDK with Metal and OpenCL | as above, plus `-Dtornado.metal.priority=100` | `-Dtornado.metal.priority=100` | `-Dtornado.metal.priority=100` | `-Dtornado.metal.priority=100` |
-| Other OpenCL GPUs | `-Dtirex.tornado.gemm=half` (`tiled` for FP32) | defaults | defaults | defaults |
+| Platform | TiRex-2 | Timestral | Chronos-2 | TimesFM 2.5 | t0 |
+|---|---|---|---|---|---|
+| **NVIDIA, CUDA** (default: cuBLAS FP32 with CUDA graphs) | fastest: `-Dtirex.tornado.gemm=cublas-auto` | fastest: `-Dtimestral.tornado.gemm=cublas-fp16` | fastest: `-Dchronos2.tornado.gemm=cublas-fp16` | fastest: `-Dtimesfm.tornado.gemm=cublas-fp16` | fastest: `-Dt0.tornado.gemm=cublas-fp16` |
+| NVIDIA, closest to FP32 | `-Dtirex.tornado.slstmR=fp32` | defaults | defaults | defaults | defaults |
+| NVIDIA, no vendor libraries | `-Dtirex.tornado.gemm=cutile` (toolkit 13.3+) or `half` | `-Dtimestral.tornado.gemm=half` | `-Dchronos2.tornado.gemm=half` | `-Dtimesfm.tornado.gemm=half` | `-Dt0.tornado.gemm=half` |
+| **Apple Silicon, Metal** | `-Dtirex.tornado.gemm=half` | defaults (simdgroup GEMMs) | defaults (simdgroup GEMMs) | defaults (simdgroup GEMMs) | defaults (simdgroup GEMMs) |
+| Apple Silicon, SDK with Metal and OpenCL | as above, plus `-Dtornado.metal.priority=100` | `-Dtornado.metal.priority=100` | `-Dtornado.metal.priority=100` | `-Dtornado.metal.priority=100` | `-Dtornado.metal.priority=100` |
+| Other OpenCL GPUs | `-Dtirex.tornado.gemm=half` (`tiled` for FP32) | defaults | defaults | defaults | defaults |
 
 The FP16 modes keep FP32 accumulation; their forecasts move slightly off the FP32 reference.
 
@@ -170,3 +170,23 @@ quantile levels) with the reference's defaults; `withBatchSize` sets rows per ba
 Programmatic: `TimesFmPipeline.Options` (the reference's `ForecastConfig`: context cap, input
 normalization, continuous quantile head, flip averaging, non-negative clamping, quantile-crossing fix),
 defaulting to the configuration Google recommends; `withBatchSize` sets series per forward pass (64).
+
+## t0
+
+| Property | Values (default first) | Effect |
+|---|---|---|
+| `t0.tornado.gemm` | as `timestral.tornado.gemm` | Same modes and `auto` rule |
+| `t0.tornado.blockedMinRows`, `wideMinRows`, `simdgroupWideMinRows`, `splitKTarget`, `splitKMax` | `128`, `1024`, `64`, `320`, `16` | As for Timestral |
+| `t0.tornado.cudaGraph` | `true` with cuBLAS | Replay each plan as a CUDA graph |
+| `t0.tornado.plans` | `8` | Shapes kept compiled (rows, patches, output patches) |
+| `t0.tornado.planBytes` | `tornado.device.memory` minus the weights | Device memory the cached plans' activations may hold together |
+| `t0.maxTokens` | `16384` | Most tokens (rows × patches, including the forecast region and every rollout trajectory) per forward pass; a larger series runs alone |
+| `t0.tornado.profile` | `false` | Print per-task kernel times (analysis only) |
+
+There is no key-value cache: one forward pass covers up to 1,024 steps, and each step of the longer
+rollout slides the window, which moves every position.
+
+Programmatic: `T0Pipeline.Options` (the reference's `predict()` keywords: quantile levels, leading-missing
+trimming, symmetric averaging, non-negative clipping, integer snapping, constant-covariate dropping),
+with the reference's defaults; `withRecommendedAdjustments()` turns on the four adjustments it
+recommends. `withBatchSize` sets series per forward pass (64), `withMaxTokens` the token budget.

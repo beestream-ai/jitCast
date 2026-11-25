@@ -109,5 +109,6 @@ To use jitcast from another Maven project, install it into the local Maven repos
 | [Timestral](models/TIMESTRAL.md#quick-start) | `mistralai/Timestral-{5M,28M,123M,209M}` | none: `config.json` + `model.safetensors` as published |
 | [Chronos-2](models/CHRONOS2.md#quick-start) | `amazon/chronos-2`, `autogluon/chronos-2-small` | none: `config.json` + `model.safetensors` as published |
 | [TimesFM 2.5](models/TIMESFM.md#quick-start) | `google/timesfm-2.5-200m-pytorch` | none: `model.safetensors` + `config.json` as published |
+| [t0](models/T0.md#quick-start) | `theforecastingcompany/t0-{alpha,beta,gamma}` | none: `model.safetensors` + `config.json` as published |
 
 Next: [running jitcast](USAGE.md).

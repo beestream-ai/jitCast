@@ -21,12 +21,12 @@ import sys
 from xml.sax.saxutils import escape
 
 OUT = sys.argv[1] if len(sys.argv) > 1 else "."
-W, H = 1160, 744
+W, H = 1400, 744
 FONT = "Inter, 'Segoe UI', Helvetica, Arial, sans-serif"
 MONO = "'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace"
 T = dict(bg="#FFFFFF", ink="#0B1F33", sub="#4A5B6C", panel="#F7FAFD", box="#FFFFFF", line="#D6E1EC",
          strong="#EAF2FB", strong_ink="#0B1F33", arrow="#9AAABB")
-ORANGE, AMBER, TEAL, VIOLET = "#FF7A1A", "#FFB36B", "#4FD1C5", "#8B7CF6"
+ORANGE, AMBER, TEAL, VIOLET, BLUE = "#FF7A1A", "#FFB36B", "#4FD1C5", "#8B7CF6", "#4C9AFF"
 
 FAMILIES = [
     ("TiRex-2", "NXAI · xLSTM · 82.5M", ORANGE,
@@ -37,6 +37,8 @@ FAMILIES = [
      ["instance norm, long-horizon unrolling,", "quantile interpolation"], "RoPE · time & group attention"),
     ("TimesFM 2.5", "Google · decoder-only · 200M", VIOLET,
      ["running-stat normalization, fed-back", "decoding, flip averaging"], "RoPE + qk-norm · causal attention"),
+    ("t0", "The Forecasting Company · 102M, 256M", BLUE,
+     ["causal asinh scaler, rollout,", "quantile interpolation, adjustments"], "xPos RoPE · time & group attention"),
 ]
 
 
@@ -94,7 +96,7 @@ def svg():
     y = 186
     text(m, y + 12, "MODEL FAMILIES", 11, T["sub"], 700, "start")
     fy, fh = y + 22, 318
-    fw = (iw - 3 * 16) / 4
+    fw = (iw - (len(FAMILIES) - 1) * 16) / len(FAMILIES)
     for i, (name, sub, col, host, kern) in enumerate(FAMILIES):
         x = m + i * (fw + 16)
         rect(x, fy, fw, fh, T["panel"], T["line"], rx=12)

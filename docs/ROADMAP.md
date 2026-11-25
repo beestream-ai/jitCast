@@ -7,7 +7,7 @@ Planned work on jitcast, and the TornadoVM limits that affect it today.
 ## Models
 
 - **Chronos-2:** categorical covariates (target-encoded in the reference, as for Timestral).
-- **New families:** t0, Toto 2.0, TTM and FlowState are candidates, each checked against the benchmark
+- **New families:** Toto 2.0, TTM and FlowState are candidates, each checked against the benchmark
   leaderboards and its weight licence before porting.
 - **TimesFM 2.5:** covariates through the reference's linear model.
 - **Timestral's long-context attention:** its time attention kernel walks keys one at a time. The

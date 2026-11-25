@@ -25,6 +25,7 @@ calibration, test-time augmentation) in Java, the forward pass on the GPU.
 | [**Timestral**](docs/models/TIMESTRAL.md) | [Mistral AI](https://huggingface.co/mistralai/Timestral-5M) | 5M, 28M, 123M, 209M (transformer) | 21 quantiles, any horizon | univariate, multivariate, past and known-future covariates, categorical covariates |
 | [**Chronos-2**](docs/models/CHRONOS2.md) | [Amazon](https://huggingface.co/amazon/chronos-2) | 28M, 120M (T5-style encoder) | 13 or 21 quantiles, any horizon | univariate, multivariate, past and known-future covariates, cross-learning |
 | [**TimesFM 2.5**](docs/models/TIMESFM.md) | [Google Research](https://huggingface.co/google/timesfm-2.5-200m-pytorch) | 200M (decoder-only transformer) | 9 quantiles, any horizon | univariate |
+| [**t0**](docs/models/T0.md) | [The Forecasting Company](https://huggingface.co/theforecastingcompany/t0-gamma) | 102M, 256M (decoder-only transformer) | 21 quantiles (any levels), any horizon | univariate, multivariate, past and known-future covariates |
 
 - **Portable.** Every kernel is a TornadoVM `KernelContext` kernel, apart from one optional CUDA
   Tile GEMM: one code base for CUDA, OpenCL and Metal.
@@ -37,7 +38,7 @@ calibration, test-time augmentation) in Java, the forward pass on the GPU.
 ## Architecture
 
 <p align="center">
-  <img alt="jitcast architecture: callers use one Java API; each of the four model families has its config and weights, a host pipeline in Java, and a forward pass run by a CPU reference or a TornadoVM engine; shared io, host, cpu and tornado packages; TornadoVM runs the kernels on CUDA, OpenCL and Metal" src="docs/images/architecture-light.svg" width="100%">
+  <img alt="jitcast architecture: callers use one Java API; each of the five model families has its config and weights, a host pipeline in Java, and a forward pass run by a CPU reference or a TornadoVM engine; shared io, host, cpu and tornado packages; TornadoVM runs the kernels on CUDA, OpenCL and Metal" src="docs/images/architecture-light.svg" width="100%">
 </p>
 
 The forward pass runs either on the CPU reference, the FP32 oracle the device kernels are tested
@@ -77,13 +78,13 @@ java @$TORNADOVM_HOME/tornado-argfile -cp target/classes:<your app> -Djitcast.to
 
 ## Where it runs
 
-| Platform | Backend | TiRex-2 | Timestral | Chronos-2 | TimesFM 2.5 |
-|---|---|---|---|---|---|
-| NVIDIA GPU (tested: A100, A10, RTX 5070 Ti) | CUDA | validated | validated | validated | validated (A100) |
-| NVIDIA GPU | OpenCL | validated | validated | not tested | not tested |
-| Apple Silicon (tested: M4 Pro) | Metal, OpenCL | validated | validated | validated | validated |
-| Intel, AMD GPUs | OpenCL | expected to work | expected to work | expected to work | expected to work |
-| Any CPU | plain JVM | FP32 reference | FP32 reference | FP32 reference | FP32 reference |
+| Platform | Backend | TiRex-2 | Timestral | Chronos-2 | TimesFM 2.5 | t0 |
+|---|---|---|---|---|---|---|
+| NVIDIA GPU (tested: A100, A10, RTX 5070 Ti) | CUDA | validated | validated | validated | validated (A100) | validated (A100) |
+| NVIDIA GPU | OpenCL | validated | validated | not tested | not tested | not tested |
+| Apple Silicon (tested: M4 Pro) | Metal, OpenCL | validated | validated | validated | validated | not tested |
+| Intel, AMD GPUs | OpenCL | expected to work | expected to work | expected to work | expected to work | expected to work |
+| Any CPU | plain JVM | FP32 reference | FP32 reference | FP32 reference | FP32 reference | FP32 reference |
 
 The CPU engines are reference implementations for validation, not fast paths. Prefer CUDA on NVIDIA
 and Metal on Apple Silicon: OpenCL runs the same kernels without the vendor libraries.
@@ -96,10 +97,10 @@ speed, or fit the engine to a workload.
 | Where | Flag | Effect |
 |---|---|---|
 | NVIDIA | `-Dtirex.tornado.gemm=cublas-auto` | TiRex-2's fastest mode: FP16 tensor-core GEMMs, FP32 residual stream |
-| NVIDIA | `-Dtimestral.tornado.gemm=cublas-fp16`, `-Dchronos2.tornado.gemm=cublas-fp16`, `-Dtimesfm.tornado.gemm=cublas-fp16` | FP16 tensor-core GEMMs; forecasts move slightly off the FP32 reference |
+| NVIDIA | `-Dtimestral.tornado.gemm=cublas-fp16`, `-Dchronos2.tornado.gemm=cublas-fp16`, `-Dtimesfm.tornado.gemm=cublas-fp16`, `-Dt0.tornado.gemm=cublas-fp16` | FP16 tensor-core GEMMs; forecasts move slightly off the FP32 reference |
 | NVIDIA, no vendor libraries | `-Dtirex.tornado.gemm=cutile` | TornadoVM's own FP16 GEMM on tensor cores (CUDA Toolkit 13.3+) |
 | Apple Silicon | `-Dtirex.tornado.gemm=half` | TiRex-2's FP16 GEMM, faster than the FP32 default |
-| Apple Silicon, SDK with Metal and OpenCL | `-Dtornado.metal.priority=100` | Makes Metal the default backend, which enables the simdgroup GEMMs of Timestral, Chronos-2 and TimesFM |
+| Apple Silicon, SDK with Metal and OpenCL | `-Dtornado.metal.priority=100` | Makes Metal the default backend, which enables the simdgroup GEMMs of Timestral, Chronos-2, TimesFM and t0 |
 | Any GPU | `-Dtornado.device.memory=<most of the GPU>` (e.g. `20GB`) | TornadoVM caps device memory at 4 GB by default; a larger cap keeps more compiled plans and allows bigger batches |
 | Any GPU | `-D<model>.tornado.plans=<n>` | More batch shapes kept compiled, so recurring shapes skip recompilation |
 | Many different batch sizes | `-Dtirex.tornado.rowBuckets=pow2` | TiRex-2 pads row counts to powers of two, so sizes share plans |
@@ -115,7 +116,7 @@ rather than one series at a time. Every option, with per-model recommendations, 
 | [INSTALL.md](docs/INSTALL.md) | TornadoVM SDKs, device numbering, NVIDIA extras, building, weights |
 | [USAGE.md](docs/USAGE.md) | The Java API, the benchmark tools, the harness servers, the tests |
 | [CONFIGURATION.md](docs/CONFIGURATION.md) | Every option, GEMM modes, recommendations per platform |
-| [TIREX2.md](docs/models/TIREX2.md), [TIMESTRAL.md](docs/models/TIMESTRAL.md), [CHRONOS2.md](docs/models/CHRONOS2.md), [TIMESFM.md](docs/models/TIMESFM.md) | Each model: architecture, checkpoints, features, mapping onto jitcast, licence |
+| [TIREX2.md](docs/models/TIREX2.md), [TIMESTRAL.md](docs/models/TIMESTRAL.md), [CHRONOS2.md](docs/models/CHRONOS2.md), [TIMESFM.md](docs/models/TIMESFM.md), [T0.md](docs/models/T0.md) | Each model: architecture, checkpoints, features, mapping onto jitcast, licence |
 | [API reference](https://beestream-ai.github.io/jitCast/) | The Javadoc of the public API; `./mvnw javadoc:javadoc` builds it locally |
 | [KERNELS.md](docs/KERNELS.md) | Every device kernel and its vendor-library alternative |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Architecture, code layout, adding a model family, scripts |
@@ -128,5 +129,5 @@ jitcast is released under the [Apache License, Version 2.0](LICENSE). Copyright 
 
 The model weights are their authors' and jitcast does not distribute them: TiRex-2's are NX-AI's,
 under their own terms; Timestral's are Mistral AI's, under a Modified MIT licence with a revenue
-restriction ([TIMESTRAL.md](docs/models/TIMESTRAL.md#licence)); Chronos-2's are Amazon's and
-TimesFM 2.5's are Google's, both under Apache 2.0.
+restriction ([TIMESTRAL.md](docs/models/TIMESTRAL.md#licence)); Chronos-2's are Amazon's,
+TimesFM 2.5's Google's and t0's The Forecasting Company's, all under Apache 2.0.

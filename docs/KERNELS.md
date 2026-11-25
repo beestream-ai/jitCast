@@ -90,3 +90,16 @@ TimesFM's own kernels are in [`TimesFmKernels.java`](../src/main/java/ai/beestre
 | [`ropeNorm`](../src/main/java/ai/beestream/jitcast/timesfm/tornado/TimesFmKernels.java) | In place on q and k: RoPE at each patch's position counted from the row's first observed patch, then each head's RMSNorm with its scale, then the per-dimension query scale |
 | [`causalAttention`](../src/main/java/ai/beestream/jitcast/timesfm/tornado/TimesFmKernels.java) | Causal attention per row, head and query over the observed patches, scores in local memory (up to 512 patches), queries pre-scaled; padding queries get zeros |
 | [`gatherLast`](../src/main/java/ai/beestream/jitcast/timesfm/tornado/TimesFmKernels.java) | Each row's last patch, for the point and quantile heads |
+
+## t0
+
+t0's own kernels are in [`T0Kernels.java`](../src/main/java/ai/beestream/jitcast/t0/tornado/T0Kernels.java); its GEMMs (with the ReLU and accumulate epilogues), RMSNorm and SwiGLU are the shared ones above, with `biasFill` and `biasRelu` around cuBLAS.
+
+| Kernel | What it computes |
+|---|---|
+| [`addType`](../src/main/java/ai/beestream/jitcast/t0/tornado/T0Kernels.java) | Adds each patch's variate-type embedding (target, past-only or known-future covariate) to the patch encoder's output |
+| [`qkNormRope`](../src/main/java/ai/beestream/jitcast/t0/tornado/T0Kernels.java) | In place on q and k: each head's RMSNorm with its scale, then, in time layers, the rotary embedding on adjacent pairs at each patch's position with xPos scaling (q times the scale, k divided by it) |
+| [`timeAttention`](../src/main/java/ai/beestream/jitcast/t0/tornado/T0Kernels.java) | Flash-style attention along each row's patches per row and head: 8 queries per work-group, blocks of 16 keys staged in local memory, online softmax; over the valid keys, causal except in known-future covariate rows; padding queries get zeros |
+| [`groupAttention`](../src/main/java/ai/beestream/jitcast/t0/tornado/T0Kernels.java) | Attention across the rows of each series at each patch, one work-group per row, patch and head, online softmax; known-future covariates read only known-future covariates |
+| [`gatherPatches`](../src/main/java/ai/beestream/jitcast/t0/tornado/T0Kernels.java) | The patches whose predictions are wanted, for the decoder |
+| [`quantileHead`](../src/main/java/ai/beestream/jitcast/t0/tornado/T0Kernels.java) | The first level, then the running sum of the softplus of the others: monotone quantiles |
