@@ -40,7 +40,8 @@ import ai.beestream.jitcast.util.Json;
  * End-to-end Toto 2.0 forecast latency on the scenarios of a workload file, the same inputs the reference
  * engine is timed on. Each scenario forecasts with the default settings, a context cap covering its whole
  * series and one forward pass for the whole batch; a scenario's past covariates are extra variates, and its
- * known-future covariates are left out, since Toto 2.0 takes none:
+ * known-future covariates are left out, since Toto 2.0 takes none. Every scenario's first call and warm-up
+ * calls run before any scenario is timed, so the order of the workload file does not change the timings:
  *
  * <pre>
  * java ... ai.beestream.jitcast.bench.TotoBench --checkpoint toto-2.0-22m --workloads workloads.safetensors \
@@ -50,6 +51,10 @@ import ai.beestream.jitcast.util.Json;
 public final class TotoBench {
 
     private TotoBench() {}
+
+    /** A scenario after its first pass: its inputs, pipeline, first forecast and first-call time. */
+    private record Scenario(String name, int h, List<TimeSeries> series, TotoPipeline pipeline,
+            List<Forecast> first, double firstMs) {}
 
     public static void main(String[] argv) throws IOException {
         Map<String, String> a = new HashMap<>();
@@ -73,7 +78,9 @@ public final class TotoBench {
                 if (tornado != null) {
                     results.put("gemm", tornado.gemmMode().name().toLowerCase().replace('_', '-'));
                 }
-                Map<String, Object> scenarios = new LinkedHashMap<>();
+                // First pass: every scenario's first call and warm-up calls, so the JVM has compiled the host
+                // code of all of them before any is timed, whatever their order in the workload file.
+                List<Scenario> runs = new ArrayList<>();
                 for (Map.Entry<String, String> s : w.metadata().entrySet()) {
                     String name = s.getKey();
                     if (name.equals("format") || wanted != null && !wanted.contains(name)) {
@@ -92,6 +99,22 @@ public final class TotoBench {
                     for (int i = 0; i < warmup; i++) {
                         p.forecast(series, h);
                     }
+                    runs.add(new Scenario(name, h, series, p, first, firstMs));
+                }
+                // Second pass: each scenario warms up again (its plan may have been evicted) and is timed.
+                Map<String, Object> scenarios = new LinkedHashMap<>();
+                for (Scenario s : runs) {
+                    String name = s.name();
+                    int h = s.h();
+                    List<TimeSeries> series = s.series();
+                    TotoPipeline p = s.pipeline();
+                    List<Forecast> first = s.first();
+                    double firstMs = s.firstMs();
+                    int length = series.get(0).length();
+                    for (int i = 0; i < warmup; i++) {
+                        p.forecast(series, h);
+                    }
+                    long t0;
                     List<Double> ms = new ArrayList<>();
                     long deadline = System.nanoTime() + (long) (budget * 1e9);
                     while (ms.size() < reps && (ms.size() < 3 || System.nanoTime() < deadline)) {
