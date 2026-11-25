@@ -93,13 +93,15 @@ TimesFM's own kernels are in [`TimesFmKernels.java`](../src/main/java/ai/beestre
 
 ## t0
 
-t0's own kernels are in [`T0Kernels.java`](../src/main/java/ai/beestream/jitcast/t0/tornado/T0Kernels.java); its GEMMs (with the ReLU and accumulate epilogues), RMSNorm and SwiGLU are the shared ones above, with `biasFill` and `biasRelu` around cuBLAS.
+t0's own kernels are in [`T0Kernels.java`](../src/main/java/ai/beestream/jitcast/t0/tornado/T0Kernels.java); its GEMMs (with the ReLU and accumulate epilogues), RMSNorm and SwiGLU are the shared ones above, with `biasFill` and `biasRelu` around cuBLAS in the residual blocks. With cuBLAS the transformer layers' GEMMs run without their biases, and the next kernel adds them: `qkNormRope`, `biasSwiGlu` and `biasRmsNorm`.
 
 | Kernel | What it computes |
 |---|---|
 | [`addType`](../src/main/java/ai/beestream/jitcast/t0/tornado/T0Kernels.java) | Adds each patch's variate-type embedding (target, past-only or known-future covariate) to the patch encoder's output |
-| [`qkNormRope`](../src/main/java/ai/beestream/jitcast/t0/tornado/T0Kernels.java) | In place on q and k: each head's RMSNorm with its scale, then, in time layers, the rotary embedding on adjacent pairs at each patch's position with xPos scaling (q times the scale, k divided by it) |
-| [`timeAttention`](../src/main/java/ai/beestream/jitcast/t0/tornado/T0Kernels.java) | Flash-style attention along each row's patches per row and head: 8 queries per work-group, blocks of 16 keys staged in local memory, online softmax; over the valid keys, causal except in known-future covariate rows; padding queries get zeros |
+| [`qkNormRope`](../src/main/java/ai/beestream/jitcast/t0/tornado/T0Kernels.java) | In place on q, k and v: the projection's bias when its GEMM ran without it, then each head's RMSNorm of q and k with its scale, then, in time layers, the rotary embedding on adjacent pairs at each patch's position with xPos scaling (q times the scale, k divided by it) |
+| [`timeAttention`](../src/main/java/ai/beestream/jitcast/t0/tornado/T0Kernels.java) | Flash-style attention along each row's patches per row and head: 16 queries per work-group, blocks of 16 keys staged in local memory (keys transposed with a padded stride, so the score dot products are free of bank conflicts, then values in the same buffer), online softmax; over the valid keys, causal except in known-future covariate rows; padding queries get zeros |
 | [`groupAttention`](../src/main/java/ai/beestream/jitcast/t0/tornado/T0Kernels.java) | Attention across the rows of each series at each patch, one work-group per row, patch and head, online softmax; known-future covariates read only known-future covariates |
+| [`biasRmsNorm`](../src/main/java/ai/beestream/jitcast/t0/tornado/T0Kernels.java) | Adds the bias of the GEMM that accumulated into the residual stream, then RMSNorm, one work-group per row |
+| [`biasSwiGlu`](../src/main/java/ai/beestream/jitcast/t0/tornado/T0Kernels.java) | SwiGLU of the gate and value projections with their bias added |
 | [`gatherPatches`](../src/main/java/ai/beestream/jitcast/t0/tornado/T0Kernels.java) | The patches whose predictions are wanted, for the decoder |
 | [`quantileHead`](../src/main/java/ai/beestream/jitcast/t0/tornado/T0Kernels.java) | The first level, then the running sum of the softplus of the others: monotone quantiles |

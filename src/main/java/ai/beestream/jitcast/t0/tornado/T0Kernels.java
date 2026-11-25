@@ -37,7 +37,7 @@ public final class T0Kernels {
     public static final int ATTN_THREADS = 128;
 
     /** Queries per work-group of {@link #timeAttention}. */
-    public static final int ATTN_QUERIES = 8;
+    public static final int ATTN_QUERIES = 16;
 
     /** Keys staged in local memory at a time by {@link #timeAttention}. */
     public static final int ATTN_KEYS = 16;
@@ -47,6 +47,9 @@ public final class T0Kernels {
 
     /** Work-group width of {@link #groupAttention}: one thread per head dimension. */
     public static final int GROUP_THREADS = 128;
+
+    /** Work-group width of {@link #biasRmsNorm}. */
+    public static final int NORM_THREADS = 256;
 
     /** {@code x[t, c] += types[type[t], c]}: each patch's variate-type embedding. */
     public static void addType(KernelContext ctx, FloatArray x, FloatArray w, int typeOff, IntArray type, int tokens, int d) {
@@ -59,16 +62,17 @@ public final class T0Kernels {
     }
 
     /**
-     * In place on the {@code q|k|v} projections ({@code [tokens, 3·d]}): RMSNorm of each head's q and k with
-     * their scales, then, when {@code rope} is 1, the rotary embedding on adjacent pairs at each patch's
+     * In place on the {@code q|k|v} projections ({@code [tokens, 3·d]}): first the projection's bias when
+     * {@code bias >= 0} (to q, k and v: the GEMM before it ran without one), then RMSNorm of each head's q and
+     * k with their scales, then, when {@code rope} is 1, the rotary embedding on adjacent pairs at each patch's
      * position in the window with xPos scaling: q times {@code base^power}, k divided by it, where
      * {@code power = (position − ⌊(n − 1)/2⌋) / 512} and each coordinate's base is that of its pair
      * ({@code halves} 0: interleaved) or of its index modulo {@code hd/2} ({@code halves} 1). One work-group
      * of {@link #QK_THREADS} per (token, head): thread {@code i < hd/2} holds pair {@code i} of q, thread
      * {@code hd/2 + i} pair {@code i} of k.
      */
-    public static void qkNormRope(KernelContext ctx, FloatArray qkv, FloatArray w, int qNorm, int kNorm, int invFreq, int logXpos,
-            int rope, int halves, int rows, int n, int heads, int hd, int d, float eps) {
+    public static void qkNormRope(KernelContext ctx, FloatArray qkv, FloatArray w, int bias, int qNorm, int kNorm, int invFreq,
+            int logXpos, int rope, int halves, int rows, int n, int heads, int hd, int d, float eps) {
         if (ctx.groupIdx < rows * n * heads) {
             int head = ctx.groupIdx % heads;
             int tok = ctx.groupIdx / heads;
@@ -85,6 +89,13 @@ public final class T0Kernels {
             if (active) {
                 a = qkv.get(base + 2 * i);
                 b = qkv.get(base + 2 * i + 1);
+                if (bias >= 0) {
+                    int bo = bias + which * d + head * hd + 2 * i;
+                    a += w.get(bo);
+                    b += w.get(bo + 1);
+                    int v = tok * 3 * d + 2 * d + head * hd + tid;
+                    qkv.set(v, qkv.get(v) + w.get(bias + 2 * d + head * hd + tid));
+                }
                 part[tid] = a * a + b * b;
             }
             ctx.localBarrier();
@@ -130,8 +141,9 @@ public final class T0Kernels {
      * Attention along each row's patches per (row, head): a valid query attends to the valid keys up to itself,
      * or to all of them in a known-future covariate's row; an all-padding query gets zeros. Flash-style: one
      * work-group of {@link #ATTN_THREADS} per (row, head, {@link #ATTN_QUERIES} queries) walks the keys in
-     * blocks of {@link #ATTN_KEYS} staged in local memory, with an online softmax; the queries, scores and
-     * output accumulators also sit in local memory.
+     * blocks of {@link #ATTN_KEYS} with an online softmax. Each block's keys are staged transposed with a
+     * padded stride, so a warp's score dot products read distinct banks, then its values in the same buffer;
+     * the queries (padded likewise), scores and output accumulators also sit in local memory.
      */
     public static void timeAttention(KernelContext ctx, FloatArray qkv, FloatArray out, IntArray valid, IntArray future, int rows,
             int n, int heads, int hd, int d, float scale) {
@@ -142,9 +154,10 @@ public final class T0Kernels {
             int head = rh % heads;
             int r = rh / heads;
             int tid = ctx.localIdx;
-            float[] qs = ctx.allocateFloatLocalArray(ATTN_QUERIES * HEAD_DIM);
-            float[] ks = ctx.allocateFloatLocalArray(ATTN_KEYS * HEAD_DIM);
-            float[] vs = ctx.allocateFloatLocalArray(ATTN_KEYS * HEAD_DIM);
+            int qStride = HEAD_DIM + 1;
+            int kStride = ATTN_KEYS + 1;
+            float[] qs = ctx.allocateFloatLocalArray(ATTN_QUERIES * (HEAD_DIM + 1));
+            float[] kv = ctx.allocateFloatLocalArray(HEAD_DIM * (ATTN_KEYS + 1));
             float[] sc = ctx.allocateFloatLocalArray(ATTN_QUERIES * ATTN_KEYS);
             float[] acc = ctx.allocateFloatLocalArray(ATTN_QUERIES * HEAD_DIM);
             float[] mx = ctx.allocateFloatLocalArray(ATTN_QUERIES);
@@ -160,22 +173,20 @@ public final class T0Kernels {
                 int qi = e / hd;
                 int dd = e - qi * hd;
                 int t = q0 + qi;
-                qs[qi * HEAD_DIM + dd] = t < n ? qkv.get((row0 + t) * qkvRow + head * hd + dd) * scale : 0f;
+                qs[qi * qStride + dd] = t < n ? qkv.get((row0 + t) * qkvRow + head * hd + dd) * scale : 0f;
                 acc[qi * HEAD_DIM + dd] = 0f;
             }
             if (tid < ATTN_QUERIES) {
                 mx[tid] = -3.0e38f;
                 den[tid] = 0f;
             }
-            ctx.localBarrier();
             for (int k0 = 0; k0 < kEnd; k0 += ATTN_KEYS) {
+                // keys, transposed: kv[dd · (ATTN_KEYS + 1) + kj]
                 for (int e = tid; e < ATTN_KEYS * hd; e += ATTN_THREADS) {
                     int kj = e / hd;
                     int dd = e - kj * hd;
                     int key = k0 + kj;
-                    boolean ok = key < n;
-                    ks[kj * HEAD_DIM + dd] = ok ? qkv.get((row0 + key) * qkvRow + d + head * hd + dd) : 0f;
-                    vs[kj * HEAD_DIM + dd] = ok ? qkv.get((row0 + key) * qkvRow + 2 * d + head * hd + dd) : 0f;
+                    kv[dd * kStride + kj] = key < n ? qkv.get((row0 + key) * qkvRow + d + head * hd + dd) : 0f;
                 }
                 ctx.localBarrier();
                 for (int e = tid; e < ATTN_QUERIES * ATTN_KEYS; e += ATTN_THREADS) {
@@ -187,13 +198,20 @@ public final class T0Kernels {
                     if (t < n && key < n && valid.get(row0 + t) == 1 && valid.get(row0 + key) == 1 && (bidirectional || key <= t)) {
                         float dot = 0f;
                         for (int dd = 0; dd < hd; dd++) {
-                            dot += qs[qi * HEAD_DIM + dd] * ks[kj * HEAD_DIM + dd];
+                            dot += qs[qi * qStride + dd] * kv[dd * kStride + kj];
                         }
                         s = dot;
                     }
                     sc[e] = s;
                 }
                 ctx.localBarrier();
+                // the block's values replace its keys, while the first threads update the softmax
+                for (int e = tid; e < ATTN_KEYS * hd; e += ATTN_THREADS) {
+                    int kj = e / hd;
+                    int dd = e - kj * hd;
+                    int key = k0 + kj;
+                    kv[kj * HEAD_DIM + dd] = key < n ? qkv.get((row0 + key) * qkvRow + 2 * d + head * hd + dd) : 0f;
+                }
                 if (tid < ATTN_QUERIES) {
                     float old = mx[tid];
                     float nm = old;
@@ -218,7 +236,7 @@ public final class T0Kernels {
                     int dd = e - qi * hd;
                     float o = acc[qi * HEAD_DIM + dd] * alpha[qi];
                     for (int kj = 0; kj < ATTN_KEYS; kj++) {
-                        o += sc[qi * ATTN_KEYS + kj] * vs[kj * HEAD_DIM + dd];
+                        o += sc[qi * ATTN_KEYS + kj] * kv[kj * HEAD_DIM + dd];
                     }
                     acc[qi * HEAD_DIM + dd] = o;
                 }
@@ -289,6 +307,56 @@ public final class T0Kernels {
             if (active) {
                 out.set(tok * d + head * hd + tid, den > 0f ? acc / den : 0f);
             }
+        }
+    }
+
+    /**
+     * {@code x[r] += b} when {@code bOff >= 0} (the bias of the GEMM that accumulated into the residual stream
+     * without one), then {@code y[r] = RMSNorm(x[r])·w}: one work-group of {@link #NORM_THREADS} per row.
+     */
+    public static void biasRmsNorm(KernelContext ctx, FloatArray x, FloatArray y, FloatArray w, int bOff, int wOff, int d,
+            float eps, int rows) {
+        if (ctx.groupIdx < rows) {
+            int row = ctx.groupIdx;
+            int tid = ctx.localIdx;
+            float[] part = ctx.allocateFloatLocalArray(NORM_THREADS);
+            int base = row * d;
+            float ss = 0f;
+            for (int i = tid; i < d; i += NORM_THREADS) {
+                float v = x.get(base + i);
+                if (bOff >= 0) {
+                    v += w.get(bOff + i);
+                    x.set(base + i, v);
+                }
+                ss += v * v;
+            }
+            part[tid] = ss;
+            ctx.localBarrier();
+            for (int s = NORM_THREADS / 2; s > 0; s >>= 1) {
+                if (tid < s) {
+                    part[tid] += part[tid + s];
+                }
+                ctx.localBarrier();
+            }
+            float inv = 1f / TornadoMath.sqrt(part[0] / d + eps);
+            for (int i = tid; i < d; i += NORM_THREADS) {
+                y.set(base + i, x.get(base + i) * inv * w.get(wOff + i));
+            }
+        }
+    }
+
+    /**
+     * {@code out[r, j] = SiLU(g + b[j]) · (u + b[f + j])} on the gate|value projection {@code [n, 2f]} that
+     * its GEMM wrote without the bias.
+     */
+    public static void biasSwiGlu(KernelContext ctx, FloatArray big, FloatArray out, FloatArray w, int bOff, int n, int ffn) {
+        int id = ctx.globalIdx;
+        if (id < n * ffn) {
+            int r = id / ffn;
+            int j = id - r * ffn;
+            float g = big.get(r * 2 * ffn + j) + w.get(bOff + j);
+            float u = big.get(r * 2 * ffn + ffn + j) + w.get(bOff + ffn + j);
+            out.set(id, g / (1f + TornadoMath.exp(-g)) * u);
         }
     }
 

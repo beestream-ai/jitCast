@@ -68,6 +68,12 @@ public final class TornadoT0Forward implements T0Forward {
     /** Work-group size of the element-wise kernels. */
     private static final int ITEM_GROUP = 128;
 
+    /**
+     * A {@link #gemm} flag for the cuBLAS modes: the GEMM runs without its bias, which the kernel reading
+     * its output adds instead of a separate pass over it.
+     */
+    private static final int NO_BIAS = 1 << 16;
+
     /** The fewest rows a GEMM needs to run on {@link Kernels#gemmBlocked}. */
     private final int blockedMinRows = Options.integer("t0.tornado.blockedMinRows", 128, 1);
 
@@ -233,14 +239,19 @@ public final class TornadoT0Forward implements T0Forward {
             g.task("type", T0Kernels::addType, ctx, x, w, weights.typeEmbeddings(), type, tokens, d);
             written(x);
             float scale = (float) (1.0 / Math.sqrt(hd));
+            // In the cuBLAS modes the layers' GEMMs run without their biases, which the next kernel adds:
+            // qkNormRope (q|k|v), biasSwiGlu (up) and biasRmsNorm (out and down, into the residual stream).
+            boolean fold = gemmMode.cublas();
+            int nb = fold ? NO_BIAS : 0;
+            int pending = -1;
             for (int li = 0; li < weights.layers().size(); li++) {
                 T0Packed.Layer l = weights.layers().get(li);
                 String s = "l" + li + "_";
-                rms(s + "an", x, hn, l.attnNorm(), tokens);
-                gemm(s + "qkv", hn, l.qkv(), big, tokens, 0);
+                norm(s + "an", x, hn, pending, l.attnNorm(), tokens);
+                gemm(s + "qkv", hn, l.qkv(), big, tokens, nb);
                 grid.addWorkerGrid(name + "." + s + "qk", group(tokens * heads * T0Kernels.QK_THREADS, T0Kernels.QK_THREADS));
-                g.task(s + "qk", T0Kernels::qkNormRope, ctx, big, w, l.qNorm(), l.kNorm(), weights.invFreq(), weights.logXpos(),
-                        l.group() ? 0 : 1, c.xposHalves() ? 1 : 0, rows, n, heads, hd, d, T0Config.NORM_EPS);
+                g.task(s + "qk", T0Kernels::qkNormRope, ctx, big, w, fold ? l.qkv().b() : -1, l.qNorm(), l.kNorm(), weights.invFreq(),
+                        weights.logXpos(), l.group() ? 0 : 1, c.xposHalves() ? 1 : 0, rows, n, heads, hd, d, T0Config.NORM_EPS);
                 written(big);
                 if (l.group()) {
                     grid.addWorkerGrid(name + "." + s + "attn",
@@ -254,15 +265,20 @@ public final class TornadoT0Forward implements T0Forward {
                     g.task(s + "attn", T0Kernels::timeAttention, ctx, big, att, valid, future, rows, n, heads, hd, d, scale);
                 }
                 written(att);
-                gemm(s + "o", att, l.out(), x, tokens, Kernels.ACCUMULATE);
-                rms(s + "mn", x, hn, l.mlpNorm(), tokens);
-                gemm(s + "up", hn, l.up(), big, tokens, 0);
+                gemm(s + "o", att, l.out(), x, tokens, Kernels.ACCUMULATE | nb);
+                norm(s + "mn", x, hn, fold ? l.out().b() : -1, l.mlpNorm(), tokens);
+                gemm(s + "up", hn, l.up(), big, tokens, nb);
                 items(s + "glu", tokens * ff);
-                g.task(s + "glu", Kernels::swiGlu, ctx, big, act, tokens, ff, noTwin, 0);
+                if (fold) {
+                    g.task(s + "glu", T0Kernels::biasSwiGlu, ctx, big, act, w, l.up().b(), tokens, ff);
+                } else {
+                    g.task(s + "glu", Kernels::swiGlu, ctx, big, act, tokens, ff, noTwin, 0);
+                }
                 written(act);
-                gemm(s + "down", act, l.down(), x, tokens, Kernels.ACCUMULATE);
+                gemm(s + "down", act, l.down(), x, tokens, Kernels.ACCUMULATE | nb);
+                pending = fold ? l.down().b() : -1;
             }
-            rms("on", x, hn, weights.outNorm(), tokens);
+            norm("on", x, hn, pending, weights.outNorm(), tokens);
             items("gather", outs * d);
             g.task("gather", T0Kernels::gatherPatches, ctx, hn, dec, rows, n, n - count - 1, count, d);
             written(dec);
@@ -332,7 +348,7 @@ public final class TornadoT0Forward implements T0Forward {
                 written(c);
                 return;
             }
-            int f = flags | Kernels.BIAS;
+            int f = (flags & ~NO_BIAS) | Kernels.BIAS;
             WorkerGrid wg;
             if (gemmMode == GemmMode.SIMDGROUP) {
                 boolean wide = m >= simdgroupWideMinRows;
@@ -387,7 +403,8 @@ public final class TornadoT0Forward implements T0Forward {
         /**
          * The GEMM in cuBLAS: row-major {@code C[m, n] = A[m, k]·W[n, k]ᵀ} as the column-major
          * {@code gemm(T, N, n, m, k, W, k, A, k, C, n)}. The bias is written into C first (then β = 1), except
-         * before a ReLU, where one epilogue adds the bias and applies the ReLU after the GEMM.
+         * before a ReLU, where one epilogue adds the bias and applies the ReLU after the GEMM, and with
+         * {@link #NO_BIAS}, where the next kernel adds it.
          */
         private void cublas(String task, FloatArray a, T0Packed.Lin l, FloatArray c, int m, int flags) {
             int nOut = l.out(), k = l.in();
@@ -396,11 +413,12 @@ public final class TornadoT0Forward implements T0Forward {
             if (relu && acc) {
                 throw new IllegalStateException("GEMM " + task + ": ReLU after accumulation is not supported");
             }
-            if (!relu) {
+            boolean bias = (flags & NO_BIAS) == 0;
+            if (!relu && bias) {
                 items(task + "_bias", m * nOut);
                 g.task(task + "_bias", Kernels::biasFill, ctx, c, w, l.b(), m, nOut, acc ? 1 : 0);
             }
-            float beta = relu ? 0f : 1f;
+            float beta = relu ? 0f : bias || acc ? 1f : 0f;
             if (gemmMode == GemmMode.CUBLAS_FP16) {
                 HalfFloatArray ah = half(task, a, m * k);
                 HalfFloatArray wh = weights.halfMatrix(l);
@@ -445,6 +463,18 @@ public final class TornadoT0Forward implements T0Forward {
 
         private void written(FloatArray buf) {
             fresh.remove(buf);
+        }
+
+        /** RMSNorm of {@code in} into {@code o}, after adding a pending bias to {@code in} when {@code bias >= 0}. */
+        void norm(String task, FloatArray in, FloatArray o, int bias, int wOff, int rows) {
+            if (bias < 0) {
+                rms(task, in, o, wOff, rows);
+                return;
+            }
+            grid.addWorkerGrid(name + "." + task, group(rows * T0Kernels.NORM_THREADS, T0Kernels.NORM_THREADS));
+            g.task(task, T0Kernels::biasRmsNorm, ctx, in, o, w, bias, wOff, config.embedDim(), T0Config.NORM_EPS, rows);
+            written(in);
+            written(o);
         }
 
         void rms(String task, FloatArray in, FloatArray o, int wOff, int rows) {
