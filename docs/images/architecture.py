@@ -21,7 +21,7 @@ import sys
 from xml.sax.saxutils import escape
 
 OUT = sys.argv[1] if len(sys.argv) > 1 else "."
-W, H = 1400, 744
+W, H = 1400, 722
 FONT = "Inter, 'Segoe UI', Helvetica, Arial, sans-serif"
 MONO = "'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace"
 T = dict(bg="#FFFFFF", ink="#0B1F33", sub="#4A5B6C", panel="#F7FAFD", box="#FFFFFF", line="#D6E1EC",
@@ -81,7 +81,7 @@ def svg():
     cw = (iw - 2 * 16) / 3
     callers = [("Java application", ["any JVM program, one Java API"]),
                ("Python harnesses", ["fev-bench, GIFT-Eval via TiRexServer /", "TimestralServer (local socket)"]),
-               ("Benchmarks", ["TiRexBench, TimestralBench,", "Chronos2Bench, cold start"])]
+               ("Benchmarks", ["TiRexBench, TimestralBench, Chronos2Bench,", "TimesFmBench, T0Bench, cold start"])]
     for i, (ti, ls) in enumerate(callers):
         box(m + i * (cw + 16), y + 20, cw, 58, ti, ls)
         arrow(m + i * (cw + 16) + cw / 2, y + 80, m + i * (cw + 16) + cw / 2, y + 100)
@@ -95,23 +95,44 @@ def svg():
 
     y = 186
     text(m, y + 12, "MODEL FAMILIES", 11, T["sub"], 700, "start")
-    fy, fh = y + 22, 318
-    fw = (iw - (len(FAMILIES) - 1) * 16) / len(FAMILIES)
+    fy = y + 22
+    rows, rh = len(FAMILIES), 34
+    fh = 16 + 62 + 16 + 20 + rows * rh + 10
+    rect(m, fy, iw, fh, T["panel"], T["line"], rx=12)
+
+    # The structure every family shares, drawn once.
+    px, gap = m + 16, 28
+    cw_cfg, cw_host, cw_fwd, cw_eng = 230, 360, 140, 250
+    cw_kern = iw - 32 - cw_cfg - cw_host - cw_fwd - cw_eng - 4 * gap
+    sy, sh = fy + 16, 62
+    xs = [px]
+    for w in (cw_cfg, cw_host, cw_fwd, cw_eng):
+        xs.append(xs[-1] + w + gap)
+    box(xs[0], sy, cw_cfg, sh, "Config + Weights", ["safetensors, every tensor", "bound by name"])
+    box(xs[1], sy, cw_host, sh, "Host pipeline (Java)", ["batching, scaling, decoding,", "calibration, quantiles"])
+    box(xs[2], sy, cw_fwd, sh, "Forward pass", ["one interface"])
+    eh = (sh - 8) / 2
+    box(xs[3], sy, cw_eng, eh, "CPU reference · FP32 oracle", size=11.5)
+    box(xs[3], sy + eh + 8, cw_eng, eh, "TornadoVM engine · plan per shape", size=11.5)
+    box(xs[4], sy, cw_kern, sh, "Family kernels", ["KernelContext, on the device"])
+    for x0, w in zip(xs[:4], (cw_cfg, cw_host, cw_fwd, cw_eng)):
+        arrow(x0 + w + 2, sy + sh / 2, x0 + w + gap - 2, sy + sh / 2)
+
+    # What differs per family: one row each.
+    ty = sy + sh + 16
+    kx = xs[2]
+    for x0, label in ((xs[0], "FAMILY"), (xs[1], "HOST PIPELINE"), (kx, "FAMILY KERNELS")):
+        text(x0, ty + 12, label, 10.5, T["sub"], 700, "start")
+    ty += 20
     for i, (name, sub, col, host, kern) in enumerate(FAMILIES):
-        x = m + i * (fw + 16)
-        rect(x, fy, fw, fh, T["panel"], T["line"], rx=12)
-        a(f'<rect x="{x}" y="{fy}" width="{fw}" height="6" rx="3" fill="{col}"/>')
-        text(x + 16, fy + 28, name, 16, weight=800, anchor="start")
-        text(x + 16, fy + 45, sub, 11, T["sub"], anchor="start")
-        bx, bw = x + 12, fw - 24
-        box(bx, fy + 56, bw, 40, "Config + Weights", ["safetensors, every tensor bound by name"], col)
-        box(bx, fy + 104, bw, 62, "Host pipeline (Java)", host, col)
-        arrow(x + fw / 2, fy + 168, x + fw / 2, fy + 184)
-        text(x + fw / 2, fy + 198, "forward-pass interface", 11, T["sub"], 600, italic=True)
-        hw = (bw - 10) / 2
-        box(bx, fy + 208, hw, 50, "CPU reference", ["FP32 oracle"], col, size=12)
-        box(bx + hw + 10, fy + 208, hw, 50, "TornadoVM engine", ["plan per shape"], col, size=12)
-        box(bx, fy + 266, bw, 40, "Family kernels", [kern], col)
+        ry = ty + i * rh
+        a(f'<line x1="{px}" y1="{ry}" x2="{m + iw - 16}" y2="{ry}" stroke="{T["line"]}" stroke-width="1"/>')
+        a(f'<rect x="{px}" y="{ry + 6}" width="4" height="{rh - 12}" rx="2" fill="{col}"/>')
+        text(px + 12, ry + 15, name, 13.5, weight=700, anchor="start")
+        text(px + 12, ry + 29, sub, 10.5, T["sub"], anchor="start")
+        text(xs[1], ry + 15, host[0], 11.5, T["sub"], anchor="start")
+        text(xs[1], ry + 29, host[1], 11.5, T["sub"], anchor="start")
+        text(kx, ry + 22, kern, 12, T["ink"], 500, "start", font=MONO)
 
     y = fy + fh + 18
     text(m, y + 12, "SHARED", 11, T["sub"], 700, "start")
@@ -119,7 +140,7 @@ def svg():
     widths = [200, 230, 200, iw - 200 - 230 - 200 - 3 * 12]
     shared = [("io", ["SafeTensors (mmap)"]), ("host", ["SeriesWindows · SignFlip"]), ("cpu", ["Ops: FP32 operators"]),
               ("tornado", ["Kernels: GEMMs (tiled, blocked, simdgroup, FP16, CUDA Tile)",
-                           "RMSNorm · SwiGLU · GemmMode · PlanCache"])]
+                           "RMSNorm · SwiGLU · GemmMode · PlanCache · SharedWeights"])]
     x = m
     for (ti, ls), w in zip(shared, widths):
         box(x, sy, w, 58, ti, ls, mono_title=True)

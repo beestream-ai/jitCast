@@ -38,7 +38,7 @@ calibration, test-time augmentation) in Java, the forward pass on the GPU.
 ## Architecture
 
 <p align="center">
-  <img alt="jitcast architecture: callers use one Java API; each of the five model families has its config and weights, a host pipeline in Java, and a forward pass run by a CPU reference or a TornadoVM engine; shared io, host, cpu and tornado packages; TornadoVM runs the kernels on CUDA, OpenCL and Metal" src="docs/images/architecture-light.svg" width="100%">
+  <img alt="jitcast architecture: callers use one Java API; every model family follows one flow, from config and weights through a Java host pipeline to a forward pass run by a CPU reference or a TornadoVM engine and the family's kernels; a table gives each of the five families' pipeline steps and kernels; shared io, host, cpu and tornado packages; TornadoVM runs the kernels on CUDA, OpenCL and Metal" src="docs/images/architecture-light.svg" width="100%">
 </p>
 
 The forward pass runs either on the CPU reference, the FP32 oracle the device kernels are tested
@@ -66,7 +66,7 @@ done
 The same call forecasts with every model:
 
 ```java
-try (ForecastEngine engine = TornadoTimestralEngine.load(Path.of("Timestral-5M"))) {  // or TornadoChronos2Engine, TornadoTiRex2Engine
+try (ForecastEngine engine = TornadoTimestralEngine.load(Path.of("Timestral-5M"))) {  // or TornadoTiRex2Engine, TornadoChronos2Engine, TornadoTimesFmEngine, TornadoT0Engine
     List<Forecast> forecasts = engine.forecast(List.of(TimeSeries.univariate(history)), 64);
     float[] median = forecasts.get(0).median(0);        // values[target][quantile][step]
 }
