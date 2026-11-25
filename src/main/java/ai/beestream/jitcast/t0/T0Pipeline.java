@@ -18,6 +18,7 @@ package ai.beestream.jitcast.t0;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.stream.IntStream;
 
 import ai.beestream.jitcast.api.Forecast;
 import ai.beestream.jitcast.api.TimeSeries;
@@ -475,7 +476,8 @@ public final class T0Pipeline {
         int cp = (w - horizon) / p, count = horizon / p;
         float[] q = forward.forward(in, cp - 1, count);
         float[] out = new float[rows * horizon * nt];
-        for (int r = 0; r < rows; r++) {
+        IntStream all = IntStream.range(0, rows);
+        (rows > 1 && (long) rows * horizon * nt >= T0Scaler.PARALLEL_CELLS ? all.parallel() : all).forEach(r -> {
             for (int k = 0; k < count; k++) {
                 int last = r * w + (cp - 1 + k) * p + p - 1;
                 float loc = s.loc()[last], scale = s.scale()[last];
@@ -485,7 +487,7 @@ public final class T0Pipeline {
                     }
                 }
             }
-        }
+        });
         if (observer != null) {
             observer.call(window, horizon, out);
         }
