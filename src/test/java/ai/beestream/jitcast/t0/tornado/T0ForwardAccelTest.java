@@ -112,7 +112,9 @@ public class T0ForwardAccelTest {
                     }
                 }
             }
-            T0Pipeline.Options o = T0Pipeline.Options.defaults(c).withRecommendedAdjustments();
+            // Rounding to integers turns a reduced-precision error of 1e-3 into a whole unit, so those modes compare unrounded.
+            T0Pipeline.Options o = T0Pipeline.Options.defaults(c).withRecommendedAdjustments()
+                    .withSnapIntegers(!fwd.gemmMode().reducedPrecision());
             List<Forecast> dev = new T0Pipeline(c, fwd, o, 64, 8192).forecast(all, horizon);
             List<Forecast> ref = new T0Pipeline(c, new CpuT0(weights), o, 64, 8192).forecast(all, horizon);
             double worst = 0;
