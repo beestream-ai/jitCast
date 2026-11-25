@@ -35,9 +35,9 @@
              TiRex-2: the converted weights (scripts/convert_ckpt.py) and a golden directory
              (scripts/dump_golden.py); the device tests of reduced-precision configurations also need NXAI's
              CUDA goldens (dump_golden.py with device cuda), whose distance from the FP32 goldens sets their
-             limits. Timestral, Chronos-2, TimesFM and t0: a checkpoint directory and a golden directory
+             limits. Timestral, Chronos-2, TimesFM, t0 and Toto 2.0: a checkpoint directory and a golden directory
              (scripts/timestral/dump_golden.py, scripts/chronos2/dump_golden.py, scripts/timesfm/dump_golden.py,
-             scripts/t0/dump_golden.py). -->
+             scripts/t0/dump_golden.py, scripts/toto/dump_golden.py). -->
         <tirex.weights></tirex.weights>
         <tirex.golden></tirex.golden>
         <tirex.golden.gpu></tirex.golden.gpu>
@@ -49,6 +49,8 @@
         <timesfm.golden></timesfm.golden>
         <t0.checkpoint></t0.checkpoint>
         <t0.golden></t0.golden>
+        <toto.checkpoint></toto.checkpoint>
+        <toto.golden></toto.golden>
     </properties>
 
     <dependencies>
@@ -102,6 +104,8 @@
                         <timesfm.golden>${timesfm.golden}</timesfm.golden>
                         <t0.checkpoint>${t0.checkpoint}</t0.checkpoint>
                         <t0.golden>${t0.golden}</t0.golden>
+                        <toto.checkpoint>${toto.checkpoint}</toto.checkpoint>
+                        <toto.golden>${toto.golden}</toto.golden>
                     </systemPropertyVariables>
                 </configuration>
             </plugin>
@@ -131,6 +135,8 @@
                         <include>ai/beestream/jitcast/timesfm/TimesFmConfig.java</include>
                         <include>ai/beestream/jitcast/t0/T0Pipeline.java</include>
                         <include>ai/beestream/jitcast/t0/T0Config.java</include>
+                        <include>ai/beestream/jitcast/toto/TotoPipeline.java</include>
+                        <include>ai/beestream/jitcast/toto/TotoConfig.java</include>
                         <include>ai/beestream/jitcast/tornado/Devices.java</include>
                     </sourceFileIncludes>
                 </configuration>
