@@ -18,6 +18,7 @@ package ai.beestream.jitcast.toto;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.stream.IntStream;
 
 import ai.beestream.jitcast.api.Forecast;
 import ai.beestream.jitcast.api.TimeSeries;
@@ -197,9 +198,11 @@ public final class TotoPipeline {
         int len = context + forecastPatches * p, n = len / p;
         float[] target = new float[rows * len];
         boolean[] observed = new boolean[rows * len];
-        int r = 0;
-        for (TimeSeries ts : series) {
-            int use = Math.min(ts.length(), ctxLimit), skip = ts.length() - use, start = context - use;
+        final int ctxCap = ctxLimit, ctxLen = context;
+        IntStream.range(0, series.size()).parallel().forEach(si -> {
+            TimeSeries ts = series.get(si);
+            int r = seriesStart[si];
+            int use = Math.min(ts.length(), ctxCap), skip = ts.length() - use, start = ctxLen - use;
             for (int kind = 0; kind < 2; kind++) {
                 float[][] src = kind == 0 ? ts.target() : ts.pastCovariates();
                 if (src == null) {
@@ -221,15 +224,15 @@ public final class TotoPipeline {
                         target[r * len + start + i] = seen ? v : kind == 0 ? last : 0f;
                         observed[r * len + start + i] = seen;
                     }
-                    Arrays.fill(observed, r * len + context - p, r * len + context, true);
+                    Arrays.fill(observed, r * len + ctxLen - p, r * len + ctxLen, true);
                     r++;
                 }
             }
-        }
+        });
         float[] loc = new float[rows * len], scale = new float[rows * len];
         float[] values = new float[rows * len], missing = new float[rows * len];
         boolean[] valid = new boolean[rows * n];
-        for (r = 0; r < rows; r++) {
+        IntStream.range(0, rows).parallel().forEach(r -> {
             scaler(target, observed, r * len, len, p, loc, scale);
             if (options.minObservations() > 0) {
                 backfill(target, observed, r * len, len, p, options.minObservations(), loc, scale);
@@ -241,13 +244,13 @@ public final class TotoPipeline {
                 missing[o] = observed[o] ? 0f : 1f;
             }
             for (int s = 0; s < n; s++) {
-                boolean any = s * p >= context;
+                boolean any = s * p >= ctxLen;
                 for (int j = 0; j < p && !any; j++) {
                     any = observed[r * len + s * p + j];
                 }
                 valid[r * n + s] = any;
             }
-        }
+        });
         TotoForward.Input input = new TotoForward.Input(rows, n, forecastPatches, values, missing, valid, seriesStart);
         return new Prepared(input, target, observed, loc, scale, context, targets);
     }
@@ -270,7 +273,7 @@ public final class TotoPipeline {
         TotoForward.Input in = prep.input();
         int p = config.patchSize(), nq = config.quantiles(), k = in.forecast(), len = in.patches() * p, ctx = prep.context();
         float[][] real = new float[in.rows()][];
-        for (int r = 0; r < in.rows(); r++) {
+        IntStream.range(0, in.rows()).parallel().forEach(r -> {
             float[] q = new float[nq * k * p];
             for (int f = 0; f < k; f++) {
                 for (int j = 0; j < p; j++) {
@@ -308,7 +311,7 @@ public final class TotoPipeline {
                 }
             }
             real[r] = q;
-        }
+        });
         List<Forecast> out = new ArrayList<>(in.series());
         for (int s = 0; s < in.series(); s++) {
             int r0 = in.seriesStart()[s];

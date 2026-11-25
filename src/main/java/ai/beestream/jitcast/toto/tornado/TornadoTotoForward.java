@@ -23,6 +23,7 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.IntStream;
 
 import ai.beestream.jitcast.toto.TotoConfig;
 import ai.beestream.jitcast.toto.TotoForward;
@@ -61,6 +62,8 @@ public final class TornadoTotoForward implements TotoForward {
 
     private static final String G = "toto";
     private static final int ITEM_GROUP = 128;
+    /** A GEMM flag of this class: leave the bias to a later kernel. */
+    private static final int NO_BIAS = 1 << 12;
     private static final double XPOS_SCALE_BASE = 256;
     private static final double ROPE_BASE = 10000;
 
@@ -210,26 +213,50 @@ public final class TornadoTotoForward implements TotoForward {
                 TotoPacked.Layer l = weights.layers().get(li);
                 String s = "l" + li + "_";
                 rms(s + "n1", x, hn, tokens);
-                gemm(s + "qkv", hn, l.inProj(), big, tokens, 0);
-                if (c.variateLayer(li)) {
+                boolean variate = c.variateLayer(li);
+                if (gemmMode.cublas()) {
+                    // the GEMM without its bias; the bias comes with the rotation
+                    gemm(s + "qkv", hn, l.inProj(), big, tokens, NO_BIAS);
+                    items(s + "rope", tokens * 3 * d / 2);
+                    g.task(s + "rope", TotoKernels::biasRope, ctx, big, weights.data(l.inProj().buf()), l.inProj().b(), rot, rows, n,
+                            heads, hd, d, pairs, variate ? 0 : 1);
+                } else {
+                    gemm(s + "qkv", hn, l.inProj(), big, tokens, 0);
+                    if (!variate) {
+                        items(s + "rope", tokens * heads * pairs * 2);
+                        g.task(s + "rope", TotoKernels::rope, ctx, big, rot, rows, n, heads, hd, d, pairs);
+                    }
+                }
+                if (variate) {
                     grid.addWorkerGrid(G + "." + s + "attn", group(tokens * heads * TotoKernels.VAR_THREADS, TotoKernels.VAR_THREADS));
                     g.task(s + "attn", TotoKernels::variateAttention, ctx, big, att, valid, first, count, rows, n, heads, hd, d);
                 } else {
-                    items(s + "rope", tokens * heads * pairs * 2);
-                    g.task(s + "rope", TotoKernels::rope, ctx, big, rot, rows, n, heads, hd, d, pairs);
                     int tiles = (n + TotoKernels.ATTN_QUERIES - 1) / TotoKernels.ATTN_QUERIES;
                     grid.addWorkerGrid(G + "." + s + "attn", group(rows * heads * tiles * TotoKernels.ATTN_THREADS, TotoKernels.ATTN_THREADS));
                     g.task(s + "attn", TotoKernels::timeAttention, ctx, big, att, valid, rows, n, heads, hd, d);
                 }
                 written(big);
                 written(att);
-                gemm(s + "o", att, l.outProj(), y, tokens, 0);
-                mix(s + "ra", y, l.attnKeep(), tokens * d);
+                if (gemmMode.cublas()) {
+                    // the bias comes with the residual mixing
+                    gemm(s + "o", att, l.outProj(), y, tokens, NO_BIAS);
+                    items(s + "ra", tokens * d);
+                    g.task(s + "ra", TotoKernels::mixBias, ctx, x, y, l.attnKeep(), weights.data(l.outProj().buf()), l.outProj().b(), d,
+                            tokens * d);
+                    written(x);
+                } else {
+                    gemm(s + "o", att, l.outProj(), y, tokens, 0);
+                    mix(s + "ra", y, l.attnKeep(), tokens * d);
+                }
                 rms(s + "n2", x, hn, tokens);
                 gemm(s + "fc1", hn, l.fc1(), big, tokens, 0);
                 items(s + "glu", tokens * ff);
-                g.task(s + "glu", Kernels::swiGlu, ctx, big, gl, tokens, ff, noTwin, 0);
+                HalfFloatArray glHalf = twin(gl);
+                g.task(s + "glu", Kernels::swiGlu, ctx, big, gl, tokens, ff, glHalf == null ? noTwin : glHalf, glHalf == null ? 0 : 1);
                 written(gl);
+                if (glHalf != null) {
+                    fresh.add(gl);
+                }
                 gemm(s + "fc2", gl, l.fc2(), y, tokens, 0);
                 mix(s + "rf", y, l.mlpKeep(), tokens * d);
             }
@@ -253,15 +280,16 @@ public final class TornadoTotoForward implements TotoForward {
 
         float[] run(Input in) {
             int p = config.patchSize(), tokens = in.rows() * in.patches();
-            float[] t = new float[tokens * 2 * p];
-            for (int i = 0; i < tokens; i++) {
-                System.arraycopy(in.values(), i * p, t, i * 2 * p, p);
-                System.arraycopy(in.missing(), i * p, t, i * 2 * p + p, p);
-            }
-            MemorySegment.copy(t, 0, tok.getSegment(), ValueLayout.JAVA_FLOAT, 0, t.length);
-            for (int i = 0; i < tokens; i++) {
-                valid.set(i, in.valid()[i] ? 1 : 0);
-            }
+            // straight into the device-bound buffers, a patch's values then its missing flags, rows in parallel
+            MemorySegment seg = tok.getSegment(), vs = valid.getSegment();
+            int n = in.patches();
+            IntStream.range(0, in.rows()).parallel().forEach(r -> {
+                for (int i = r * n; i < (r + 1) * n; i++) {
+                    MemorySegment.copy(in.values(), i * p, seg, ValueLayout.JAVA_FLOAT, (long) i * 2 * p * Float.BYTES, p);
+                    MemorySegment.copy(in.missing(), i * p, seg, ValueLayout.JAVA_FLOAT, ((long) i * 2 * p + p) * Float.BYTES, p);
+                    vs.setAtIndex(ValueLayout.JAVA_INT, i, in.valid()[i] ? 1 : 0);
+                }
+            });
             for (int s = 0; s < in.series(); s++) {
                 int a = in.seriesStart()[s], b = in.seriesStart()[s + 1];
                 for (int r = a; r < b; r++) {
@@ -295,8 +323,13 @@ public final class TornadoTotoForward implements TotoForward {
 
         void rms(String task, FloatArray in, FloatArray o, int rows) {
             grid.addWorkerGrid(G + "." + task, group(rows * Kernels.NORM_THREADS, Kernels.NORM_THREADS));
-            g.task(task, Kernels::rmsNorm, ctx, in, o, weights.data(weights.onesBuf()), weights.ones(), config.dModel(), config.normEps(), noTwin, 0, rows);
+            HalfFloatArray h = twin(o);
+            g.task(task, Kernels::rmsNorm, ctx, in, o, weights.data(weights.onesBuf()), weights.ones(), config.dModel(), config.normEps(),
+                    h == null ? noTwin : h, h == null ? 0 : 1, rows);
             written(o);
+            if (h != null) {
+                fresh.add(o);
+            }
         }
 
         void items(String task, int n) {
@@ -309,7 +342,7 @@ public final class TornadoTotoForward implements TotoForward {
                 written(c);
                 return;
             }
-            int f = flags | (l.b() >= 0 ? Kernels.BIAS : 0);
+            int f = (flags & ~NO_BIAS) | (l.b() >= 0 && (flags & NO_BIAS) == 0 ? Kernels.BIAS : 0);
             FloatArray w = weights.data(l.buf());
             WorkerGrid wg;
             if (gemmMode == GemmMode.SIMDGROUP) {
@@ -352,7 +385,7 @@ public final class TornadoTotoForward implements TotoForward {
 
         private void cublas(String task, FloatArray a, TotoPacked.Lin l, FloatArray c, int m, int flags) {
             int nOut = l.out(), k = l.in();
-            boolean bias = l.b() >= 0;
+            boolean bias = l.b() >= 0 && (flags & NO_BIAS) == 0;
             FloatArray w = weights.data(l.buf());
             boolean acc = (flags & Kernels.ACCUMULATE) != 0;
             boolean silu = (flags & Kernels.SILU) != 0;
@@ -382,6 +415,23 @@ public final class TornadoTotoForward implements TotoForward {
                 items(task + "_silu", m * nOut);
                 g.task(task + "_silu", Kernels::biasSilu, ctx, c, w, bias ? l.b() : -1, m, nOut, noTwin, 0);
             }
+        }
+
+        /**
+         * {@return the FP16 copy a producer writes beside {@code a} in the FP16 GEMM modes, so that the GEMMs reading
+         * {@code a} need no conversion}, or null in the FP32 modes
+         */
+        private HalfFloatArray twin(FloatArray a) {
+            if (gemmMode != GemmMode.CUBLAS_FP16 && gemmMode != GemmMode.HALF) {
+                return null;
+            }
+            HalfFloatArray h = halves.get(a);
+            if (h == null) {
+                h = new HalfFloatArray(a.getSize());
+                halves.put(a, h);
+                g.transferToDevice(DataTransferMode.FIRST_EXECUTION, h);
+            }
+            return h;
         }
 
         private HalfFloatArray half(String task, FloatArray a, int n) {

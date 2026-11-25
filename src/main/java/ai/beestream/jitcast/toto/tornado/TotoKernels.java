@@ -71,10 +71,44 @@ public final class TotoKernels {
     }
 
     /**
+     * In place on the {@code q|k|v} projections of a GEMM that ran without its bias: adds the bias, then, when
+     * {@code rope} is 1, applies {@link #rope}'s rotation and xPos scaling to the first {@code 2·pairs}
+     * dimensions of each head of q and k. One thread per pair of adjacent columns.
+     */
+    public static void biasRope(KernelContext ctx, FloatArray qkv, FloatArray w, int bOff, FloatArray rot, int rows, int n, int heads,
+            int hd, int d, int pairs, int rope) {
+        int half = 3 * d / 2;
+        int id = ctx.globalIdx;
+        if (id < rows * n * half) {
+            int j = id % half;
+            int tok = id / half;
+            int c = 2 * j;
+            int base = tok * 3 * d + c;
+            float a = qkv.get(base) + w.get(bOff + c);
+            float b = qkv.get(base + 1) + w.get(bOff + c + 1);
+            int which = c / d;
+            int hc = (c - which * d) % hd;
+            if (rope == 1 && which < 2 && hc < 2 * pairs) {
+                int t = tok % n;
+                int r0 = (t * pairs + hc / 2) * ROT;
+                float cs = rot.get(r0);
+                float sn = rot.get(r0 + 1);
+                float x = rot.get(r0 + 2 + which);
+                float na = (a * cs - b * sn) * x;
+                b = (b * cs + a * sn) * x;
+                a = na;
+            }
+            qkv.set(base, a);
+            qkv.set(base + 1, b);
+        }
+    }
+
+    /**
      * Causal attention per (row, head) over time, a query seeing the earlier keys of the same validity, with
      * the queries already scaled. Flash-style: one work-group of {@link #ATTN_THREADS} per (row, head,
-     * {@link #ATTN_QUERIES} queries) walks the keys in blocks of {@link #ATTN_KEYS} staged in local memory,
-     * with an online softmax.
+     * {@link #ATTN_QUERIES} queries) walks the keys in blocks of {@link #ATTN_KEYS} with an online softmax.
+     * Each block's keys are staged transposed with a padded stride, so that the score dot products are free
+     * of bank conflicts, and its values then reuse the same local buffer.
      */
     public static void timeAttention(KernelContext ctx, FloatArray qkv, FloatArray out, IntArray valid, int rows, int n, int heads,
             int hd, int d) {
@@ -85,16 +119,15 @@ public final class TotoKernels {
             int head = rh % heads;
             int r = rh / heads;
             int tid = ctx.localIdx;
-            float[] qs = ctx.allocateFloatLocalArray(ATTN_QUERIES * HEAD_DIM);
-            float[] ks = ctx.allocateFloatLocalArray(ATTN_KEYS * HEAD_DIM);
-            float[] vs = ctx.allocateFloatLocalArray(ATTN_KEYS * HEAD_DIM);
+            int qStride = HEAD_DIM + 1;
+            int kStride = ATTN_KEYS + 1;
+            float[] qs = ctx.allocateFloatLocalArray(ATTN_QUERIES * (HEAD_DIM + 1));
+            float[] kv = ctx.allocateFloatLocalArray(HEAD_DIM * (ATTN_KEYS + 1));
             float[] sc = ctx.allocateFloatLocalArray(ATTN_QUERIES * ATTN_KEYS);
             float[] acc = ctx.allocateFloatLocalArray(ATTN_QUERIES * HEAD_DIM);
             float[] mx = ctx.allocateFloatLocalArray(ATTN_QUERIES);
             float[] den = ctx.allocateFloatLocalArray(ATTN_QUERIES);
             float[] alpha = ctx.allocateFloatLocalArray(ATTN_QUERIES);
-            int[] qv = ctx.allocateIntLocalArray(ATTN_QUERIES);
-            int[] kv = ctx.allocateIntLocalArray(ATTN_KEYS);
             int q0 = tile * ATTN_QUERIES;
             int qEnd = TornadoMath.min(q0 + ATTN_QUERIES, n);
             int row0 = r * n;
@@ -103,28 +136,20 @@ public final class TotoKernels {
                 int qi = e / hd;
                 int dd = e - qi * hd;
                 int t = q0 + qi;
-                qs[qi * HEAD_DIM + dd] = t < n ? qkv.get((row0 + t) * qkvRow + head * hd + dd) : 0f;
+                qs[qi * qStride + dd] = t < n ? qkv.get((row0 + t) * qkvRow + head * hd + dd) : 0f;
                 acc[qi * HEAD_DIM + dd] = 0f;
             }
             if (tid < ATTN_QUERIES) {
                 mx[tid] = -3.0e38f;
                 den[tid] = 0f;
-                int t = q0 + tid;
-                qv[tid] = t < n ? valid.get(row0 + t) : -1;
             }
-            ctx.localBarrier();
             for (int k0 = 0; k0 < qEnd; k0 += ATTN_KEYS) {
+                // keys, transposed: kv[dd · (ATTN_KEYS + 1) + kj]
                 for (int e = tid; e < ATTN_KEYS * hd; e += ATTN_THREADS) {
                     int kj = e / hd;
                     int dd = e - kj * hd;
                     int key = k0 + kj;
-                    boolean ok = key < n;
-                    ks[kj * HEAD_DIM + dd] = ok ? qkv.get((row0 + key) * qkvRow + d + head * hd + dd) : 0f;
-                    vs[kj * HEAD_DIM + dd] = ok ? qkv.get((row0 + key) * qkvRow + 2 * d + head * hd + dd) : 0f;
-                }
-                if (tid < ATTN_KEYS) {
-                    int key = k0 + tid;
-                    kv[tid] = key < n ? valid.get(row0 + key) : -2;
+                    kv[dd * kStride + kj] = key < n ? qkv.get((row0 + key) * qkvRow + d + head * hd + dd) : 0f;
                 }
                 ctx.localBarrier();
                 for (int e = tid; e < ATTN_QUERIES * ATTN_KEYS; e += ATTN_THREADS) {
@@ -133,16 +158,23 @@ public final class TotoKernels {
                     int t = q0 + qi;
                     int key = k0 + kj;
                     float s = -3.0e38f;
-                    if (t < n && key <= t && kv[kj] == qv[qi]) {
+                    if (t < n && key <= t && valid.get(row0 + key) == valid.get(row0 + t)) {
                         float dot = 0f;
                         for (int dd = 0; dd < hd; dd++) {
-                            dot += qs[qi * HEAD_DIM + dd] * ks[kj * HEAD_DIM + dd];
+                            dot += qs[qi * qStride + dd] * kv[dd * kStride + kj];
                         }
                         s = dot;
                     }
                     sc[e] = s;
                 }
                 ctx.localBarrier();
+                // the block's values replace its keys, while the first threads update the softmax
+                for (int e = tid; e < ATTN_KEYS * hd; e += ATTN_THREADS) {
+                    int kj = e / hd;
+                    int dd = e - kj * hd;
+                    int key = k0 + kj;
+                    kv[kj * HEAD_DIM + dd] = key < n ? qkv.get((row0 + key) * qkvRow + 2 * d + head * hd + dd) : 0f;
+                }
                 if (tid < ATTN_QUERIES) {
                     float old = mx[tid];
                     float nm = old;
@@ -151,8 +183,8 @@ public final class TotoKernels {
                     }
                     float sum = 0f;
                     for (int kj = 0; kj < ATTN_KEYS; kj++) {
-                        float s = sc[tid * ATTN_KEYS + kj];
-                        float pr = s > -1.0e38f ? TornadoMath.exp(s - nm) : 0f;
+                        float sv = sc[tid * ATTN_KEYS + kj];
+                        float pr = sv > -1.0e38f ? TornadoMath.exp(sv - nm) : 0f;
                         sc[tid * ATTN_KEYS + kj] = pr;
                         sum += pr;
                     }
@@ -167,7 +199,7 @@ public final class TotoKernels {
                     int dd = e - qi * hd;
                     float o = acc[qi * HEAD_DIM + dd] * alpha[qi];
                     for (int kj = 0; kj < ATTN_KEYS; kj++) {
-                        o += sc[qi * ATTN_KEYS + kj] * vs[kj * HEAD_DIM + dd];
+                        o += sc[qi * ATTN_KEYS + kj] * kv[kj * HEAD_DIM + dd];
                     }
                     acc[qi * HEAD_DIM + dd] = o;
                 }
@@ -244,6 +276,17 @@ public final class TotoKernels {
             int f = rf % k;
             int r = rf / k;
             dst.set(id, x.get((r * n + n - k - 1 + f) * d + i));
+        }
+    }
+
+    /**
+     * {@code x = x · keep + branch + b}: {@link #mix} with the bias of a branch whose GEMM ran without it,
+     * {@code b} at {@code bOff} in {@code w}, per column of {@code d}.
+     */
+    public static void mixBias(KernelContext ctx, FloatArray x, FloatArray branch, float keep, FloatArray w, int bOff, int d, int count) {
+        int i = ctx.globalIdx;
+        if (i < count) {
+            x.set(i, x.get(i) * keep + branch.get(i) + w.get(bOff + i % d));
         }
     }
 
