@@ -320,7 +320,7 @@ public final class TornadoTotoForward implements TotoForward {
                 } else {
                     g.task(task, Kernels::gemmSimdgroup, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, m, l.out(), l.in(), f);
                 }
-            } else if (gemmMode == GemmMode.HALF) {
+            } else if (gemmMode == GemmMode.HALF && l.gain() == 1f) {
                 HalfFloatArray ah = half(task, a, m * l.in());
                 HalfFloatArray wh = weights.halfMatrix(l);
                 weight(wh);
@@ -328,12 +328,12 @@ public final class TornadoTotoForward implements TotoForward {
                 wg = new WorkerGrid2D((l.out() + t - 1) / t * threads, (m + t - 1) / t * threads);
                 wg.setLocalWork(threads, threads, 1);
                 g.task(task, Kernels::gemmHalf, ctx, ah, wh, c, w, Math.max(l.b(), 0), m, l.out(), l.in(), f, noTwin, 0);
-            } else if (gemmMode == GemmMode.BLOCKED && m >= blockedWideMinRows) {
+            } else if (gemmMode != GemmMode.TILED && m >= blockedWideMinRows) {
                 int tr = Kernels.WIDE_ROWS, tc = Kernels.WIDE_COLS, threads = Kernels.HGEMM_THREADS;
                 wg = new WorkerGrid2D((l.out() + tc - 1) / tc * threads, (m + tr - 1) / tr * threads);
                 wg.setLocalWork(threads, threads, 1);
                 g.task(task, Kernels::gemmBlockedWide, ctx, a, 0, w, l.w(), Math.max(l.b(), 0), c, 0, m, l.out(), l.in(), f);
-            } else if (gemmMode == GemmMode.BLOCKED && m >= blockedMinRows) {
+            } else if (gemmMode != GemmMode.TILED && m >= blockedMinRows) {
                 int t = Kernels.HGEMM_TILE, threads = Kernels.HGEMM_THREADS;
                 wg = new WorkerGrid2D((l.out() + t - 1) / t * threads, (m + t - 1) / t * threads);
                 wg.setLocalWork(threads, threads, 1);
@@ -365,7 +365,7 @@ public final class TornadoTotoForward implements TotoForward {
                 HalfFloatArray ah = half(task, a, m * k);
                 HalfFloatArray wh = weights.halfMatrix(l);
                 weight(wh);
-                g.libraryTask(task, CuBlas::cublasGemmExFP16FP32, 1, 0, nOut, m, k, 1f, wh, k, ah, k, beta, c, nOut);
+                g.libraryTask(task, CuBlas::cublasGemmExFP16FP32, 1, 0, nOut, m, k, l.gain(), wh, k, ah, k, beta, c, nOut);
             } else {
                 FloatArray wm = weights.matrix(l);
                 weight(wm);

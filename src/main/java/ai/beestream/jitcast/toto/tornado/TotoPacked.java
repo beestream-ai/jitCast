@@ -55,8 +55,11 @@ public final class TotoPacked {
      * @param b the bias, or −1
      * @param in the input width
      * @param out the output width
+     * @param gain a power of two near the weights' RMS when that is below 1/16, else 1: the FP16 copy holds
+     *        the weights divided by it, so that small weights (the output head's readouts) stay out of the FP16
+     *        subnormals, and the FP16 GEMM multiplies it back
      */
-    public record Lin(int w, int b, int in, int out) {}
+    public record Lin(int w, int b, int in, int out, float gain) {}
 
     /**
      * A residual MLP: {@code linear2(silu(linear1(x))) + skip(x)}, scales folded in.
@@ -180,7 +183,7 @@ public final class TotoPacked {
     }
 
     /**
-     * {@return a layer's weight as its own FP16 buffer}
+     * {@return a layer's weight divided by its {@link Lin#gain()}, as its own FP16 buffer}
      *
      * @param l the layer
      */
@@ -188,7 +191,7 @@ public final class TotoPacked {
         return halfMatrices.computeIfAbsent(l, x -> {
             HalfFloatArray m = new HalfFloatArray(x.out() * x.in());
             for (int i = 0; i < m.getSize(); i++) {
-                m.set(i, new HalfFloat(Math.clamp(data.get(x.w() + i), -Kernels.HALF_MAX, Kernels.HALF_MAX)));
+                m.set(i, new HalfFloat(Math.clamp(data.get(x.w() + i) / x.gain(), -Kernels.HALF_MAX, Kernels.HALF_MAX)));
             }
             return m;
         });
@@ -213,6 +216,12 @@ public final class TotoPacked {
                     ws[r * in + i] = (float) (weight[r * in + i] * wScale[r]);
                 }
             }
+            double ss = 0;
+            for (float v : ws) {
+                ss += (double) v * v;
+            }
+            double rms = Math.sqrt(ss / ws.length);
+            float gain = rms >= 1.0 / 16 || rms == 0 ? 1f : (float) Math.pow(2, Math.round(Math.log(rms) / Math.log(2)));
             int w = add(ws);
             int b = -1;
             if (bias != null) {
@@ -222,7 +231,7 @@ public final class TotoPacked {
                 }
                 b = add(bs);
             }
-            return new Lin(w, b, in, out);
+            return new Lin(w, b, in, out, gain);
         }
 
         Lin lin(TotoWeights.Linear l, double[] wScale, double[] bScale) {
