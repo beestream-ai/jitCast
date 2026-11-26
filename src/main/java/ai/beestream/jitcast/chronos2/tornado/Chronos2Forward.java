@@ -66,8 +66,9 @@ import uk.ac.manchester.tornado.cublas.CuBlas;
  * The blocked kernel takes GEMMs from {@code -Dchronos2.tornado.blockedMinRows} rows (128 by
  * default) and the tiled kernel the smaller ones. With cuBLAS the task graph is captured and replayed as a CUDA graph
  * ({@code -Dchronos2.tornado.cudaGraph}, on by default with cuBLAS). With {@code cublas-fp16} and
- * 64-wide heads the time attention runs on tensor cores with the CUDA Tile API
- * ({@code -Dchronos2.tornado.tileAttention}, on by default there).
+ * 64-wide heads the time attention runs on tensor cores with warp-level {@code mma}
+ * ({@code -Dchronos2.tornado.mmaAttention}, on by default there), or with the CUDA Tile API
+ * ({@code -Dchronos2.tornado.tileAttention}, off by default) when that is off.
  */
 public final class Chronos2Forward implements ModelForward, AutoCloseable {
 
@@ -125,6 +126,8 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
     private final boolean cudaGraph;
     /** Whether the time attention runs on tensor cores ({@link Chronos2Kernels#timeAttentionTile}). */
     private final boolean tileAttention;
+    /** Whether the time attention runs on tensor cores with warp-level mma ({@link Chronos2Kernels#timeAttentionMma}). */
+    private final boolean mmaAttention;
     /** Whether the GEMMs read FP16 copies of their inputs, which the tasks writing them also write. */
     private final boolean halfInputs;
 
@@ -148,7 +151,9 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
         // FP16 operands, so only with the FP16 GEMMs, and the Tile API needs CUDA
         boolean fp16Cuda = gemmMode == GemmMode.CUBLAS_FP16;
         this.halfInputs = fp16Cuda || gemmMode == GemmMode.HALF;
-        this.tileAttention = Options.bool("chronos2.tornado.tileAttention", fp16Cuda) && fp16Cuda
+        this.mmaAttention = Options.bool("chronos2.tornado.mmaAttention", fp16Cuda) && fp16Cuda
+                && config.dKv() == Chronos2Kernels.MMA_HEAD_DIM;
+        this.tileAttention = !mmaAttention && Options.bool("chronos2.tornado.tileAttention", false) && fp16Cuda
                 && config.dKv() == Chronos2Kernels.TILE_HEAD_DIM;
     }
 
@@ -288,7 +293,13 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
                 items(s + "rope", tokens * heads * (dh / 2));
                 g.task(s + "rope", Chronos2Kernels::rope, ctx, big, table, tokens, n, heads, dh, inner);
                 written(big);
-                if (tileAttention) {
+                if (mmaAttention) {
+                    int mTiles = (n + Chronos2Kernels.MMA_QUERIES - 1) / Chronos2Kernels.MMA_QUERIES;
+                    grid.addWorkerGrid(G + "." + s + "attn", group(rows * heads * mTiles * Chronos2Kernels.MMA_THREADS,
+                            Chronos2Kernels.MMA_THREADS));
+                    g.task(s + "attn", Chronos2Kernels::timeAttentionMma, ctx, big, att, live, rows, n, heads, inner, twinOf(att),
+                            twinFlag());
+                } else if (tileAttention) {
                     // the grid counts tile blocks; the block shape is the tile compiler's
                     grid.addWorkerGrid(G + "." + s + "attn", new WorkerGrid2D(
                             (n + Chronos2Kernels.TILE_QUERIES - 1) / Chronos2Kernels.TILE_QUERIES, rows * heads));
