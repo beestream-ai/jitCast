@@ -36,7 +36,10 @@ import ai.beestream.jitcast.util.Json;
 
 /**
  * End-to-end Timestral forecast latency on the scenarios of a workload file, the same inputs the
- * reference engine is timed on:
+ * reference engine is timed on. Every scenario's first call and warm-up calls run before any scenario
+ * is timed, so the order of the workload file does not change the timings. With
+ * {@code -Dtimestral.timing=true} each scenario's host and device phases are reported over its timed
+ * calls:
  *
  * <pre>
  * java ... ai.beestream.jitcast.bench.TimestralBench --checkpoint Timestral-5M --workloads workloads.safetensors \
@@ -46,6 +49,9 @@ import ai.beestream.jitcast.util.Json;
 public final class TimestralBench {
 
     private TimestralBench() {}
+
+    /** A scenario after its first pass: its inputs and first-call time. */
+    private record Scenario(String name, int h, List<TimeSeries> series, double firstMs) {}
 
     public static void main(String[] argv) throws IOException {
         Map<String, String> a = new HashMap<>();
@@ -64,7 +70,9 @@ public final class TimestralBench {
                 : TornadoTimestralEngine.load(checkpoint);
                 SafeTensors w = SafeTensors.open(Path.of(a.get("workloads")))) {
             results.put("engine", engine.name());
-            Map<String, Object> scenarios = new LinkedHashMap<>();
+            // First pass: every scenario's first call and warm-up calls, so the JVM has compiled the host
+            // code of all of them before any is timed, whatever their order in the workload file.
+            List<Scenario> runs = new ArrayList<>();
             for (Map.Entry<String, String> s : w.metadata().entrySet()) {
                 String name = s.getKey();
                 if (name.equals("format") || wanted != null && !wanted.contains(name)) {
@@ -78,6 +86,20 @@ public final class TimestralBench {
                 for (int i = 0; i < warmup; i++) {
                     engine.forecast(series, h);
                 }
+                runs.add(new Scenario(name, h, series, first));
+            }
+            // Second pass: each scenario warms up again (its plan may have been evicted) and is timed.
+            Map<String, Object> scenarios = new LinkedHashMap<>();
+            for (Scenario sc : runs) {
+                String name = sc.name();
+                int h = sc.h();
+                List<TimeSeries> series = sc.series();
+                double first = sc.firstMs();
+                for (int i = 0; i < warmup; i++) {
+                    engine.forecast(series, h);
+                }
+                Timing.clear();
+                long t0;
                 List<Double> ms = new ArrayList<>();
                 long deadline = System.nanoTime() + (long) (budget * 1e9);
                 while (ms.size() < reps && (ms.size() < 3 || System.nanoTime() < deadline)) {
@@ -85,7 +107,7 @@ public final class TimestralBench {
                     engine.forecast(series, h);
                     ms.add((System.nanoTime() - t0) / 1e6);
                 }
-                Timing.report(name, warmup + ms.size() + 1);
+                Timing.report(name, ms.size());
                 double[] sorted = ms.stream().mapToDouble(Double::doubleValue).sorted().toArray();
                 double median = sorted.length % 2 == 1 ? sorted[sorted.length / 2]
                         : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;

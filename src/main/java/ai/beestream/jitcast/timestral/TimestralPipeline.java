@@ -248,49 +248,64 @@ public final class TimestralPipeline {
         int horizonLen = (horizon + ps - 1) / ps * ps;
         boolean covariates = series.stream().anyMatch(s -> s.pastCount() > 0 || s.futureCount() > 0);
         boolean anyKnown = series.stream().anyMatch(s -> s.futureCount() > 0);
-        List<float[]> rows = new ArrayList<>();
-        List<boolean[]> masks = new ArrayList<>();
-        List<Integer> groups = new ArrayList<>(), roles = new ArrayList<>();
-        List<float[]> kf = new ArrayList<>();
-        List<boolean[]> kfm = new ArrayList<>();
-        int[][] targetRows = new int[series.size()][];
-        for (int s = 0; s < series.size(); s++) {
+        // each series' rows: its targets, past covariates and known covariates, in that order
+        int ns = series.size();
+        int[] first = new int[ns + 1];
+        for (int s = 0; s < ns; s++) {
+            TimeSeries ts = series.get(s);
+            for (int v = 0; v < ts.futureCount(); v++) {
+                if (ts.futureCovariates()[v].length < ts.length() + horizon) {
+                    throw new IllegalArgumentException("future covariates of series " + s + " need at least "
+                            + (ts.length() + horizon) + " steps, got " + ts.futureCovariates()[v].length);
+                }
+            }
+            first[s + 1] = first[s] + ts.targets() + ts.pastCount() + ts.futureCount();
+        }
+        int total = first[ns];
+        // the most recent maxContext steps, left-padded to whole patches
+        int kept = Math.min(t, options.maxContext());
+        int padded = (kept + ps - 1) / ps * ps;
+        float[][] r = new float[total][];
+        boolean[][] m = new boolean[total][];
+        int[] groups = new int[total];
+        int[] roles = new int[total];
+        float[][] kf = new float[total][];
+        boolean[][] kfm = new boolean[total][];
+        int[][] targetRows = new int[ns][];
+        // the series are independent, so their rows are filled in parallel
+        IntStream.range(0, ns).parallel().forEach(s -> {
             TimeSeries ts = series.get(s);
             int len = ts.length();
+            int row = first[s];
             targetRows[s] = new int[ts.targets()];
-            for (int v = 0; v < ts.targets(); v++) {
-                targetRows[s][v] = rows.size();
+            for (int v = 0; v < ts.targets(); v++, row++) {
+                targetRows[s][v] = row;
                 float[] x = new float[t];
-                boolean[] m = new boolean[t];
+                boolean[] mk = new boolean[t];
                 for (int i = 0; i < len; i++) {
                     float val = ts.target()[v][i];
-                    m[t - len + i] = Float.isFinite(val);
+                    mk[t - len + i] = Float.isFinite(val);
                     // the reference zeroes missing targets and then negates them: -0.0 in the mirrored pass
-                    x[t - len + i] = sign * (m[t - len + i] ? val : 0f);
+                    x[t - len + i] = sign * (mk[t - len + i] ? val : 0f);
                 }
-                rows.add(forwardFill(x, m));
-                masks.add(m);
-                groups.add(s);
-                roles.add(BlockInput.TARGET);
-                kf.add(new float[horizonLen]);
-                kfm.add(new boolean[horizonLen]);
+                keep(r, m, row, forwardFill(x, mk), mk, t, kept, padded);
+                groups[row] = s;
+                roles[row] = BlockInput.TARGET;
+                kf[row] = new float[horizonLen];
+                kfm[row] = new boolean[horizonLen];
             }
-            for (int v = 0; v < ts.pastCount(); v++) {
-                addCovariate(ts.pastCovariates()[v], len, t, sign, rows, masks);
-                groups.add(s);
-                roles.add(BlockInput.PAST);
-                kf.add(new float[horizonLen]);
-                kfm.add(new boolean[horizonLen]);
+            for (int v = 0; v < ts.pastCount(); v++, row++) {
+                covariate(ts.pastCovariates()[v], len, t, sign, r, m, row, kept, padded);
+                groups[row] = s;
+                roles[row] = BlockInput.PAST;
+                kf[row] = new float[horizonLen];
+                kfm[row] = new boolean[horizonLen];
             }
-            for (int v = 0; v < ts.futureCount(); v++) {
+            for (int v = 0; v < ts.futureCount(); v++, row++) {
                 float[] fc = ts.futureCovariates()[v];
-                if (fc.length < len + horizon) {
-                    throw new IllegalArgumentException("future covariates of series " + s + " need at least "
-                            + (len + horizon) + " steps, got " + fc.length);
-                }
-                addCovariate(fc, len, t, sign, rows, masks);
-                groups.add(s);
-                roles.add(BlockInput.KNOWN);
+                covariate(fc, len, t, sign, r, m, row, kept, padded);
+                groups[row] = s;
+                roles[row] = BlockInput.KNOWN;
                 float[] f = new float[horizonLen];
                 boolean[] fm = new boolean[horizonLen];
                 for (int i = 0; i < horizon; i++) {
@@ -298,34 +313,32 @@ public final class TimestralPipeline {
                     fm[i] = !Float.isNaN(val);
                     f[i] = fm[i] ? sign * val : 0f;
                 }
-                kf.add(f);
-                kfm.add(fm);
+                kf[row] = f;
+                kfm[row] = fm;
             }
-        }
-        // the most recent maxContext steps, left-padded to whole patches
-        int kept = Math.min(t, options.maxContext());
-        int padded = (kept + ps - 1) / ps * ps;
-        float[][] r = new float[rows.size()][padded];
-        boolean[][] m = new boolean[rows.size()][padded];
-        for (int i = 0; i < r.length; i++) {
-            System.arraycopy(rows.get(i), t - kept, r[i], padded - kept, kept);
-            System.arraycopy(masks.get(i), t - kept, m[i], padded - kept, kept);
-        }
-        return new Assembled(r, m, groups.stream().mapToInt(Integer::intValue).toArray(),
-                covariates ? roles.stream().mapToInt(Integer::intValue).toArray() : null,
-                anyKnown ? kf.toArray(float[][]::new) : null, anyKnown ? kfm.toArray(boolean[][]::new) : null, targetRows);
+        });
+        return new Assembled(r, m, groups, covariates ? roles : null, anyKnown ? kf : null, anyKnown ? kfm : null, targetRows);
     }
 
-    private static void addCovariate(float[] values, int len, int t, float sign, List<float[]> rows, List<boolean[]> masks) {
+    /** A covariate row of {@code t} steps, right-aligned, missing values zeroed, kept as {@link #keep} says. */
+    private static void covariate(float[] values, int len, int t, float sign, float[][] r, boolean[][] m, int row, int kept,
+            int padded) {
         float[] x = new float[t];
-        boolean[] m = new boolean[t];
+        boolean[] mk = new boolean[t];
         for (int i = 0; i < len; i++) {
             float val = values[i];
-            m[t - len + i] = !Float.isNaN(val);
-            x[t - len + i] = m[t - len + i] ? sign * val : 0f;
+            mk[t - len + i] = !Float.isNaN(val);
+            x[t - len + i] = mk[t - len + i] ? sign * val : 0f;
         }
-        rows.add(x);
-        masks.add(m);
+        keep(r, m, row, x, mk, t, kept, padded);
+    }
+
+    /** Row {@code row}: the last {@code kept} of {@code t} steps of {@code x} and its mask, left-padded to {@code padded}. */
+    private static void keep(float[][] r, boolean[][] m, int row, float[] x, boolean[] mask, int t, int kept, int padded) {
+        r[row] = new float[padded];
+        m[row] = new boolean[padded];
+        System.arraycopy(x, t - kept, r[row], padded - kept, kept);
+        System.arraycopy(mask, t - kept, m[row], padded - kept, kept);
     }
 
     /** {@code ffill_with_mask}: unobserved positions take the last observed value; leading ones stay 0. */
@@ -358,8 +371,9 @@ public final class TimestralPipeline {
                 bounds[row] = capBounds(a.rows()[row], a.mask()[row]);
             }
         });
-        List<float[][][]> out = new ArrayList<>(series.size());
-        for (int s = 0; s < series.size(); s++) {
+        // per series in parallel: the quantiles capped and transposed to [targets][quantiles][horizon]
+        float[][][][] capped = new float[series.size()][][][];
+        IntStream.range(0, series.size()).parallel().forEach(s -> {
             int[] tr = a.targetRows()[s];
             float[][][] f = new float[tr.length][nq][horizon];
             for (int v = 0; v < tr.length; v++) {
@@ -378,8 +392,9 @@ public final class TimestralPipeline {
                     }
                 }
             }
-            out.add(f);
-        }
+            capped[s] = f;
+        });
+        List<float[][][]> out = new ArrayList<>(List.of(capped));
         Timing.add("host.cap", tm);
         return out;
     }

@@ -48,6 +48,13 @@ public final class Timing {
         }
     }
 
+    /** Drops the totals so far. */
+    public static void clear() {
+        synchronized (TOTALS) {
+            TOTALS.clear();
+        }
+    }
+
     /** Prints each phase's total ms per call of {@code calls} and clears the totals. */
     public static void report(String label, int calls) {
         if (!ENABLED) {

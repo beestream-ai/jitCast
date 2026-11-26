@@ -66,7 +66,9 @@ import uk.ac.manchester.tornado.cublas.CuBlas;
  * {@code -Dtimestral.tornado.blockedMinRows} rows (128 by default; its 64-row tiles waste most of
  * their work below that) and the tiled kernel the smaller ones. With cuBLAS the task graph is
  * captured and replayed as a CUDA graph ({@code -Dtimestral.tornado.cudaGraph}, on by default with
- * cuBLAS).
+ * cuBLAS). With {@code cublas-fp16} and 64-wide heads the time attention runs on tensor cores with
+ * warp-level {@code mma} ({@code -Dtimestral.tornado.mmaAttention}, on by default there), and the tasks
+ * that write a GEMM's input also write its FP16 copy.
  */
 public final class TimestralForward implements BlockForward, AutoCloseable {
 
@@ -158,6 +160,10 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
     private final int blasAttentionMaxRows = Options.integer("timestral.tornado.blasAttentionMaxRows", 8, 1);
     private final long attentionScoreBytes = Options.bytes("timestral.tornado.attentionScoreBytes", 512L << 20, 1);
     private final boolean cudaGraph;
+    /** Whether the time attention runs on tensor cores with warp-level mma ({@link TimestralKernels#timeAttentionMma}). */
+    private final boolean mmaAttention;
+    /** Whether the GEMMs read FP16 copies of their inputs, which the tasks writing them also write. */
+    private final boolean halfInputs;
 
     public TimestralForward(TimestralConfig config, TimestralPacked weights) {
         this(config, weights, Options.integer("timestral.tornado.plans", 8, 1));
@@ -178,6 +184,10 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
         this.plans = new PlanCache<>(Math.max(1, maxCachedPlans),
                 Options.bytes("timestral.tornado.planBytes", Math.max(1, Devices.memory() - weightBytes), 1));
         this.cudaGraph = Options.bool("timestral.tornado.cudaGraph", gemmMode.cublas());
+        this.halfInputs = gemmMode == GemmMode.CUBLAS_FP16 || gemmMode == GemmMode.HALF;
+        this.mmaAttention = Options.bool("timestral.tornado.mmaAttention", gemmMode == GemmMode.CUBLAS_FP16)
+                && gemmMode == GemmMode.CUBLAS_FP16
+                && config.headDim() == TimestralKernels.MMA_HEAD_DIM;
     }
 
     /** The GEMM mode in use, {@code AUTO} resolved for the device. */
@@ -351,13 +361,25 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
                 for (int ai = 0; ai < layer.attentions().size(); ai++) {
                     TimestralPacked.Attention a = layer.attentions().get(ai);
                     String s = "l" + li + "a" + ai + "_";
-                    rms(s + "norm", x, hn, a.norm(), tokens, c.normEps());
+                    rms(s + "norm", x, hn, a.norm(), tokens, c.normEps(), true);
                     gemm(s + "qkv", hn, a.qkv(), big, tokens, 0);
                     if (a.time()) {
                         items(s + "rope", tokens * heads * (dh / 2));
                         g.task(s + "rope", TimestralKernels::rope, ctx, big, pos, table, tokens, heads, dh, d);
                         written(big);
-                        if (blasAttention(shape)) {
+                        if (mmaAttention) {
+                            int mTiles = (n + TimestralKernels.MMA_QUERIES - 1) / TimestralKernels.MMA_QUERIES;
+                            grid.addWorkerGrid(G + "." + s + "attn", group(rows * heads * mTiles * TimestralKernels.MMA_THREADS,
+                                    TimestralKernels.MMA_THREADS));
+                            int ll = enc - (shape.covariates() ? h : 0);
+                            // the gate rewrites att, so it writes the FP16 copy when there is one
+                            boolean twin = a.gate() == null;
+                            g.task(s + "attn", TimestralKernels::timeAttentionMma, ctx, big, att, keyValid, known, rows, enc, ll, n,
+                                    heads, d, twin ? twinOf(att) : noTwin, twin ? twinFlag() : 0);
+                            if (twin) {
+                                wroteTwin(att);
+                            }
+                        } else if (blasAttention(shape)) {
                             timeAttentionBlas(s, rows, enc, enc - (shape.covariates() ? h : 0), n, heads, dh, d);
                         } else {
                             grid.addWorkerGrid(G + "." + s + "attn", group(rows * heads * qTiles * TimestralKernels.ATTN_THREADS,
@@ -375,20 +397,20 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
                     if (a.gate() != null) {
                         gemm(s + "gproj", hn, a.gate(), gate, tokens, 0);
                         items(s + "gate", tokens * d);
-                        g.task(s + "gate", TimestralKernels::gate, ctx, att, gate, tokens * d);
-                        written(att);
+                        g.task(s + "gate", TimestralKernels::gate, ctx, att, gate, tokens * d, twinOf(att), twinFlag());
+                        wroteTwin(att);
                     }
                     gemm(s + "wo", att, a.wo(), x, tokens, Kernels.ACCUMULATE);
                 }
                 String s = "l" + li + "_";
-                rms(s + "mnorm", x, hn, layer.mlpNorm(), tokens, c.normEps());
+                rms(s + "mnorm", x, hn, layer.mlpNorm(), tokens, c.normEps(), true);
                 gemm(s + "up", hn, layer.up(), big, tokens, 0);
                 items(s + "swiglu", tokens * f);
-                g.task(s + "swiglu", Kernels::swiGlu, ctx, big, act, tokens, f, noTwin, 0);
-                written(act);
+                g.task(s + "swiglu", Kernels::swiGlu, ctx, big, act, tokens, f, twinOf(act), twinFlag());
+                wroteTwin(act);
                 gemm(s + "down", act, layer.down(), x, tokens, Kernels.ACCUMULATE);
             }
-            rms("onorm", x, y, weights.outNorm(), tokens, c.normEps());
+            rms("onorm", x, y, weights.outNorm(), tokens, c.normEps(), false);
             items("gather", decTokens * d);
             g.task("gather", TimestralKernels::gatherDecoder, ctx, y, dec, rows, enc, n, h, d);
             written(dec);
@@ -554,19 +576,41 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
             }
         }
 
-        /** The FP16 copy of a GEMM input, converted once after each task that writes the source. */
+        /** The FP16 copy of a GEMM input, converted once after each task that writes the source without it. */
         private HalfFloatArray half(String name, FloatArray a, int count) {
+            HalfFloatArray h = halfBuffer(a);
+            if (fresh.add(a)) {
+                items(name + "_h", count);
+                g.task(name + "_h", Kernels::toHalf, ctx, a, h, count);
+            }
+            return h;
+        }
+
+        private HalfFloatArray halfBuffer(FloatArray a) {
             HalfFloatArray h = halves.get(a);
             if (h == null) {
                 h = new HalfFloatArray(a.getSize());
                 halves.put(a, h);
                 g.transferToDevice(DataTransferMode.FIRST_EXECUTION, h);
             }
-            if (fresh.add(a)) {
-                items(name + "_h", count);
-                g.task(name + "_h", Kernels::toHalf, ctx, a, h, count);
-            }
             return h;
+        }
+
+        /** Where a task writing {@code a} also writes its FP16 copy: the copy with FP16 GEMM inputs, else none. */
+        private HalfFloatArray twinOf(FloatArray a) {
+            return halfInputs ? halfBuffer(a) : noTwin;
+        }
+
+        private int twinFlag() {
+            return halfInputs ? 1 : 0;
+        }
+
+        /** A task has written {@code buf} and, with FP16 GEMM inputs, its FP16 copy. */
+        private void wroteTwin(FloatArray buf) {
+            written(buf);
+            if (halfInputs) {
+                fresh.add(buf);
+            }
         }
 
         private HalfFloatArray halfWeight(TimestralPacked.Lin l) {
@@ -595,10 +639,16 @@ public final class TimestralForward implements BlockForward, AutoCloseable {
             fresh.remove(buf);
         }
 
-        void rms(String name, FloatArray in, FloatArray out, int wOff, int rows, float eps) {
+        /** RMSNorm of {@code rows} rows into {@code out}, and its FP16 copy when {@code twin} (a GEMM reads it). */
+        void rms(String name, FloatArray in, FloatArray out, int wOff, int rows, float eps, boolean twin) {
             grid.addWorkerGrid(G + "." + name, group(rows * Kernels.NORM_THREADS, Kernels.NORM_THREADS));
-            g.task(name, Kernels::rmsNorm, ctx, in, out, w, wOff, config.dModel(), eps, noTwin, 0, rows);
-            written(out);
+            g.task(name, Kernels::rmsNorm, ctx, in, out, w, wOff, config.dModel(), eps, twin ? twinOf(out) : noTwin,
+                    twin ? twinFlag() : 0, rows);
+            if (twin) {
+                wroteTwin(out);
+            } else {
+                written(out);
+            }
         }
 
         void items(String task, int count) {
