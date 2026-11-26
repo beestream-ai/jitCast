@@ -403,7 +403,8 @@ public final class T0Pipeline {
         int known = Math.min(s.width() - context, forecastWidth);
         int w = padLeft + context + forecastWidth;
         T0Batch out = T0Batch.empty(s.rows(), w);
-        for (int r = 0; r < s.rows(); r++) {
+        IntStream all = IntStream.range(0, s.rows());
+        (s.rows() > 1 && (long) s.rows() * w >= T0Scaler.PARALLEL_CELLS ? all.parallel() : all).forEach(r -> {
             int type = s.rowType(r), group = s.rowGroup(r);
             boolean future = type == T0Batch.FUTURE, withheld = type == T0Batch.TARGET || type == T0Batch.HISTORICAL;
             int src = r * s.width(), dst = r * w + padLeft;
@@ -422,7 +423,7 @@ public final class T0Pipeline {
                 out.group()[o] = group;
                 out.type()[o] = type;
             }
-        }
+        });
         return out;
     }
 

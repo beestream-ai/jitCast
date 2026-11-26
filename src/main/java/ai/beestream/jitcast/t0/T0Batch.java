@@ -18,6 +18,7 @@ package ai.beestream.jitcast.t0;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.stream.IntStream;
 
 import ai.beestream.jitcast.api.TimeSeries;
 
@@ -78,17 +79,23 @@ public record T0Batch(int rows, int width, float[] values, byte[] mask, int[] gr
             rows += ts.rows();
         }
         T0Batch b = empty(rows, width);
-        int r = 0;
-        for (int s = 0; s < series.size(); s++) {
+        int[] first = new int[series.size()];
+        for (int s = 1; s < series.size(); s++) {
+            first[s] = first[s - 1] + series.get(s - 1).rows();
+        }
+        int w = width;
+        IntStream all = IntStream.range(0, series.size());
+        // series are independent: fill them in parallel when there is enough work
+        (series.size() > 1 && (long) rows * width >= T0Scaler.PARALLEL_CELLS ? all.parallel() : all).forEach(s -> {
             TimeSeries ts = series.get(s);
-            int t = ts.length(), start = width - t - horizon;
+            int t = ts.length(), start = w - t - horizon, r = first[s];
             for (int kind = TARGET; kind <= FUTURE; kind++) {
                 float[][] src = kind == TARGET ? ts.target() : kind == HISTORICAL ? ts.pastCovariates() : ts.futureCovariates();
                 if (src == null) {
                     continue;
                 }
                 for (float[] row : src) {
-                    int o = r * width + start;
+                    int o = r * w + start;
                     for (int i = 0; i < t + horizon; i++) {
                         boolean known = kind == FUTURE || i < t;
                         float v = known ? row[i] : 0f;
@@ -100,7 +107,7 @@ public record T0Batch(int rows, int width, float[] values, byte[] mask, int[] gr
                     r++;
                 }
             }
-        }
+        });
         return b;
     }
 
@@ -166,14 +173,21 @@ public record T0Batch(int rows, int width, float[] values, byte[] mask, int[] gr
 
     /** {@return where the forecast region begins: the first step withheld on a target row, else the width} */
     public int contextEnd() {
-        for (int t = 0; t < width; t++) {
-            for (int r = 0; r < rows; r++) {
-                if (rowType(r) == TARGET && mask[r * width + t] == WITHHELD) {
-                    return t;
+        // the earliest withheld step of any target row, each row scanned in memory order
+        int end = width;
+        for (int r = 0; r < rows; r++) {
+            if (rowType(r) != TARGET) {
+                continue;
+            }
+            int o = r * width;
+            for (int t = 0; t < end; t++) {
+                if (mask[o + t] == WITHHELD) {
+                    end = t;
+                    break;
                 }
             }
         }
-        return width;
+        return end;
     }
 
     /** Whether a cell is an observation: {@code VALID} and finite. */

@@ -23,6 +23,7 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.IntStream;
 
 import ai.beestream.jitcast.t0.T0Config;
 import ai.beestream.jitcast.t0.T0Forward;
@@ -56,6 +57,12 @@ import uk.ac.manchester.tornado.cublas.CuBlas;
  * {@code -Dt0.tornado.gemm} says ({@link GemmMode}; {@code auto} by default: cuBLAS in FP32 on CUDA, Apple's
  * simdgroup matrices on Metal, the register-blocked FP32 kernel elsewhere). With cuBLAS the task graph is
  * captured and replayed as a CUDA graph ({@code -Dt0.tornado.cudaGraph}, on by default with cuBLAS).
+ *
+ * <p>With FP16 GEMM inputs the tasks that write a GEMM's input (the norms, the attention, SwiGLU, the
+ * residual blocks' ReLU) also write its FP16 copy, so no separate conversion runs before the GEMM. With
+ * {@code cublas-fp16} the time attention runs on tensor cores with warp-level {@code mma}
+ * ({@link T0Kernels#timeAttentionMma}; {@code -Dt0.tornado.mmaAttention}, on by default there) when the heads
+ * are {@link T0Kernels#MMA_HEAD_DIM} wide.
  */
 public final class TornadoT0Forward implements T0Forward {
 
@@ -64,6 +71,9 @@ public final class TornadoT0Forward implements T0Forward {
     }
 
     private static final String G = "t0";
+
+    /** Inputs with at least this many values are packed with one task per row. */
+    private static final long PARALLEL_CELLS = 1 << 16;
 
     /** Work-group size of the element-wise kernels. */
     private static final int ITEM_GROUP = 128;
@@ -115,6 +125,14 @@ public final class TornadoT0Forward implements T0Forward {
     private final SharedWeights shared = new SharedWeights(G, device);
     private final GemmMode gemmMode;
     private final boolean cudaGraph;
+    /** Whether the GEMMs read FP16 inputs, which the tasks producing them write alongside the FP32 values. */
+    private final boolean halfInputs;
+    /** Whether the time attention runs on tensor cores ({@link T0Kernels#timeAttentionMma}). */
+    private final boolean mmaAttention;
+    /** Whether the up projection writes FP16, which SwiGLU reads ({@link T0Kernels#biasSwiGluHalf}). */
+    private final boolean halfUp;
+    /** Whether the q|k|v projection writes FP16, which the norm, RoPE and attention read. */
+    private final boolean halfQkv;
 
     /**
      * A forward pass with the default plan count ({@code -Dt0.tornado.plans}, 8).
@@ -145,6 +163,11 @@ public final class TornadoT0Forward implements T0Forward {
         this.plans = new PlanCache<>(Math.max(1, maxCachedPlans),
                 Options.bytes("t0.tornado.planBytes", Math.max(1, Devices.memory() - weightBytes), 1));
         this.cudaGraph = Options.bool("t0.tornado.cudaGraph", gemmMode.cublas());
+        this.halfInputs = gemmMode == GemmMode.CUBLAS_FP16 || gemmMode == GemmMode.HALF;
+        this.mmaAttention = Options.bool("t0.tornado.mmaAttention", gemmMode == GemmMode.CUBLAS_FP16)
+                && gemmMode == GemmMode.CUBLAS_FP16 && config.headDim() == T0Kernels.MMA_HEAD_DIM;
+        this.halfUp = Options.bool("t0.tornado.halfUp", gemmMode == GemmMode.CUBLAS_FP16) && gemmMode == GemmMode.CUBLAS_FP16;
+        this.halfQkv = Options.bool("t0.tornado.halfQkv", mmaAttention) && mmaAttention;
     }
 
     /** {@return the GEMM mode in use, {@code AUTO} resolved for the device} */
@@ -197,6 +220,7 @@ public final class TornadoT0Forward implements T0Forward {
         final IntArray type, valid, future, groupOf, groupStart, groupRows;
         final HalfFloatArray noTwin = new HalfFloatArray(1);
         FloatArray part;
+        HalfFloatArray bigH;
         final Map<FloatArray, HalfFloatArray> halves = new IdentityHashMap<>();
         final Set<FloatArray> fresh = Collections.newSetFromMap(new IdentityHashMap<>());
 
@@ -247,38 +271,66 @@ public final class TornadoT0Forward implements T0Forward {
             for (int li = 0; li < weights.layers().size(); li++) {
                 T0Packed.Layer l = weights.layers().get(li);
                 String s = "l" + li + "_";
-                norm(s + "an", x, hn, pending, l.attnNorm(), tokens);
-                gemm(s + "qkv", hn, l.qkv(), big, tokens, nb);
+                norm(s + "an", x, hn, pending, l.attnNorm(), tokens, true);
                 grid.addWorkerGrid(name + "." + s + "qk", group(tokens * heads * T0Kernels.QK_THREADS, T0Kernels.QK_THREADS));
-                g.task(s + "qk", T0Kernels::qkNormRope, ctx, big, w, fold ? l.qkv().b() : -1, l.qNorm(), l.kNorm(), weights.invFreq(),
-                        weights.logXpos(), l.group() ? 0 : 1, c.xposHalves() ? 1 : 0, rows, n, heads, hd, d, T0Config.NORM_EPS);
-                written(big);
-                if (l.group()) {
+                if (halfQkv) {
+                    halfGemm(s + "qkv", hn, l.qkv(), tokens);
+                    g.task(s + "qk", T0Kernels::qkNormRopeHalf, ctx, bigHalf(), w, l.qkv().b(), l.qNorm(), l.kNorm(), weights.invFreq(),
+                            weights.logXpos(), l.group() ? 0 : 1, c.xposHalves() ? 1 : 0, rows, n, heads, hd, d, T0Config.NORM_EPS);
+                } else {
+                    gemm(s + "qkv", hn, l.qkv(), big, tokens, nb);
+                    g.task(s + "qk", T0Kernels::qkNormRope, ctx, big, w, fold ? l.qkv().b() : -1, l.qNorm(), l.kNorm(), weights.invFreq(),
+                            weights.logXpos(), l.group() ? 0 : 1, c.xposHalves() ? 1 : 0, rows, n, heads, hd, d, T0Config.NORM_EPS);
+                    written(big);
+                }
+                if (halfQkv && l.group()) {
+                    grid.addWorkerGrid(name + "." + s + "attn",
+                            group(tokens * heads * T0Kernels.GROUP_THREADS, T0Kernels.GROUP_THREADS));
+                    g.task(s + "attn", T0Kernels::groupAttentionHalf, ctx, bigHalf(), att, valid, future, groupOf, groupStart, groupRows,
+                            rows, n, heads, hd, d, scale, twinOf(att), twinFlag());
+                } else if (halfQkv) {
+                    int tiles = (n + T0Kernels.MMA_QUERIES - 1) / T0Kernels.MMA_QUERIES;
+                    grid.addWorkerGrid(name + "." + s + "attn",
+                            group(rows * heads * tiles * T0Kernels.MMA_THREADS, T0Kernels.MMA_THREADS));
+                    g.task(s + "attn", T0Kernels::timeAttentionMmaHalf, ctx, bigHalf(), att, valid, future, rows, n, heads, d, scale,
+                            twinOf(att), twinFlag());
+                } else if (l.group()) {
                     grid.addWorkerGrid(name + "." + s + "attn",
                             group(tokens * heads * T0Kernels.GROUP_THREADS, T0Kernels.GROUP_THREADS));
                     g.task(s + "attn", T0Kernels::groupAttention, ctx, big, att, valid, future, groupOf, groupStart, groupRows, rows, n,
-                            heads, hd, d, scale);
+                            heads, hd, d, scale, twinOf(att), twinFlag());
+                } else if (mmaAttention) {
+                    int tiles = (n + T0Kernels.MMA_QUERIES - 1) / T0Kernels.MMA_QUERIES;
+                    grid.addWorkerGrid(name + "." + s + "attn",
+                            group(rows * heads * tiles * T0Kernels.MMA_THREADS, T0Kernels.MMA_THREADS));
+                    g.task(s + "attn", T0Kernels::timeAttentionMma, ctx, big, att, valid, future, rows, n, heads, d, scale,
+                            twinOf(att), twinFlag());
                 } else {
                     int tiles = (n + T0Kernels.ATTN_QUERIES - 1) / T0Kernels.ATTN_QUERIES;
                     grid.addWorkerGrid(name + "." + s + "attn",
                             group(rows * heads * tiles * T0Kernels.ATTN_THREADS, T0Kernels.ATTN_THREADS));
-                    g.task(s + "attn", T0Kernels::timeAttention, ctx, big, att, valid, future, rows, n, heads, hd, d, scale);
+                    g.task(s + "attn", T0Kernels::timeAttention, ctx, big, att, valid, future, rows, n, heads, hd, d, scale,
+                            twinOf(att), twinFlag());
                 }
-                written(att);
+                wroteTwin(att);
                 gemm(s + "o", att, l.out(), x, tokens, Kernels.ACCUMULATE | nb);
-                norm(s + "mn", x, hn, fold ? l.out().b() : -1, l.mlpNorm(), tokens);
-                gemm(s + "up", hn, l.up(), big, tokens, nb);
+                norm(s + "mn", x, hn, fold ? l.out().b() : -1, l.mlpNorm(), tokens, true);
                 items(s + "glu", tokens * ff);
-                if (fold) {
-                    g.task(s + "glu", T0Kernels::biasSwiGlu, ctx, big, act, w, l.up().b(), tokens, ff);
+                if (halfUp) {
+                    halfGemm(s + "up", hn, l.up(), tokens);
+                    g.task(s + "glu", T0Kernels::biasSwiGluHalf, ctx, bigHalf(), act, w, l.up().b(), tokens, ff, twinOf(act), twinFlag());
+                } else if (fold) {
+                    gemm(s + "up", hn, l.up(), big, tokens, nb);
+                    g.task(s + "glu", T0Kernels::biasSwiGlu, ctx, big, act, w, l.up().b(), tokens, ff, twinOf(act), twinFlag());
                 } else {
-                    g.task(s + "glu", Kernels::swiGlu, ctx, big, act, tokens, ff, noTwin, 0);
+                    gemm(s + "up", hn, l.up(), big, tokens, nb);
+                    g.task(s + "glu", Kernels::swiGlu, ctx, big, act, tokens, ff, twinOf(act), twinFlag());
                 }
-                written(act);
+                wroteTwin(act);
                 gemm(s + "down", act, l.down(), x, tokens, Kernels.ACCUMULATE | nb);
                 pending = fold ? l.down().b() : -1;
             }
-            norm("on", x, hn, pending, weights.outNorm(), tokens);
+            norm("on", x, hn, pending, weights.outNorm(), tokens, false);
             items("gather", outs * d);
             g.task("gather", T0Kernels::gatherPatches, ctx, hn, dec, rows, n, n - count - 1, count, d);
             written(dec);
@@ -301,19 +353,26 @@ public final class TornadoT0Forward implements T0Forward {
 
         float[] run(Input in) {
             int rows = shape.rows(), n = shape.patches(), p = config.patchSize(), tokens = rows * n;
-            float[] t = new float[tokens * 3 * p];
-            for (int i = 0; i < tokens; i++) {
-                System.arraycopy(in.values(), i * p, t, i * 3 * p, p);
-                for (int j = 0; j < p; j++) {
-                    t[i * 3 * p + p + j] = (float) j / p;
+            float[] index = new float[p];
+            for (int j = 0; j < p; j++) {
+                index[j] = (float) j / p;
+            }
+            // each patch's [values ‖ time index ‖ validity], by row, in parallel for large batches
+            MemorySegment seg = tok.getSegment();
+            IntStream all = IntStream.range(0, rows);
+            (rows > 1 && (long) tokens * p >= PARALLEL_CELLS ? all.parallel() : all).forEach(r -> {
+                // the row built on the heap, then written in one bulk copy
+                float[] t = new float[n * 3 * p];
+                for (int k = 0; k < n; k++) {
+                    int i = r * n + k;
+                    System.arraycopy(in.values(), i * p, t, k * 3 * p, p);
+                    System.arraycopy(index, 0, t, k * 3 * p + p, p);
+                    System.arraycopy(in.valid(), i * p, t, k * 3 * p + 2 * p, p);
+                    type.set(i, in.patchType()[i]);
+                    valid.set(i, in.patchValid()[i] ? 1 : 0);
                 }
-                System.arraycopy(in.valid(), i * p, t, i * 3 * p + 2 * p, p);
-            }
-            MemorySegment.copy(t, 0, tok.getSegment(), ValueLayout.JAVA_FLOAT, 0, t.length);
-            for (int i = 0; i < tokens; i++) {
-                type.set(i, in.patchType()[i]);
-                valid.set(i, in.patchValid()[i] ? 1 : 0);
-            }
+                MemorySegment.copy(t, 0, seg, ValueLayout.JAVA_FLOAT, (long) r * n * 3 * p * Float.BYTES, t.length);
+            });
             for (int r = 0; r < rows; r++) {
                 future.set(r, in.future()[r] ? 1 : 0);
                 groupOf.set(r, in.groupOf()[r]);
@@ -345,7 +404,6 @@ public final class TornadoT0Forward implements T0Forward {
         void gemm(String task, FloatArray a, T0Packed.Lin l, FloatArray c, int m, int flags) {
             if (gemmMode.cublas()) {
                 cublas(task, a, l, c, m, flags);
-                written(c);
                 return;
             }
             int f = (flags & ~NO_BIAS) | Kernels.BIAS;
@@ -433,24 +491,65 @@ public final class TornadoT0Forward implements T0Forward {
                     g.libraryTask(task, CuBlas::cublasSgemm, 1, 0, nOut, m, k, 1f, wm, k, a, k, beta, c, nOut);
                 }
             }
+            written(c);
             if (relu) {
                 items(task + "_relu", m * nOut);
-                g.task(task + "_relu", Kernels::biasRelu, ctx, c, w, l.b(), m, nOut, noTwin, 0);
+                g.task(task + "_relu", Kernels::biasRelu, ctx, c, w, l.b(), m, nOut, twinOf(c), twinFlag());
+                wroteTwin(c);
             }
         }
 
         private HalfFloatArray half(String task, FloatArray a, int count) {
+            HalfFloatArray h = halfBuffer(a);
+            if (fresh.add(a)) {
+                items(task + "_h", count);
+                g.task(task + "_h", Kernels::toHalf, ctx, a, h, count);
+            }
+            return h;
+        }
+
+        /** The FP16 output of the q|k|v and up projections, one buffer as large as {@code big}. */
+        private HalfFloatArray bigHalf() {
+            if (bigH == null) {
+                bigH = new HalfFloatArray(big.getSize());
+                g.transferToDevice(DataTransferMode.FIRST_EXECUTION, bigH);
+            }
+            return bigH;
+        }
+
+        /** {@code bigH = A·Wᵀ} in FP16 without the bias, which the kernel reading it adds. */
+        private void halfGemm(String task, FloatArray a, T0Packed.Lin l, int m) {
+            HalfFloatArray ah = half(task, a, m * l.in());
+            HalfFloatArray wh = weights.halfMatrix(l);
+            weight(wh);
+            g.libraryTask(task, CuBlas::cublasGemmExFP16, 1, 0, l.out(), m, l.in(), 1f, wh, l.in(), ah, l.in(), 0f, bigHalf(), l.out());
+        }
+
+        private HalfFloatArray halfBuffer(FloatArray a) {
             HalfFloatArray h = halves.get(a);
             if (h == null) {
                 h = new HalfFloatArray(a.getSize());
                 halves.put(a, h);
                 g.transferToDevice(DataTransferMode.FIRST_EXECUTION, h);
             }
-            if (fresh.add(a)) {
-                items(task + "_h", count);
-                g.task(task + "_h", Kernels::toHalf, ctx, a, h, count);
-            }
             return h;
+        }
+
+        /** Where a task writing {@code a} also writes its FP16 copy: the copy with FP16 GEMM inputs, else none. */
+        private HalfFloatArray twinOf(FloatArray a) {
+            return halfInputs ? halfBuffer(a) : noTwin;
+        }
+
+        private int twinFlag() {
+            return halfInputs ? 1 : 0;
+        }
+
+        /** A task has written {@code buf} and, with FP16 GEMM inputs, its FP16 copy. */
+        private void wroteTwin(FloatArray buf) {
+            written(buf);
+            if (halfInputs) {
+                fresh.add(buf);
+            }
         }
 
         private FloatArray partials() {
@@ -465,22 +564,26 @@ public final class TornadoT0Forward implements T0Forward {
             fresh.remove(buf);
         }
 
-        /** RMSNorm of {@code in} into {@code o}, after adding a pending bias to {@code in} when {@code bias >= 0}. */
-        void norm(String task, FloatArray in, FloatArray o, int bias, int wOff, int rows) {
+        /**
+         * RMSNorm of {@code in} into {@code o}, after adding a pending bias to {@code in} when {@code bias >= 0};
+         * {@code twin}: {@code o} is a GEMM's input, whose FP16 copy the norm also writes.
+         */
+        void norm(String task, FloatArray in, FloatArray o, int bias, int wOff, int rows, boolean twin) {
+            HalfFloatArray th = twin ? twinOf(o) : noTwin;
+            int flag = twin ? twinFlag() : 0;
             if (bias < 0) {
-                rms(task, in, o, wOff, rows);
-                return;
+                grid.addWorkerGrid(name + "." + task, group(rows * Kernels.NORM_THREADS, Kernels.NORM_THREADS));
+                g.task(task, Kernels::rmsNorm, ctx, in, o, w, wOff, config.embedDim(), T0Config.NORM_EPS, th, flag, rows);
+            } else {
+                grid.addWorkerGrid(name + "." + task, group(rows * T0Kernels.NORM_THREADS, T0Kernels.NORM_THREADS));
+                g.task(task, T0Kernels::biasRmsNorm, ctx, in, o, w, bias, wOff, config.embedDim(), T0Config.NORM_EPS, rows, th, flag);
+                written(in);
             }
-            grid.addWorkerGrid(name + "." + task, group(rows * T0Kernels.NORM_THREADS, T0Kernels.NORM_THREADS));
-            g.task(task, T0Kernels::biasRmsNorm, ctx, in, o, w, bias, wOff, config.embedDim(), T0Config.NORM_EPS, rows);
-            written(in);
-            written(o);
-        }
-
-        void rms(String task, FloatArray in, FloatArray o, int wOff, int rows) {
-            grid.addWorkerGrid(name + "." + task, group(rows * Kernels.NORM_THREADS, Kernels.NORM_THREADS));
-            g.task(task, Kernels::rmsNorm, ctx, in, o, w, wOff, config.embedDim(), T0Config.NORM_EPS, noTwin, 0, rows);
-            written(o);
+            if (twin) {
+                wroteTwin(o);
+            } else {
+                written(o);
+            }
         }
 
         void items(String task, int count) {
