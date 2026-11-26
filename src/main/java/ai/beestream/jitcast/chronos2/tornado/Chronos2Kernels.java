@@ -15,9 +15,16 @@
  */
 package ai.beestream.jitcast.chronos2.tornado;
 
+import ai.beestream.jitcast.tornado.Kernels;
 import uk.ac.manchester.tornado.api.KernelContext;
 import uk.ac.manchester.tornado.api.math.TornadoMath;
+import uk.ac.manchester.tornado.api.tile.DType;
+import uk.ac.manchester.tornado.api.tile.PartitionView;
+import uk.ac.manchester.tornado.api.tile.Tile;
+import uk.ac.manchester.tornado.api.tile.TileContext;
+import uk.ac.manchester.tornado.api.types.HalfFloat;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
+import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
 
 /**
@@ -55,6 +62,11 @@ public final class Chronos2Kernels {
     /** A masked score, and the threshold above which a score is a key's. */
     static final float MASKED = -3.4e38f;
     static final float VALID = -3.0e38f;
+    /** The head width of {@link #timeAttentionTile}, a tile extent, so a compile-time constant. */
+    public static final int TILE_HEAD_DIM = 64;
+    /** Queries and keys per tile block of {@link #timeAttentionTile}. */
+    public static final int TILE_QUERIES = 64;
+    public static final int TILE_KEYS = 64;
 
     private Chronos2Kernels() {}
 
@@ -125,10 +137,11 @@ public final class Chronos2Kernels {
      * {@link #BLOCK_HEAD_DIM} wide, in multiples of 16.
      *
      * <p>Every query of a row reads every valid key of the row ({@code live [r·n + k]}), in both
-     * directions. Writes {@code out [(r·n + t)·inner + head·dh + j]}.
+     * directions. Writes {@code out [(r·n + t)·inner + head·dh + j]}, and its FP16 twin {@code th}
+     * when {@code twin} is 1.
      */
     public static void timeAttention(KernelContext ctx, FloatArray qkv, FloatArray out, IntArray live, int rows, int n,
-            int heads, int dh, int inner) {
+            int heads, int dh, int inner, HalfFloatArray th, int twin) {
         if (ctx.groupIdx < rows * heads * ((n + TIME_QUERIES - 1) / TIME_QUERIES)) {
             int wg = ctx.groupIdx;
             int tid = ctx.localIdx;
@@ -407,59 +420,119 @@ public final class Chronos2Kernels {
             if (4 * og + 0 < qn) {
                 int ob = (r * n + q0 + 4 * og + 0) * inner + hh * dh + od;
                 float l0 = lRun[4 * og + 0];
-                out.set(ob + 0, l0 > 0f ? o00 / l0 : 0f);
+                store(out, th, twin, ob + 0, l0 > 0f ? o00 / l0 : 0f);
                 if (1 < dpt) {
-                    out.set(ob + 16, l0 > 0f ? o01 / l0 : 0f);
+                    store(out, th, twin, ob + 16, l0 > 0f ? o01 / l0 : 0f);
                 }
                 if (2 < dpt) {
-                    out.set(ob + 32, l0 > 0f ? o02 / l0 : 0f);
+                    store(out, th, twin, ob + 32, l0 > 0f ? o02 / l0 : 0f);
                 }
                 if (3 < dpt) {
-                    out.set(ob + 48, l0 > 0f ? o03 / l0 : 0f);
+                    store(out, th, twin, ob + 48, l0 > 0f ? o03 / l0 : 0f);
                 }
             }
             if (4 * og + 1 < qn) {
                 int ob = (r * n + q0 + 4 * og + 1) * inner + hh * dh + od;
                 float l1 = lRun[4 * og + 1];
-                out.set(ob + 0, l1 > 0f ? o10 / l1 : 0f);
+                store(out, th, twin, ob + 0, l1 > 0f ? o10 / l1 : 0f);
                 if (1 < dpt) {
-                    out.set(ob + 16, l1 > 0f ? o11 / l1 : 0f);
+                    store(out, th, twin, ob + 16, l1 > 0f ? o11 / l1 : 0f);
                 }
                 if (2 < dpt) {
-                    out.set(ob + 32, l1 > 0f ? o12 / l1 : 0f);
+                    store(out, th, twin, ob + 32, l1 > 0f ? o12 / l1 : 0f);
                 }
                 if (3 < dpt) {
-                    out.set(ob + 48, l1 > 0f ? o13 / l1 : 0f);
+                    store(out, th, twin, ob + 48, l1 > 0f ? o13 / l1 : 0f);
                 }
             }
             if (4 * og + 2 < qn) {
                 int ob = (r * n + q0 + 4 * og + 2) * inner + hh * dh + od;
                 float l2 = lRun[4 * og + 2];
-                out.set(ob + 0, l2 > 0f ? o20 / l2 : 0f);
+                store(out, th, twin, ob + 0, l2 > 0f ? o20 / l2 : 0f);
                 if (1 < dpt) {
-                    out.set(ob + 16, l2 > 0f ? o21 / l2 : 0f);
+                    store(out, th, twin, ob + 16, l2 > 0f ? o21 / l2 : 0f);
                 }
                 if (2 < dpt) {
-                    out.set(ob + 32, l2 > 0f ? o22 / l2 : 0f);
+                    store(out, th, twin, ob + 32, l2 > 0f ? o22 / l2 : 0f);
                 }
                 if (3 < dpt) {
-                    out.set(ob + 48, l2 > 0f ? o23 / l2 : 0f);
+                    store(out, th, twin, ob + 48, l2 > 0f ? o23 / l2 : 0f);
                 }
             }
             if (4 * og + 3 < qn) {
                 int ob = (r * n + q0 + 4 * og + 3) * inner + hh * dh + od;
                 float l3 = lRun[4 * og + 3];
-                out.set(ob + 0, l3 > 0f ? o30 / l3 : 0f);
+                store(out, th, twin, ob + 0, l3 > 0f ? o30 / l3 : 0f);
                 if (1 < dpt) {
-                    out.set(ob + 16, l3 > 0f ? o31 / l3 : 0f);
+                    store(out, th, twin, ob + 16, l3 > 0f ? o31 / l3 : 0f);
                 }
                 if (2 < dpt) {
-                    out.set(ob + 32, l3 > 0f ? o32 / l3 : 0f);
+                    store(out, th, twin, ob + 32, l3 > 0f ? o32 / l3 : 0f);
                 }
                 if (3 < dpt) {
-                    out.set(ob + 48, l3 > 0f ? o33 / l3 : 0f);
+                    store(out, th, twin, ob + 48, l3 > 0f ? o33 / l3 : 0f);
                 }
             }
+        }
+    }
+
+    /**
+     * {@link #timeAttention} with the CUDA Tile API (CUDA only, compute capability 8.0+): flash
+     * attention on tensor cores, FP16 operands and FP32 scores, softmax and output. One tile block per
+     * ({@link #TILE_QUERIES} queries, row·head): the grid is {@code (⌈n / TILE_QUERIES⌉, rows · heads)}
+     * tile blocks. Q, K and V are read in place from {@code qkv} through strided views and cast to FP16
+     * per block; the block of {@link #TILE_KEYS} keys is masked with {@code live}, and the scores fold
+     * into an online softmax. Heads must be {@link #TILE_HEAD_DIM} wide; masked loads cover a ragged
+     * {@code n}, and the keys past it read as not live. With {@code twin} 1 the output's FP16 twin goes
+     * to {@code th} too.
+     */
+    public static void timeAttentionTile(TileContext tc, FloatArray qkv, FloatArray out, IntArray live, int n, int heads,
+            int inner, int keyBlocks, HalfFloatArray th, int twin) {
+        int rh = tc.bidY();
+        int r = rh / heads;
+        int hh = rh - r * heads;
+        int base = r * n * 3 * inner + hh * TILE_HEAD_DIM;
+        PartitionView qv = tc.partition(tc.viewStrided(qkv, base, n, TILE_HEAD_DIM, 3 * inner), TILE_QUERIES, TILE_HEAD_DIM);
+        PartitionView kv = tc.partition(tc.viewStrided(qkv, base + inner, n, TILE_HEAD_DIM, 3 * inner), TILE_KEYS,
+                TILE_HEAD_DIM);
+        PartitionView vv = tc.partition(tc.viewStrided(qkv, base + 2 * inner, n, TILE_HEAD_DIM, 3 * inner), TILE_KEYS,
+                TILE_HEAD_DIM);
+        PartitionView lv = tc.partition(tc.viewStrided(live, r * n, 1, n, n), 1, TILE_KEYS);
+        int oBase = r * n * inner + hh * TILE_HEAD_DIM;
+        PartitionView ov = tc.partition(tc.viewStrided(out, oBase, n, TILE_HEAD_DIM, inner), TILE_QUERIES, TILE_HEAD_DIM);
+        int qb = tc.bidX();
+        Tile query = tc.cast(qv.loadMasked(qb, 0), DType.F16);
+        Tile masked = tc.full(DType.F32, MASKED, TILE_QUERIES, TILE_KEYS);
+        Tile rowMax = tc.full(DType.F32, VALID, TILE_QUERIES, 1);
+        Tile rowSum = tc.zeros(DType.F32, TILE_QUERIES, 1);
+        Tile acc = tc.zeros(DType.F32, TILE_QUERIES, TILE_HEAD_DIM);
+        for (int b = 0; b < keyBlocks; b++) {
+            Tile keys = tc.transpose(tc.cast(kv.loadMasked(b, 0), DType.F16));
+            Tile scores = tc.mma(query, keys, tc.zeros(DType.F32, TILE_QUERIES, TILE_KEYS));
+            Tile ok = tc.broadcast(tc.notEqualTo(lv.loadMasked(0, b), 0), TILE_QUERIES, TILE_KEYS);
+            scores = tc.select(ok, scores, masked);
+            Tile newMax = tc.maximum(rowMax, tc.max(scores, 1));
+            Tile p = tc.exp(tc.sub(scores, newMax));
+            Tile correction = tc.exp(tc.sub(rowMax, newMax));
+            rowSum = tc.add(tc.mul(rowSum, correction), tc.sum(p, 1));
+            acc = tc.mma(tc.cast(p, DType.F16), tc.cast(vv.loadMasked(b, 0), DType.F16), tc.mul(acc, correction));
+            rowMax = newMax;
+        }
+        // every row has a live key (its [REG] and future tokens), so rowSum > 0 for every real query
+        Tile o = tc.div(acc, rowSum);
+        ov.storeMasked(o, qb, 0);
+        if (twin == 1) {
+            PartitionView hv = tc.partition(tc.viewStrided(th, oBase, n, TILE_HEAD_DIM, inner), TILE_QUERIES, TILE_HEAD_DIM);
+            Tile limit = tc.full(DType.F32, Kernels.HALF_MAX, TILE_QUERIES, TILE_HEAD_DIM);
+            hv.storeMasked(tc.cast(tc.minimum(tc.maximum(o, tc.scale(limit, -1.0)), limit), DType.F16), qb, 0);
+        }
+    }
+
+    /** {@code out[i] = v}, and its FP16 twin, saturated to ±{@code HALF_MAX}, when {@code twin} is 1. */
+    static void store(FloatArray out, HalfFloatArray th, int twin, int i, float v) {
+        out.set(i, v);
+        if (twin == 1) {
+            th.set(i, new HalfFloat(TornadoMath.clamp(v, -Kernels.HALF_MAX, Kernels.HALF_MAX)));
         }
     }
 
@@ -471,7 +544,7 @@ public final class Chronos2Kernels {
      * patch its whole group misses) gets zeros.
      */
     public static void groupAttention(KernelContext ctx, FloatArray qkv, FloatArray out, IntArray live, IntArray groupStart,
-            IntArray groupEnd, int rows, int n, int heads, int dh, int inner) {
+            IntArray groupEnd, int rows, int n, int heads, int dh, int inner, HalfFloatArray th, int twin) {
         if (ctx.groupIdx < n * heads * ((rows + ATTN_QUERIES - 1) / ATTN_QUERIES)) {
             int wg = ctx.groupIdx;
             int tid = ctx.localIdx;
@@ -570,112 +643,112 @@ public final class Chronos2Kernels {
                     if (lRun[0] > 0f) {
                         v = a0 / lRun[0];
                     }
-                    out.set(((q0 + 0) * n + t) * inner + hh * dh + tid, v);
+                    store(out, th, twin, ((q0 + 0) * n + t) * inner + hh * dh + tid, v);
                 }
                 if (1 < qn) {
                     float v = 0f;
                     if (lRun[1] > 0f) {
                         v = a1 / lRun[1];
                     }
-                    out.set(((q0 + 1) * n + t) * inner + hh * dh + tid, v);
+                    store(out, th, twin, ((q0 + 1) * n + t) * inner + hh * dh + tid, v);
                 }
                 if (2 < qn) {
                     float v = 0f;
                     if (lRun[2] > 0f) {
                         v = a2 / lRun[2];
                     }
-                    out.set(((q0 + 2) * n + t) * inner + hh * dh + tid, v);
+                    store(out, th, twin, ((q0 + 2) * n + t) * inner + hh * dh + tid, v);
                 }
                 if (3 < qn) {
                     float v = 0f;
                     if (lRun[3] > 0f) {
                         v = a3 / lRun[3];
                     }
-                    out.set(((q0 + 3) * n + t) * inner + hh * dh + tid, v);
+                    store(out, th, twin, ((q0 + 3) * n + t) * inner + hh * dh + tid, v);
                 }
                 if (4 < qn) {
                     float v = 0f;
                     if (lRun[4] > 0f) {
                         v = a4 / lRun[4];
                     }
-                    out.set(((q0 + 4) * n + t) * inner + hh * dh + tid, v);
+                    store(out, th, twin, ((q0 + 4) * n + t) * inner + hh * dh + tid, v);
                 }
                 if (5 < qn) {
                     float v = 0f;
                     if (lRun[5] > 0f) {
                         v = a5 / lRun[5];
                     }
-                    out.set(((q0 + 5) * n + t) * inner + hh * dh + tid, v);
+                    store(out, th, twin, ((q0 + 5) * n + t) * inner + hh * dh + tid, v);
                 }
                 if (6 < qn) {
                     float v = 0f;
                     if (lRun[6] > 0f) {
                         v = a6 / lRun[6];
                     }
-                    out.set(((q0 + 6) * n + t) * inner + hh * dh + tid, v);
+                    store(out, th, twin, ((q0 + 6) * n + t) * inner + hh * dh + tid, v);
                 }
                 if (7 < qn) {
                     float v = 0f;
                     if (lRun[7] > 0f) {
                         v = a7 / lRun[7];
                     }
-                    out.set(((q0 + 7) * n + t) * inner + hh * dh + tid, v);
+                    store(out, th, twin, ((q0 + 7) * n + t) * inner + hh * dh + tid, v);
                 }
                 if (8 < qn) {
                     float v = 0f;
                     if (lRun[8] > 0f) {
                         v = a8 / lRun[8];
                     }
-                    out.set(((q0 + 8) * n + t) * inner + hh * dh + tid, v);
+                    store(out, th, twin, ((q0 + 8) * n + t) * inner + hh * dh + tid, v);
                 }
                 if (9 < qn) {
                     float v = 0f;
                     if (lRun[9] > 0f) {
                         v = a9 / lRun[9];
                     }
-                    out.set(((q0 + 9) * n + t) * inner + hh * dh + tid, v);
+                    store(out, th, twin, ((q0 + 9) * n + t) * inner + hh * dh + tid, v);
                 }
                 if (10 < qn) {
                     float v = 0f;
                     if (lRun[10] > 0f) {
                         v = a10 / lRun[10];
                     }
-                    out.set(((q0 + 10) * n + t) * inner + hh * dh + tid, v);
+                    store(out, th, twin, ((q0 + 10) * n + t) * inner + hh * dh + tid, v);
                 }
                 if (11 < qn) {
                     float v = 0f;
                     if (lRun[11] > 0f) {
                         v = a11 / lRun[11];
                     }
-                    out.set(((q0 + 11) * n + t) * inner + hh * dh + tid, v);
+                    store(out, th, twin, ((q0 + 11) * n + t) * inner + hh * dh + tid, v);
                 }
                 if (12 < qn) {
                     float v = 0f;
                     if (lRun[12] > 0f) {
                         v = a12 / lRun[12];
                     }
-                    out.set(((q0 + 12) * n + t) * inner + hh * dh + tid, v);
+                    store(out, th, twin, ((q0 + 12) * n + t) * inner + hh * dh + tid, v);
                 }
                 if (13 < qn) {
                     float v = 0f;
                     if (lRun[13] > 0f) {
                         v = a13 / lRun[13];
                     }
-                    out.set(((q0 + 13) * n + t) * inner + hh * dh + tid, v);
+                    store(out, th, twin, ((q0 + 13) * n + t) * inner + hh * dh + tid, v);
                 }
                 if (14 < qn) {
                     float v = 0f;
                     if (lRun[14] > 0f) {
                         v = a14 / lRun[14];
                     }
-                    out.set(((q0 + 14) * n + t) * inner + hh * dh + tid, v);
+                    store(out, th, twin, ((q0 + 14) * n + t) * inner + hh * dh + tid, v);
                 }
                 if (15 < qn) {
                     float v = 0f;
                     if (lRun[15] > 0f) {
                         v = a15 / lRun[15];
                     }
-                    out.set(((q0 + 15) * n + t) * inner + hh * dh + tid, v);
+                    store(out, th, twin, ((q0 + 15) * n + t) * inner + hh * dh + tid, v);
                 }
             }
         }

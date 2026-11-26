@@ -47,6 +47,7 @@ import uk.ac.manchester.tornado.api.WorkerGrid1D;
 import uk.ac.manchester.tornado.api.WorkerGrid2D;
 import uk.ac.manchester.tornado.api.common.TornadoDevice;
 import uk.ac.manchester.tornado.api.enums.DataTransferMode;
+import uk.ac.manchester.tornado.api.tile.TileContext;
 import uk.ac.manchester.tornado.api.types.arrays.FloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.HalfFloatArray;
 import uk.ac.manchester.tornado.api.types.arrays.IntArray;
@@ -64,7 +65,9 @@ import uk.ac.manchester.tornado.cublas.CuBlas;
  * FP32 on CUDA, Apple's simdgroup matrices on Metal, the register-blocked FP32 kernel elsewhere).
  * The blocked kernel takes GEMMs from {@code -Dchronos2.tornado.blockedMinRows} rows (128 by
  * default) and the tiled kernel the smaller ones. With cuBLAS the task graph is captured and replayed as a CUDA graph
- * ({@code -Dchronos2.tornado.cudaGraph}, on by default with cuBLAS).
+ * ({@code -Dchronos2.tornado.cudaGraph}, on by default with cuBLAS). With {@code cublas-fp16} and
+ * 64-wide heads the time attention runs on tensor cores with the CUDA Tile API
+ * ({@code -Dchronos2.tornado.tileAttention}, on by default there).
  */
 public final class Chronos2Forward implements ModelForward, AutoCloseable {
 
@@ -120,6 +123,10 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
     private final SharedWeights shared = new SharedWeights(G, device);
     private final GemmMode gemmMode;
     private final boolean cudaGraph;
+    /** Whether the time attention runs on tensor cores ({@link Chronos2Kernels#timeAttentionTile}). */
+    private final boolean tileAttention;
+    /** Whether the GEMMs read FP16 copies of their inputs, which the tasks writing them also write. */
+    private final boolean halfInputs;
 
     public Chronos2Forward(Chronos2Config config, Chronos2Packed weights) {
         this(config, weights, Options.integer("chronos2.tornado.plans", 8, 1));
@@ -138,6 +145,11 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
         this.plans = new PlanCache<>(Math.max(1, maxCachedPlans),
                 Options.bytes("chronos2.tornado.planBytes", Math.max(1, Devices.memory() - weightBytes), 1));
         this.cudaGraph = Options.bool("chronos2.tornado.cudaGraph", gemmMode.cublas());
+        // FP16 operands, so only with the FP16 GEMMs, and the Tile API needs CUDA
+        boolean fp16Cuda = gemmMode == GemmMode.CUBLAS_FP16;
+        this.halfInputs = fp16Cuda || gemmMode == GemmMode.HALF;
+        this.tileAttention = Options.bool("chronos2.tornado.tileAttention", fp16Cuda) && fp16Cuda
+                && config.dKv() == Chronos2Kernels.TILE_HEAD_DIM;
     }
 
     /** The GEMM mode in use, {@code AUTO} resolved for the device. */
@@ -271,33 +283,42 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
             for (int li = 0; li < weights.layers().size(); li++) {
                 Chronos2Packed.Layer layer = weights.layers().get(li);
                 String s = "l" + li + "t_";
-                rms(s + "norm", x, hn, layer.time().norm(), tokens);
+                rms(s + "norm", x, hn, layer.time().norm(), tokens, true);
                 gemm(s + "qkv", hn, layer.time().qkv(), big, tokens, 0);
                 items(s + "rope", tokens * heads * (dh / 2));
                 g.task(s + "rope", Chronos2Kernels::rope, ctx, big, table, tokens, n, heads, dh, inner);
                 written(big);
-                grid.addWorkerGrid(G + "." + s + "attn", group(rows * heads * qTiles * Chronos2Kernels.ATTN_THREADS,
-                        Chronos2Kernels.ATTN_THREADS));
-                g.task(s + "attn", Chronos2Kernels::timeAttention, ctx, big, att, live, rows, n, heads, dh, inner);
-                written(att);
+                if (tileAttention) {
+                    // the grid counts tile blocks; the block shape is the tile compiler's
+                    grid.addWorkerGrid(G + "." + s + "attn", new WorkerGrid2D(
+                            (n + Chronos2Kernels.TILE_QUERIES - 1) / Chronos2Kernels.TILE_QUERIES, rows * heads));
+                    g.task(s + "attn", Chronos2Kernels::timeAttentionTile, new TileContext(), big, att, live, n, heads, inner,
+                            (n + Chronos2Kernels.TILE_KEYS - 1) / Chronos2Kernels.TILE_KEYS, twinOf(att), twinFlag());
+                } else {
+                    grid.addWorkerGrid(G + "." + s + "attn", group(rows * heads * qTiles * Chronos2Kernels.ATTN_THREADS,
+                            Chronos2Kernels.ATTN_THREADS));
+                    g.task(s + "attn", Chronos2Kernels::timeAttention, ctx, big, att, live, rows, n, heads, dh, inner, twinOf(att),
+                            twinFlag());
+                }
+                wroteTwin(att);
                 gemm(s + "o", att, layer.time().o(), x, tokens, Kernels.ACCUMULATE);
 
                 s = "l" + li + "g_";
-                rms(s + "norm", x, hn, layer.group().norm(), tokens);
+                rms(s + "norm", x, hn, layer.group().norm(), tokens, true);
                 gemm(s + "qkv", hn, layer.group().qkv(), big, tokens, 0);
                 grid.addWorkerGrid(G + "." + s + "attn", group(n * heads * rTiles * Chronos2Kernels.ATTN_THREADS,
                         Chronos2Kernels.ATTN_THREADS));
                 g.task(s + "attn", Chronos2Kernels::groupAttention, ctx, big, att, live, groupStart, groupEnd, rows, n, heads, dh,
-                        inner);
-                written(att);
+                        inner, twinOf(att), twinFlag());
+                wroteTwin(att);
                 gemm(s + "o", att, layer.group().o(), x, tokens, Kernels.ACCUMULATE);
 
                 s = "l" + li + "f_";
-                rms(s + "norm", x, hn, layer.mlpNorm(), tokens);
+                rms(s + "norm", x, hn, layer.mlpNorm(), tokens, true);
                 gemm(s + "wi", hn, layer.wi(), big, tokens, Kernels.RELU);
                 gemm(s + "wo", big, layer.wo(), x, tokens, Kernels.ACCUMULATE);
             }
-            rms("fnorm", x, y, weights.finalNorm(), tokens);
+            rms("fnorm", x, y, weights.finalNorm(), tokens, false);
             items("gather", futTokens * d);
             g.task("gather", Chronos2Kernels::gatherFuture, ctx, y, dec, rows, nc + reg, n, h, d);
             written(dec);
@@ -328,7 +349,6 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
         void gemm(String name, FloatArray a, Chronos2Packed.Lin l, FloatArray c, int m, int flags) {
             if (gemmMode.cublas()) {
                 cublas(name, a, l, c, m, flags);
-                written(c);
                 return;
             }
             int f = flags | (l.b() >= 0 ? Kernels.BIAS : 0);
@@ -417,24 +437,50 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
                 }
             }
             if (relu) {
+                // the ReLU's output is the next GEMM's input, so it writes the FP16 copy that GEMM reads
                 items(name + "_relu", m * n);
-                g.task(name + "_relu", Kernels::biasRelu, ctx, c, w, bias ? l.b() : -1, m, n, noTwin, 0);
+                g.task(name + "_relu", Kernels::biasRelu, ctx, c, w, bias ? l.b() : -1, m, n, twinOf(c), twinFlag());
+                wroteTwin(c);
+            } else {
+                written(c);
             }
         }
 
         /** The FP16 copy of a GEMM input, converted once after each task that writes the source. */
         private HalfFloatArray half(String name, FloatArray a, int count) {
+            HalfFloatArray h = halfBuffer(a);
+            if (fresh.add(a)) {
+                items(name + "_h", count);
+                g.task(name + "_h", Kernels::toHalf, ctx, a, h, count);
+            }
+            return h;
+        }
+
+        private HalfFloatArray halfBuffer(FloatArray a) {
             HalfFloatArray h = halves.get(a);
             if (h == null) {
                 h = new HalfFloatArray(a.getSize());
                 halves.put(a, h);
                 g.transferToDevice(DataTransferMode.FIRST_EXECUTION, h);
             }
-            if (fresh.add(a)) {
-                items(name + "_h", count);
-                g.task(name + "_h", Kernels::toHalf, ctx, a, h, count);
-            }
             return h;
+        }
+
+        /** Where a task writing {@code a} also writes its FP16 copy: the copy with FP16 GEMM inputs, else none. */
+        private HalfFloatArray twinOf(FloatArray a) {
+            return halfInputs ? halfBuffer(a) : noTwin;
+        }
+
+        private int twinFlag() {
+            return halfInputs ? 1 : 0;
+        }
+
+        /** A task has written {@code buf} and, with FP16 GEMM inputs, its FP16 copy. */
+        private void wroteTwin(FloatArray buf) {
+            written(buf);
+            if (halfInputs) {
+                fresh.add(buf);
+            }
         }
 
         private HalfFloatArray halfWeight(Chronos2Packed.Lin l) {
@@ -463,10 +509,16 @@ public final class Chronos2Forward implements ModelForward, AutoCloseable {
             fresh.remove(buf);
         }
 
-        void rms(String name, FloatArray in, FloatArray out, int wOff, int rows) {
+        /** RMSNorm of {@code in} into {@code out}, and its FP16 copy when {@code out} is a GEMM input ({@code twin}). */
+        void rms(String name, FloatArray in, FloatArray out, int wOff, int rows, boolean twin) {
             grid.addWorkerGrid(G + "." + name, group(rows * Kernels.NORM_THREADS, Kernels.NORM_THREADS));
-            g.task(name, Kernels::rmsNorm, ctx, in, out, w, wOff, config.dModel(), config.layerNormEps(), noTwin, 0, rows);
-            written(out);
+            g.task(name, Kernels::rmsNorm, ctx, in, out, w, wOff, config.dModel(), config.layerNormEps(), twin ? twinOf(out) : noTwin,
+                    twin ? twinFlag() : 0, rows);
+            if (twin) {
+                wroteTwin(out);
+            } else {
+                written(out);
+            }
         }
 
         void items(String task, int count) {
